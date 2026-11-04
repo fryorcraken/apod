@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# apod <profile> [-a claude|opencode|bash] [project-dir] [-- agent args...]
+# Run a coding agent in a podman container as a given GitHub identity.
+# Per profile: ~/.agent-pod/<profile>/home (persistent $HOME), ~/.agent-pod/<profile>/env
+# (git identity), and the podman secret gh-<profile> (GitHub token).
+set -euo pipefail
+
+usage() { echo "usage: apod <profile> [-a claude|opencode|bash] [project-dir] [-- agent args...]" >&2; exit 2; }
+[ $# -ge 1 ] || usage
+profile=$1; shift
+agent=claude
+if [ "${1:-}" = -a ]; then agent=${2:?$(usage)}; shift 2; fi
+proj=$PWD
+if [ $# -gt 0 ] && [ "$1" != -- ]; then proj=$1; shift; fi
+[ "${1:-}" = -- ] && shift
+proj=$(realpath "$proj")
+
+root=${APOD_ROOT:-$HOME/.agent-pod}
+phome=$root/$profile/home
+envf=$root/$profile/env
+image=${APOD_IMAGE:-apod}
+
+[ -f "$envf" ] || { echo "apod: missing $envf (git identity, see README)" >&2; exit 2; }
+podman secret exists "gh-$profile" || { echo "apod: missing podman secret gh-$profile (see README)" >&2; exit 2; }
+mkdir -p "$phome/.claude"
+
+case $agent in
+  claude)   cmd=(claude --permission-mode bypassPermissions) ;;
+  opencode) cmd=(opencode) ;;
+  bash)     cmd=(bash -l) ;;
+  *) usage ;;
+esac
+
+mounts=(-v "$phome:/home/agent:z" -v "$proj:$proj:z")
+# Share global agent instructions and skills read-only.
+[ -f "$HOME/.claude/CLAUDE.md" ] && mounts+=(-v "$HOME/.claude/CLAUDE.md:/home/agent/.claude/CLAUDE.md:ro,z")
+[ -d "$HOME/.claude/skills" ] && mounts+=(-v "$HOME/.claude/skills:/home/agent/.claude/skills:ro,z")
+
+exec podman run --rm -it --userns=keep-id \
+  --name "apod-$profile-$(basename "$proj")-$$" \
+  --hostname "apod-$profile" \
+  --secret "gh-$profile,type=env,target=GH_TOKEN" \
+  --env-file "$envf" \
+  -e HOME=/home/agent \
+  -e APOD_PROFILE="$profile" \
+  -e GIT_CONFIG_COUNT=3 \
+  -e GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf -e GIT_CONFIG_VALUE_0=git@github.com: \
+  -e GIT_CONFIG_KEY_1=url.https://github.com/.insteadOf -e GIT_CONFIG_VALUE_1=ssh://git@github.com/ \
+  -e GIT_CONFIG_KEY_2=url.https://github.com/.insteadOf -e GIT_CONFIG_VALUE_2="git@github-$profile:" \
+  "${mounts[@]}" -w "$proj" \
+  "$image" bash -lc 'gh auth setup-git >/dev/null 2>&1 || true; exec "$@"' _ "${cmd[@]}" "$@"
