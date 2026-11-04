@@ -7,15 +7,15 @@ podman build -t apod ~/src/rad/scripts/apod
 ln -s ~/src/rad/scripts/apod/apod ~/.local/bin/apod
 ```
 
-## Per profile (e.g. `marclawclaw`, `fryorcraken`)
+## Per profile (e.g. `marclaw`, `fryorcraken`)
 
 ```sh
 # GitHub token (fine-grained, scoped): paste it, then Ctrl-D
-podman secret create gh-marclawclaw -
+podman secret create gh-marclaw -
 
 # git identity for commits made in this pod
-mkdir -p ~/.agent-pod/marclawclaw
-cat > ~/.agent-pod/marclawclaw/env <<'EOF'
+mkdir -p ~/.agent-pod/marclaw
+cat > ~/.agent-pod/marclaw/env <<'EOF'
 GIT_AUTHOR_NAME=marclawclaw
 GIT_AUTHOR_EMAIL=REPLACE_ME
 GIT_COMMITTER_NAME=marclawclaw
@@ -23,15 +23,15 @@ GIT_COMMITTER_EMAIL=REPLACE_ME
 EOF
 
 # first run: log in to Claude (and/or opencode) once; it persists in the profile's home
-apod marclawclaw ~/src/logos-co/logos-docs
+apod marclaw ~/src/logos-co/logos-docs
 ```
 
 ## Use
 
 ```sh
-apod marclawclaw ~/src/logos-co/logos-docs              # Claude Code, no permission prompts
+apod marclaw ~/src/logos-co/logos-docs              # Claude Code, no permission prompts
 apod fryorcraken -a opencode ~/src/logos-co/rfp          # opencode as you
-apod marclawclaw -a bash .                               # a shell in the pod (gh, git as that identity)
+apod marclaw -a bash .                               # a shell in the pod (gh, git as that identity)
 ```
 
 ## Extra mounts
@@ -40,7 +40,7 @@ Optional `~/.agent-pod/<profile>/mounts`: one path per line, read-only unless pr
 The project dir is always mounted read-write, even when it sits inside a read-only entry.
 
 ```
-# ~/.agent-pod/marclawclaw-logos/mounts
+# ~/.agent-pod/marclaw-logos/mounts
 ~/src/logos-co
 ~/src/logos-blockchain
 rw ~/src/logos-co/tmp

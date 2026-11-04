@@ -52,6 +52,18 @@ mounts+=(-v "$proj:$proj:z")
 
 tty=(-i); [ -t 0 ] && tty+=(-t)
 
+# Rewrite GitHub SSH remotes, including github-* host aliases from ~/.ssh/config, to HTTPS
+# so pushes authenticate with the profile's token.
+rewrites=(git@github.com: ssh://git@github.com/)
+if [ -f "$HOME/.ssh/config" ]; then
+  while read -r alias; do rewrites+=("git@$alias:"); done < <(
+    awk 'tolower($1) == "host" { for (i = 2; i <= NF; i++) if ($i ~ /^github-/) print $i }' "$HOME/.ssh/config")
+fi
+gitenv=(-e "GIT_CONFIG_COUNT=${#rewrites[@]}")
+for i in "${!rewrites[@]}"; do
+  gitenv+=(-e "GIT_CONFIG_KEY_$i=url.https://github.com/.insteadOf" -e "GIT_CONFIG_VALUE_$i=${rewrites[$i]}")
+done
+
 exec podman run --rm "${tty[@]}" --userns=keep-id \
   --name "apod-$profile-$(basename "$proj")-$$" \
   --hostname "apod-$profile" \
@@ -59,9 +71,6 @@ exec podman run --rm "${tty[@]}" --userns=keep-id \
   --env-file "$envf" \
   -e HOME=/home/agent \
   -e APOD_PROFILE="$profile" \
-  -e GIT_CONFIG_COUNT=3 \
-  -e GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf -e GIT_CONFIG_VALUE_0=git@github.com: \
-  -e GIT_CONFIG_KEY_1=url.https://github.com/.insteadOf -e GIT_CONFIG_VALUE_1=ssh://git@github.com/ \
-  -e GIT_CONFIG_KEY_2=url.https://github.com/.insteadOf -e GIT_CONFIG_VALUE_2="git@github-$profile:" \
+  "${gitenv[@]}" \
   "${mounts[@]}" -w "$proj" \
   "$image" bash -lc 'gh auth setup-git >/dev/null 2>&1 || true; exec "$@"' _ "${cmd[@]}" "$@"
