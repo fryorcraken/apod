@@ -1,20 +1,28 @@
 #!/usr/bin/env bash
-# apod <profile> [-a claude|opencode|bash] [project-dir] [-- agent args...]
+# apod <profile> [-a claude|opencode|bash] [--ro PATH]... [--rw PATH]... [project-dir] [-- agent args...]
 # Run a coding agent in a podman container as a given GitHub identity.
 # Per profile: ~/.agent-pod/<profile>/home (persistent $HOME), ~/.agent-pod/<profile>/env
 # (git identity), ~/.agent-pod/<profile>/mounts (optional extra mounts), and the podman
 # secret gh-<profile> (GitHub token).
 set -euo pipefail
 
-usage() { echo "usage: apod <profile> [-a claude|opencode|bash] [project-dir] [-- agent args...]" >&2; exit 2; }
+usage() { echo "usage: apod <profile> [-a claude|opencode|bash] [--ro PATH]... [--rw PATH]... [project-dir] [-- agent args...]" >&2; exit 2; }
 [ $# -ge 1 ] || usage
 profile=$1; shift
 agent=claude
-if [ "${1:-}" = -a ]; then agent=${2:?$(usage)}; shift 2; fi
-proj=$PWD
-if [ $# -gt 0 ] && [ "$1" != -- ]; then proj=$1; shift; fi
-[ "${1:-}" = -- ] && shift
-proj=$(realpath "$proj")
+proj=
+climounts=()  # "mode path" entries from --ro/--rw, for this run only
+while [ $# -gt 0 ]; do
+  case $1 in
+    -a)         [ $# -ge 2 ] || usage; agent=$2; shift 2 ;;
+    -m|--ro)    [ $# -ge 2 ] || usage; climounts+=("ro $2"); shift 2 ;;
+    --rw)       [ $# -ge 2 ] || usage; climounts+=("rw $2"); shift 2 ;;
+    --)         shift; break ;;
+    -*)         usage ;;
+    *)          [ -z "$proj" ] || usage; proj=$1; shift ;;
+  esac
+done
+proj=$(realpath "${proj:-$PWD}")
 
 root=${APOD_ROOT:-$HOME/.agent-pod}
 phome=$root/$profile/home
@@ -32,20 +40,33 @@ case $agent in
   *) usage ;;
 esac
 
-mounts=(-v "$phome:/home/agent:z")
-romounts=(); rwmounts=()
-# Extra mounts from the profile's mounts file: one path per line, read-only unless prefixed "rw ".
-# Listed before the project so a project nested inside a read-only tree stays writable.
+# Extra mounts: the profile's mounts file (one path per line, read-only unless prefixed "rw "),
+# then --ro/--rw, which override the file's mode for the same path. Each path is mounted once.
+declare -A mmode=(); morder=()
+want_mount() {  # <ro|rw> <path>; fails if the path doesn't exist
+  local path; path=$(realpath -m "${2/#\~/$HOME}")
+  [ -e "$path" ] || return 1
+  [ "$path" = "$proj" ] && return 0
+  [ -n "${mmode[$path]+x}" ] || morder+=("$path")
+  mmode[$path]=$1
+}
 if [ -f "$root/$profile/mounts" ]; then
   while read -r mode path; do
     case $mode in ''|'#'*) continue ;; rw|ro) ;; *) path=$mode; mode=ro ;; esac
-    path=$(realpath -m "${path/#\~/$HOME}")
-    [ -e "$path" ] || { echo "apod: skipping missing mount $path" >&2; continue; }
-    [ "$path" = "$proj" ] && continue
-    if [ "$mode" = rw ]; then opt=z; rwmounts+=("$path"); else opt=ro,z; romounts+=("$path"); fi
-    mounts+=(-v "$path:$path:$opt")
+    want_mount "$mode" "$path" || echo "apod: skipping missing mount $path" >&2
   done < "$root/$profile/mounts"
 fi
+for e in "${climounts[@]}"; do
+  want_mount "${e%% *}" "${e#* }" || { echo "apod: no such path: ${e#* }" >&2; exit 2; }
+done
+
+# Extra mounts go before the project so a project nested inside a read-only tree stays writable.
+mounts=(-v "$phome:/home/agent:z")
+romounts=(); rwmounts=()
+for path in "${morder[@]}"; do
+  if [ "${mmode[$path]}" = rw ]; then rwmounts+=("$path"); mounts+=(-v "$path:$path:z")
+  else romounts+=("$path"); mounts+=(-v "$path:$path:ro,z"); fi
+done
 mounts+=(-v "$proj:$proj:z")
 # Share global agent instructions and skills read-only.
 [ -f "$HOME/.claude/CLAUDE.md" ] && mounts+=(-v "$HOME/.claude/CLAUDE.md:/home/agent/.claude/CLAUDE.md:ro,z")

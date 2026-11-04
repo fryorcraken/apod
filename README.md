@@ -46,6 +46,15 @@ The project dir is always mounted read-write, even when it sits inside a read-on
 rw ~/src/logos-co/tmp
 ```
 
+For one run only, add files or folders on the command line (repeatable, before `--`):
+
+```sh
+apod marclaw --ro ~/notes/spec.md --ro ~/src/other-repo --rw ~/scratch ~/src/marclawclaw/research-cross-chain-dex
+```
+
+`-m` is short for `--ro`. A command-line entry overrides the mounts file's mode for the same path,
+and a command-line path that doesn't exist is an error.
+
 The first launch relabels each mounted tree for SELinux (`:z`), which can take a while on big trees.
 
 Claude is told at startup (via `--append-system-prompt`) which paths are mounted, read-write or
