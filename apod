@@ -33,6 +33,7 @@ case $agent in
 esac
 
 mounts=(-v "$phome:/home/agent:z")
+romounts=(); rwmounts=()
 # Extra mounts from the profile's mounts file: one path per line, read-only unless prefixed "rw ".
 # Listed before the project so a project nested inside a read-only tree stays writable.
 if [ -f "$root/$profile/mounts" ]; then
@@ -41,7 +42,7 @@ if [ -f "$root/$profile/mounts" ]; then
     path=$(realpath -m "${path/#\~/$HOME}")
     [ -e "$path" ] || { echo "apod: skipping missing mount $path" >&2; continue; }
     [ "$path" = "$proj" ] && continue
-    opt=ro,z; [ "$mode" = rw ] && opt=z
+    if [ "$mode" = rw ]; then opt=z; rwmounts+=("$path"); else opt=ro,z; romounts+=("$path"); fi
     mounts+=(-v "$path:$path:$opt")
   done < "$root/$profile/mounts"
 fi
@@ -49,6 +50,14 @@ mounts+=(-v "$proj:$proj:z")
 # Share global agent instructions and skills read-only.
 [ -f "$HOME/.claude/CLAUDE.md" ] && mounts+=(-v "$HOME/.claude/CLAUDE.md:/home/agent/.claude/CLAUDE.md:ro,z")
 [ -d "$HOME/.claude/skills" ] && mounts+=(-v "$HOME/.claude/skills:/home/agent/.claude/skills:ro,z")
+
+# Tell the agent where it is and what it can see (Claude: appended to its system prompt).
+context="You are running inside an apod container (podman), profile \"$profile\". Only these host paths are mounted:
+- $proj (read-write, the project)"
+for p in "${rwmounts[@]}"; do context+=$'\n'"- $p (read-write)"; done
+for p in "${romounts[@]}"; do context+=$'\n'"- $p (read-only)"; done
+context+=$'\n'"Nothing else from the host is available. gh and git push over HTTPS use this profile's GitHub token. There are no permission prompts: the container is the isolation boundary."
+if [ "$agent" = claude ]; then cmd+=(--append-system-prompt "$context"); fi
 
 tty=(-i); [ -t 0 ] && tty+=(-t)
 

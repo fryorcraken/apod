@@ -48,6 +48,9 @@ rw ~/src/logos-co/tmp
 
 The first launch relabels each mounted tree for SELinux (`:z`), which can take a while on big trees.
 
+Claude is told at startup (via `--append-system-prompt`) which paths are mounted, read-write or
+read-only, and that nothing else from the host is available. opencode doesn't get this yet.
+
 ## Notes
 
 - The project dir is mounted read-write, plus any `mounts` entries. Give each pod its own worktree; two pods on one checkout will collide.
