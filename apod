@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
-# apod <profile> [-a claude|opencode|bash] [--ro PATH]... [--rw PATH]... [project-dir] [-- agent args...]
+# apod <profile> [-a claude|opencode|bash] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [project-dir] [-- agent args...]
 # Run a coding agent in a podman container as a given GitHub identity.
 # Per profile: ~/.agent-pod/<profile>/home (persistent $HOME), ~/.agent-pod/<profile>/env
 # (git identity), ~/.agent-pod/<profile>/mounts (optional extra mounts), and the podman
 # secret gh-<profile> (GitHub token).
 set -euo pipefail
 
-usage() { echo "usage: apod <profile> [-a claude|opencode|bash] [--ro PATH]... [--rw PATH]... [project-dir] [-- agent args...]" >&2; exit 2; }
+usage() { echo "usage: apod <profile> [-a claude|opencode|bash] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [project-dir] [-- agent args...]" >&2; exit 2; }
 [ $# -ge 1 ] || usage
 profile=$1; shift
 agent=claude
 proj=
 climounts=()  # "mode path" entries from --ro/--rw, for this run only
+connectors=() # claude.ai connector groups enabled for this run (-c)
 while [ $# -gt 0 ]; do
   case $1 in
     -a)         [ $# -ge 2 ] || usage; agent=$2; shift 2 ;;
+    -c|--connectors) [ $# -ge 2 ] || usage; IFS=, read -ra cs <<< "$2"; connectors+=("${cs[@]}"); shift 2 ;;
     -m|--ro)    [ $# -ge 2 ] || usage; climounts+=("ro $2"); shift 2 ;;
     --rw)       [ $# -ge 2 ] || usage; climounts+=("rw $2"); shift 2 ;;
     --)         shift; break ;;
@@ -38,6 +40,42 @@ case $agent in
   opencode) cmd=(opencode) ;;
   bash)     cmd=(bash -l) ;;
   *) usage ;;
+esac
+
+# claude.ai connectors come with the Claude account, not the pod: off unless enabled with -c.
+declare -A connector_servers=(
+  [notion]="Notion"
+  [gdoc]="Google_Docs Google_Drive Google_Sheets"
+  [todoist]="Todoist"
+  [canva]="Canva"
+  [lovable]="Lovable"
+  [jitsu]="UTS_Jitsu"
+  [claudedocs]="Claude_Docs"
+)
+for c in "${connectors[@]}"; do
+  [ -n "${connector_servers[$c]+x}" ] || { echo "apod: unknown connector '$c' (known: ${!connector_servers[*]})" >&2; exit 2; }
+done
+allowed=(); denied=()
+for c in "${!connector_servers[@]}"; do
+  for s in ${connector_servers[$c]}; do
+    if [[ " ${connectors[*]} " == *" $c "* ]]; then allowed+=("$s"); else denied+=("mcp__claude_ai_${s}__*"); fi
+  done
+done
+if [ ${#allowed[@]} -eq 0 ]; then
+  csettings='{"disableClaudeAiConnectors":true}'
+else
+  # Deny the known connectors not asked for (hides their tools) and, as a catch-all for
+  # connectors not listed above, block any other claude.ai tool in a PreToolUse hook.
+  re="^mcp__claude_ai_($(IFS='|'; echo "${allowed[*]}"))__"
+  hook="t=\$(jq -r .tool_name); case \$t in mcp__claude_ai_*) echo \"\$t\" | grep -qE '$re' || { echo 'apod: connector not enabled for this run (apod -c)' >&2; exit 2; } ;; esac"
+  csettings=$(jq -cn --arg hook "$hook" '$ARGS.positional as $deny
+    | {permissions: {deny: $deny},
+       hooks: {PreToolUse: [{matcher: "mcp__claude_ai_.*", hooks: [{type: "command", command: $hook}]}]}}' \
+    --args "${denied[@]}")
+fi
+case $agent in
+  claude) cmd+=(--settings "$csettings") ;;
+  *) [ ${#connectors[@]} -eq 0 ] || echo "apod: -c only applies to claude; ignored for $agent" >&2 ;;
 esac
 
 # Extra mounts: the profile's mounts file (one path per line, read-only unless prefixed "rw "),
@@ -78,6 +116,11 @@ context="You are running inside an apod container (podman), profile \"$profile\"
 for p in "${rwmounts[@]}"; do context+=$'\n'"- $p (read-write)"; done
 for p in "${romounts[@]}"; do context+=$'\n'"- $p (read-only)"; done
 context+=$'\n'"Nothing else from the host is available. gh and git push over HTTPS use this profile's GitHub token. There are no permission prompts: the container is the isolation boundary."
+if [ ${#connectors[@]} -gt 0 ]; then
+  context+=$'\n'"claude.ai connectors enabled for this run: ${connectors[*]}. Others are blocked."
+else
+  context+=$'\n'"claude.ai connectors (Notion, Google Docs, etc.) are disabled for this run; they can be enabled at launch with apod -c."
+fi
 if [ "$agent" = claude ]; then cmd+=(--append-system-prompt "$context"); fi
 
 tty=(-i); [ -t 0 ] && tty+=(-t)

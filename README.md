@@ -60,6 +60,26 @@ The first launch relabels each mounted tree for SELinux (`:z`), which can take a
 Claude is told at startup (via `--append-system-prompt`) which paths are mounted, read-write or
 read-only, and that nothing else from the host is available. opencode doesn't get this yet.
 
+## claude.ai connectors
+
+Connectors (Notion, Google Docs, …) come with the Claude account, not the pod, and act as you.
+apod disables them unless you enable groups for the run with `-c` (comma-separated, repeatable):
+
+```sh
+apod marclaw -c notion ~/src/logos-co/logos-docs
+apod marclaw -c gdoc,notion -- --continue
+```
+
+Groups: `notion`, `gdoc` (Docs, Drive, Sheets), `todoist`, `canva`, `lovable`, `jitsu`, `claudedocs`.
+Other known connectors are denied; a PreToolUse hook also blocks any claude.ai connector tool not
+enabled, including ones added to the account later. Don't set `disableClaudeAiConnectors` in a
+profile's settings: `true` anywhere wins and `-c` would stop working.
+
+## Changing mounts or connectors mid-session
+
+A running pod can't gain mounts or connectors. Exit and relaunch with the new options, resuming
+the conversation: `apod marclaw --rw ~/new/dir -c notion <project> -- --continue`.
+
 ## Notes
 
 - The project dir is mounted read-write, plus any `mounts` entries. Give each pod its own worktree; two pods on one checkout will collide.
