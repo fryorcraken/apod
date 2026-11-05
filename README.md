@@ -5,7 +5,11 @@
 ```sh
 podman build -t apod ~/src/rad/scripts/apod
 ln -s ~/src/rad/scripts/apod/apod ~/.local/bin/apod
+# zsh completion (oh-my-zsh puts $ZSH_CUSTOM/completions on $fpath); then: rm -f ~/.zcompdump*; exec zsh
+ln -s ~/src/rad/scripts/apod/_apod ~/.oh-my-zsh/custom/completions/_apod
 ```
+
+In herdr, apod sets `HERDR_AGENT` on the podman process so herdr recognises the agent in the pane.
 
 ## Per profile (e.g. `marclaw`, `fryorcraken`)
 

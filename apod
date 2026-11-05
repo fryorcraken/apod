@@ -7,6 +7,20 @@
 set -euo pipefail
 
 usage() { echo "usage: apod <profile> [-a claude|opencode|bash] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [project-dir] [-- agent args...]" >&2; exit 2; }
+
+# claude.ai connector groups for -c, and the connector servers each one enables.
+declare -A connector_servers=(
+  [notion]="Notion"
+  [gdoc]="Google_Docs Google_Drive Google_Sheets"
+  [todoist]="Todoist"
+  [canva]="Canva"
+  [lovable]="Lovable"
+  [jitsu]="UTS_Jitsu"
+  [claudedocs]="Claude_Docs"
+)
+# For shell completion.
+if [ "${1:-}" = --list-connectors ]; then printf '%s\n' "${!connector_servers[@]}" | sort; exit 0; fi
+
 [ $# -ge 1 ] || usage
 profile=$1; shift
 agent=claude
@@ -43,15 +57,6 @@ case $agent in
 esac
 
 # claude.ai connectors come with the Claude account, not the pod: off unless enabled with -c.
-declare -A connector_servers=(
-  [notion]="Notion"
-  [gdoc]="Google_Docs Google_Drive Google_Sheets"
-  [todoist]="Todoist"
-  [canva]="Canva"
-  [lovable]="Lovable"
-  [jitsu]="UTS_Jitsu"
-  [claudedocs]="Claude_Docs"
-)
 for c in "${connectors[@]}"; do
   [ -n "${connector_servers[$c]+x}" ] || { echo "apod: unknown connector '$c' (known: ${!connector_servers[*]})" >&2; exit 2; }
 done
@@ -136,6 +141,10 @@ gitenv=(-e "GIT_CONFIG_COUNT=${#rewrites[@]}")
 for i in "${!rewrites[@]}"; do
   gitenv+=(-e "GIT_CONFIG_KEY_$i=url.https://github.com/.insteadOf" -e "GIT_CONFIG_VALUE_$i=${rewrites[$i]}")
 done
+
+# herdr only sees podman in the pane; tell it which agent's screen to read. Podman doesn't pass
+# this into the container.
+case $agent in claude|opencode) export HERDR_AGENT=$agent ;; esac
 
 exec podman run --rm "${tty[@]}" --userns=keep-id \
   --name "apod-$profile-$(basename "$proj")-$$" \

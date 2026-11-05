@@ -1,0 +1,23 @@
+#compdef apod
+# zsh completion for apod. Link this file into a directory on $fpath,
+# e.g. ln -s ~/src/rad/scripts/apod/_apod ~/.oh-my-zsh/custom/completions/_apod
+
+_apod_profiles() {
+  local -a profiles
+  profiles=(${APOD_ROOT:-$HOME/.agent-pod}/*(N/:t))
+  _describe -t profiles 'profile' profiles
+}
+
+_apod_connectors() {
+  local -a groups
+  groups=(${(f)"$(apod --list-connectors 2>/dev/null)"})
+  _values -s , 'connector' $groups
+}
+
+_arguments -s -S \
+  '1:profile:_apod_profiles' \
+  '2:project dir:_directories' \
+  '-a[agent to run]:agent:(claude opencode bash)' \
+  '*'{-c,--connectors}'[enable claude.ai connectors for this run]:connectors:_apod_connectors' \
+  '*'{-m,--ro}'[mount a file or folder read-only]:path:_files' \
+  '*--rw[mount a file or folder read-write]:path:_files'
