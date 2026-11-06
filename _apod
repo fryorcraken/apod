@@ -15,6 +15,12 @@ _apod_first() {
   _apod_profiles
 }
 
+_apod_images() {
+  local -a images
+  images=(${(f)"$(podman images --format '{{.Repository}}' 2>/dev/null | sed 's|^localhost/||' | sort -u)"})
+  _describe -t images 'image' images
+}
+
 _apod_connectors() {
   local -a groups
   groups=(${(f)"$(apod --list-connectors 2>/dev/null)"})
@@ -30,6 +36,7 @@ _arguments -s -S \
   '1:profile:_apod_first' \
   '2:project dir:_directories' \
   '-a[agent to run]:agent:(claude opencode bash)' \
+  '(-i --image)'{-i,--image}'[container image for this run]:image:_apod_images' \
   '*'{-c,--connectors}'[enable claude.ai connectors for this run]:connectors:_apod_connectors' \
   '*'{-m,--ro}'[mount a file or folder read-only]:path:_files' \
   '*--rw[mount a file or folder read-write]:path:_files'

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# apod <profile> [-a claude|opencode|bash] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [project-dir] [-- agent args...]
+# apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [project-dir] [-- agent args...]
 # Run a coding agent in a podman container as a given GitHub identity.
 # Per profile: ~/.agent-pod/<profile>/home (persistent $HOME), ~/.agent-pod/<profile>/env
 # (git identity), ~/.agent-pod/<profile>/mounts (optional extra mounts), and the podman
 # secret gh-<profile> (GitHub token).
 set -euo pipefail
 
-usage() { echo "usage: apod <profile> [-a claude|opencode|bash] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [project-dir] [-- agent args...]" >&2; exit 2; }
+usage() { echo "usage: apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [project-dir] [-- agent args...]" >&2; exit 2; }
 
 # claude.ai connector groups for -c, and the connector servers each one enables.
 declare -A connector_servers=(
@@ -48,12 +48,14 @@ esac
 [ $# -ge 1 ] || usage
 profile=$1; shift
 agent=claude
+image=
 proj=
 climounts=()  # "mode path" entries from --ro/--rw, for this run only
 connectors=() # claude.ai connector groups enabled for this run (-c)
 while [ $# -gt 0 ]; do
   case $1 in
     -a)         [ $# -ge 2 ] || usage; agent=$2; shift 2 ;;
+    -i|--image) [ $# -ge 2 ] || usage; image=$2; shift 2 ;;
     -c|--connectors) [ $# -ge 2 ] || usage; IFS=, read -ra cs <<< "$2"; connectors+=("${cs[@]}"); shift 2 ;;
     -m|--ro)    [ $# -ge 2 ] || usage; climounts+=("ro $2"); shift 2 ;;
     --rw)       [ $# -ge 2 ] || usage; climounts+=("rw $2"); shift 2 ;;
@@ -67,7 +69,9 @@ proj=$(realpath "${proj:-$PWD}")
 root=${APOD_ROOT:-$HOME/.agent-pod}
 phome=$root/$profile/home
 envf=$root/$profile/env
-image=${APOD_IMAGE:-apod}
+# Image: -i, else the profile's image file (first line), else $APOD_IMAGE, else apod.
+if [ -z "$image" ] && [ -f "$root/$profile/image" ]; then image=$(head -n1 "$root/$profile/image" | tr -d '[:space:]'); fi
+image=${image:-${APOD_IMAGE:-apod}}
 
 [ -f "$envf" ] || { echo "apod: missing $envf (git identity, see README)" >&2; exit 2; }
 podman secret exists "gh-$profile" || { echo "apod: missing podman secret gh-$profile (see README)" >&2; exit 2; }

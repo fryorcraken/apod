@@ -1,0 +1,30 @@
+# Logos toolchain image: apod + Rust (as pinned by LEZ's rust-toolchain.toml) + RISC Zero.
+# Build: podman build -t logos-toolchain -f ~/src/rad/scripts/apod/Containerfile.logos-toolchain ~/src/rad/scripts/apod
+FROM localhost/apod
+
+USER root
+RUN dnf install -y gcc gcc-c++ clang cmake make pkgconf-pkg-config openssl-devel perl protobuf-compiler \
+        pcsc-lite-devel \
+    && dnf clean all
+
+# Toolchains live under /opt so the mounted /home/agent can't hide them, owned by agent so rustup
+# and rzup can add components at runtime. Cargo's registry cache stays in $HOME (persistent).
+ENV RUSTUP_HOME=/opt/rustup RISC0_HOME=/opt/risc0 PATH=/opt/cargo/bin:/opt/risc0/bin:$PATH
+RUN mkdir -p /opt/rustup /opt/cargo /opt/risc0 && chown agent:agent /opt/rustup /opt/cargo /opt/risc0
+USER agent
+
+RUN curl -fsSL https://sh.rustup.rs | CARGO_HOME=/opt/cargo sh -s -- -y --no-modify-path \
+      --profile default --default-toolchain 1.98.1
+
+# Versions match LEZ's Cargo.lock (risc0-zkvm 3.0.5). The installer always puts rzup in
+# ~/.risc0/bin; move it under RISC0_HOME, which rzup itself honours for what it installs.
+RUN curl -fsSL https://risczero.com/install | bash \
+    && mkdir -p /opt/risc0/bin && mv /home/agent/.risc0/bin/rzup /opt/risc0/bin/ \
+    && export CARGO_HOME=/opt/cargo \
+    && rzup install rust 1.91.1 \
+    && rzup install cpp 2024.1.5 \
+    && rzup install r0vm 3.0.5 \
+    && rzup install cargo-risczero 3.0.5 \
+    && rzup show
+
+ENV CARGO_HOME=/home/agent/.cargo

@@ -66,6 +66,20 @@ The first launch relabels each mounted tree for SELinux (`:z`), which can take a
 Claude is told at startup (via `--append-system-prompt`) which paths are mounted, read-write or
 read-only, and that nothing else from the host is available. opencode doesn't get this yet.
 
+## Images
+
+The image is `-i IMAGE` for one run, else the first line of `~/.agent-pod/<profile>/image`, else
+`$APOD_IMAGE`, else `apod`. `logos-toolchain` adds Rust 1.98.1 (LEZ's `rust-toolchain.toml`) and
+RISC Zero (rzup: cargo-risczero/r0vm 3.0.5, risc0 rust 1.91.1, cpp 2024.1.5) under `/opt`:
+
+```sh
+podman build -t logos-toolchain -f ~/src/rad/scripts/apod/Containerfile.logos-toolchain ~/src/rad/scripts/apod
+echo logos-toolchain > ~/.agent-pod/marclaw-logos/image
+```
+
+Rebuild it after rebuilding `apod`, or when LEZ bumps its Rust or risc0 versions. Proving is CPU-only
+in a pod; use `RISC0_DEV_MODE=1` for tests.
+
 ## claude.ai connectors
 
 Connectors (Notion, Google Docs, …) come with the Claude account, not the pod, and act as you.
