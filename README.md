@@ -14,8 +14,10 @@ In herdr, apod sets `HERDR_AGENT` on the podman process so herdr recognises the 
 ## Per profile (e.g. `marclaw`, `fryorcraken`)
 
 ```sh
-# GitHub token (fine-grained, scoped): paste it, then Ctrl-D
-podman secret create gh-marclaw -
+# GitHub token (fine-grained, scoped): prompts without echo, stores or replaces podman secret
+# gh-marclaw and prints the token's GitHub account. `apod token marclaw --rm` deletes it.
+apod token marclaw
+apod profiles        # list profiles and whether each has a token
 
 # git identity for commits made in this pod
 mkdir -p ~/.agent-pod/marclaw

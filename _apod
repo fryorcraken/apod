@@ -8,14 +8,26 @@ _apod_profiles() {
   _describe -t profiles 'profile' profiles
 }
 
+_apod_first() {
+  local -a cmds
+  cmds=('token:set, replace or remove a profile GitHub token' 'profiles:list profiles and token status')
+  _describe -t commands 'command' cmds
+  _apod_profiles
+}
+
 _apod_connectors() {
   local -a groups
   groups=(${(f)"$(apod --list-connectors 2>/dev/null)"})
   _values -s , 'connector' $groups
 }
 
+case ${words[2]} in
+  token)    _arguments '1: :(token)' '2:profile:_apod_profiles' '3:option:(--rm)'; return ;;
+  profiles) return ;;
+esac
+
 _arguments -s -S \
-  '1:profile:_apod_profiles' \
+  '1:profile:_apod_first' \
   '2:project dir:_directories' \
   '-a[agent to run]:agent:(claude opencode bash)' \
   '*'{-c,--connectors}'[enable claude.ai connectors for this run]:connectors:_apod_connectors' \

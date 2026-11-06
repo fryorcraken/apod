@@ -21,6 +21,30 @@ declare -A connector_servers=(
 # For shell completion.
 if [ "${1:-}" = --list-connectors ]; then printf '%s\n' "${!connector_servers[@]}" | sort; exit 0; fi
 
+# Subcommands: manage a profile's GitHub token (podman secret gh-<profile>), list profiles.
+case ${1:-} in
+  token)
+    [ $# -ge 2 ] || { echo "usage: apod token <profile> [--rm]" >&2; exit 2; }
+    if [ "${3:-}" = --rm ]; then
+      podman secret rm "gh-$2" >/dev/null && echo "apod: removed token for $2"
+      exit
+    fi
+    read -rsp "GitHub token for $2: " tok; echo >&2
+    [ -n "$tok" ] || { echo "apod: empty token, nothing stored" >&2; exit 2; }
+    printf %s "$tok" | podman secret create --replace "gh-$2" - >/dev/null
+    login=$(GH_TOKEN=$tok gh api user --jq .login 2>/dev/null) || login="unknown (gh api user failed)"
+    unset tok
+    echo "apod: stored token for $2 (podman secret gh-$2), GitHub account: $login"
+    exit ;;
+  profiles)
+    for d in "${APOD_ROOT:-$HOME/.agent-pod}"/*/; do
+      p=$(basename "$d"); t=missing
+      podman secret exists "gh-$p" && t=set
+      printf '%-24s token: %s\n' "$p" "$t"
+    done
+    exit ;;
+esac
+
 [ $# -ge 1 ] || usage
 profile=$1; shift
 agent=claude
