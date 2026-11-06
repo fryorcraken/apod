@@ -19,7 +19,8 @@ declare -A connector_servers=(
   [claudedocs]="Claude_Docs"
 )
 # Local MCP servers for -c, run in the pod from a read-only mount of their checkout.
-# google-docs-mcp: OAuth client from the checkout's credentials.json, Google login per profile
+# google-docs-mcp: OAuth client from the profile's google-credentials.json if present (mounted over
+# the checkout's credentials.json in the pod), else the checkout's; Google login per profile
 # (apod google-auth <profile>), limited to these scopes for both sign-in and use.
 local_mcps=(google-docs-mcp)
 gdocs_mcp=${APOD_GDOCS_MCP:-$HOME/src/fryorcraken/google-docs-mcp}
@@ -35,8 +36,13 @@ case ${1:-} in
     pdir=${APOD_ROOT:-$HOME/.agent-pod}/$2
     [ -d "$pdir" ] || { echo "apod: no profile $2" >&2; exit 2; }
     mkdir -p "$pdir/home/.config"
+    client=()
+    if [ -f "$pdir/google-credentials.json" ]; then
+      client=(GOOGLE_CLIENT_ID="$(jq -r '(.installed // .web).client_id' "$pdir/google-credentials.json")"
+              GOOGLE_CLIENT_SECRET="$(jq -r '(.installed // .web).client_secret' "$pdir/google-credentials.json")")
+    fi
     echo "apod: Google sign-in for profile $2 (scopes: $gdocs_scopes), saved under $pdir/home/.config/google-docs-mcp/" >&2
-    exec env -u GOOGLE_CLIENT_ID -u GOOGLE_CLIENT_SECRET -u GOOGLE_MCP_PROFILE \
+    exec env -u GOOGLE_CLIENT_ID -u GOOGLE_CLIENT_SECRET -u GOOGLE_MCP_PROFILE "${client[@]}" \
       XDG_CONFIG_HOME="$pdir/home/.config" GOOGLE_MCP_SCOPES="$gdocs_scopes" \
       node "$gdocs_mcp/dist/index.js" auth ;;
   token)
@@ -110,6 +116,7 @@ if [ ${#connectors[@]} -eq 0 ] && [ -f "$root/$profile/connectors" ]; then
 fi
 [ "${connectors[*]}" = none ] && connectors=()
 ccloud=(); clocal=()  # claude.ai connector groups / local MCP servers
+filemounts=()         # single files mounted over paths inside the extra mounts
 for c in "${connectors[@]}"; do
   if [ -n "${connector_servers[$c]+x}" ]; then ccloud+=("$c")
   elif [[ " ${local_mcps[*]} " == *" $c "* ]]; then clocal+=("$c")
@@ -145,6 +152,8 @@ if [[ " ${clocal[*]} " == *" google-docs-mcp "* ]]; then
   [ -f "$phome/.config/google-docs-mcp/token.json" ] || {
     echo "apod: profile $profile isn't signed in to Google. Run: apod google-auth $profile" >&2; exit 2; }
   climounts+=("ro $gdocs_mcp")
+  [ -f "$root/$profile/google-credentials.json" ] &&
+    filemounts+=(-v "$root/$profile/google-credentials.json:$gdocs_mcp/credentials.json:ro,z")
   cmd+=(--mcp-config "$(jq -cn --arg js "$gdocs_mcp/dist/index.js" --arg scopes "$gdocs_scopes" \
     '{mcpServers: {"google-docs-mcp": {command: "node", args: [$js],
       env: {GOOGLE_MCP_SCOPES: $scopes, MCP_LAZY_TOOLS: "1"}}}}')")
@@ -177,7 +186,7 @@ for path in "${morder[@]}"; do
   if [ "${mmode[$path]}" = rw ]; then rwmounts+=("$path"); mounts+=(-v "$path:$path:z")
   else romounts+=("$path"); mounts+=(-v "$path:$path:ro,z"); fi
 done
-mounts+=(-v "$proj:$proj:z")
+mounts+=("${filemounts[@]}" -v "$proj:$proj:z")
 # Share global agent instructions and skills read-only.
 [ -f "$HOME/.claude/CLAUDE.md" ] && mounts+=(-v "$HOME/.claude/CLAUDE.md:/home/agent/.claude/CLAUDE.md:ro,z")
 [ -d "$HOME/.claude/skills" ] && mounts+=(-v "$HOME/.claude/skills:/home/agent/.claude/skills:ro,z")

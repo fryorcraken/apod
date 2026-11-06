@@ -108,6 +108,12 @@ apod google-auth jitsu                       # token saved under ~/.agent-pod/ji
 apod jitsu -c google-docs-mcp ~/src/franckjitsu/teaching-aid
 ```
 
+To use a different OAuth client than the checkout's (e.g. one whose consent screen allows the
+profile's Google account), put it in `~/.agent-pod/<profile>/google-credentials.json` (Desktop app
+format, chmod 600): it's mounted over the checkout's `credentials.json` in the pod and used by
+`apod google-auth`. An existing `token.json` from the same client can be copied into
+`~/.agent-pod/<profile>/home/.config/google-docs-mcp/` instead of signing in again.
+
 Scopes are `docs,sheets,slides,drive` (no Gmail/Calendar; override with `APOD_GDOCS_SCOPES`, then
 re-run `apod google-auth`). `MCP_LAZY_TOOLS=1` keeps its tool catalog small. It can't be combined
 with `gdoc`.
