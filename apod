@@ -166,10 +166,10 @@ if [ "$agent" = claude ]; then cmd+=(--append-system-prompt "$context"); fi
 tty=(-i); [ -t 0 ] && tty+=(-t)
 
 # Rewrite GitHub SSH remotes, including github-* host aliases from ~/.ssh/config, to HTTPS
-# so pushes authenticate with the profile's token.
-rewrites=(git@github.com: ssh://git@github.com/)
+# so pushes authenticate with the profile's token. Both git@host: and bare host: forms.
+rewrites=(git@github.com: github.com: ssh://git@github.com/)
 if [ -f "$HOME/.ssh/config" ]; then
-  while read -r alias; do rewrites+=("git@$alias:"); done < <(
+  while read -r alias; do rewrites+=("git@$alias:" "$alias:" "ssh://git@$alias/"); done < <(
     awk 'tolower($1) == "host" { for (i = 2; i <= NF; i++) if ($i ~ /^github-/) print $i }' "$HOME/.ssh/config")
 fi
 gitenv=(-e "GIT_CONFIG_COUNT=${#rewrites[@]}")
