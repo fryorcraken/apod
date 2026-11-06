@@ -18,11 +18,27 @@ declare -A connector_servers=(
   [utsjitsu]="UTS_Jitsu"
   [claudedocs]="Claude_Docs"
 )
+# Local MCP servers for -c, run in the pod from a read-only mount of their checkout.
+# google-docs-mcp: OAuth client from the checkout's credentials.json, Google login per profile
+# (apod google-auth <profile>), limited to these scopes for both sign-in and use.
+local_mcps=(google-docs-mcp)
+gdocs_mcp=${APOD_GDOCS_MCP:-$HOME/src/fryorcraken/google-docs-mcp}
+gdocs_scopes=${APOD_GDOCS_SCOPES:-docs,sheets,slides,drive}
 # For shell completion.
-if [ "${1:-}" = --list-connectors ]; then printf '%s\n' "${!connector_servers[@]}" | sort; exit 0; fi
+if [ "${1:-}" = --list-connectors ]; then printf '%s\n' "${!connector_servers[@]}" "${local_mcps[@]}" | sort; exit 0; fi
 
-# Subcommands: manage a profile's GitHub token (podman secret gh-<profile>), list profiles.
+# Subcommands: manage a profile's GitHub token (podman secret gh-<profile>) and Google login,
+# list profiles.
 case ${1:-} in
+  google-auth)
+    [ $# -ge 2 ] || { echo "usage: apod google-auth <profile>" >&2; exit 2; }
+    pdir=${APOD_ROOT:-$HOME/.agent-pod}/$2
+    [ -d "$pdir" ] || { echo "apod: no profile $2" >&2; exit 2; }
+    mkdir -p "$pdir/home/.config"
+    echo "apod: Google sign-in for profile $2 (scopes: $gdocs_scopes), saved under $pdir/home/.config/google-docs-mcp/" >&2
+    exec env -u GOOGLE_CLIENT_ID -u GOOGLE_CLIENT_SECRET -u GOOGLE_MCP_PROFILE \
+      XDG_CONFIG_HOME="$pdir/home/.config" GOOGLE_MCP_SCOPES="$gdocs_scopes" \
+      node "$gdocs_mcp/dist/index.js" auth ;;
   token)
     [ $# -ge 2 ] || { echo "usage: apod token <profile> [--rm]" >&2; exit 2; }
     if [ "${3:-}" = --rm ]; then
@@ -38,9 +54,10 @@ case ${1:-} in
     exit ;;
   profiles)
     for d in "${APOD_ROOT:-$HOME/.agent-pod}"/*/; do
-      p=$(basename "$d"); t=missing
+      p=$(basename "$d"); t=missing; g=no
       podman secret exists "gh-$p" && t=set
-      printf '%-24s token: %s\n' "$p" "$t"
+      [ -f "$d/home/.config/google-docs-mcp/token.json" ] && g=yes
+      printf '%-24s token: %-8s google: %s\n' "$p" "$t" "$g"
     done
     exit ;;
 esac
@@ -92,13 +109,19 @@ if [ ${#connectors[@]} -eq 0 ] && [ -f "$root/$profile/connectors" ]; then
   while IFS=', ' read -ra cs; do connectors+=("${cs[@]}"); done < <(grep -v '^[[:space:]]*#' "$root/$profile/connectors")
 fi
 [ "${connectors[*]}" = none ] && connectors=()
+ccloud=(); clocal=()  # claude.ai connector groups / local MCP servers
 for c in "${connectors[@]}"; do
-  [ -n "${connector_servers[$c]+x}" ] || { echo "apod: unknown connector '$c' (known: ${!connector_servers[*]})" >&2; exit 2; }
+  if [ -n "${connector_servers[$c]+x}" ]; then ccloud+=("$c")
+  elif [[ " ${local_mcps[*]} " == *" $c "* ]]; then clocal+=("$c")
+  else echo "apod: unknown connector '$c' (known: ${!connector_servers[*]} ${local_mcps[*]})" >&2; exit 2; fi
 done
+if [[ " ${ccloud[*]} " == *" gdoc "* && " ${clocal[*]} " == *" google-docs-mcp "* ]]; then
+  echo "apod: use either gdoc or google-docs-mcp, not both (they overlap on Google Docs/Drive)" >&2; exit 2
+fi
 allowed=(); denied=()
 for c in "${!connector_servers[@]}"; do
   for s in ${connector_servers[$c]}; do
-    if [[ " ${connectors[*]} " == *" $c "* ]]; then allowed+=("$s"); else denied+=("mcp__claude_ai_${s}__*"); fi
+    if [[ " ${ccloud[*]} " == *" $c "* ]]; then allowed+=("$s"); else denied+=("mcp__claude_ai_${s}__*"); fi
   done
 done
 if [ ${#allowed[@]} -eq 0 ]; then
@@ -115,8 +138,17 @@ else
 fi
 case $agent in
   claude) cmd+=(--settings "$csettings") ;;
-  *) [ ${#connectors[@]} -eq 0 ] || echo "apod: -c only applies to claude; ignored for $agent" >&2 ;;
+  *) [ ${#connectors[@]} -eq 0 ] || echo "apod: -c only applies to claude; ignored for $agent" >&2; clocal=() ;;
 esac
+if [[ " ${clocal[*]} " == *" google-docs-mcp "* ]]; then
+  [ -f "$gdocs_mcp/dist/index.js" ] || { echo "apod: google-docs-mcp isn't built: $gdocs_mcp/dist/index.js is missing" >&2; exit 2; }
+  [ -f "$phome/.config/google-docs-mcp/token.json" ] || {
+    echo "apod: profile $profile isn't signed in to Google. Run: apod google-auth $profile" >&2; exit 2; }
+  climounts+=("ro $gdocs_mcp")
+  cmd+=(--mcp-config "$(jq -cn --arg js "$gdocs_mcp/dist/index.js" --arg scopes "$gdocs_scopes" \
+    '{mcpServers: {"google-docs-mcp": {command: "node", args: [$js],
+      env: {GOOGLE_MCP_SCOPES: $scopes, MCP_LAZY_TOOLS: "1"}}}}')")
+fi
 
 # Extra mounts: the profile's mounts file (one path per line, read-only unless prefixed "rw "),
 # then --ro/--rw, which override the file's mode for the same path. Each path is mounted once.
@@ -156,8 +188,11 @@ context="You are running inside an apod container (podman), profile \"$profile\"
 for p in "${rwmounts[@]}"; do context+=$'\n'"- $p (read-write)"; done
 for p in "${romounts[@]}"; do context+=$'\n'"- $p (read-only)"; done
 context+=$'\n'"Nothing else from the host is available. gh and git push over HTTPS use this profile's GitHub token. There are no permission prompts: the container is the isolation boundary."
-if [ ${#connectors[@]} -gt 0 ]; then
-  context+=$'\n'"claude.ai connectors enabled for this run: ${connectors[*]}. Others are blocked."
+if [ ${#clocal[@]} -gt 0 ]; then
+  context+=$'\n'"Local MCP servers enabled for this run: ${clocal[*]} (google-docs-mcp: Google Docs/Sheets/Slides/Drive as the profile's Google account). Servers from a project's .mcp.json that point at host paths won't start here."
+fi
+if [ ${#ccloud[@]} -gt 0 ]; then
+  context+=$'\n'"claude.ai connectors enabled for this run: ${ccloud[*]}. Others are blocked."
 else
   context+=$'\n'"claude.ai connectors (Notion, Google Docs, etc.) are disabled for this run; they can be enabled at launch with apod -c."
 fi

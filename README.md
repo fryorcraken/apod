@@ -97,6 +97,21 @@ Other known connectors are denied; a PreToolUse hook also blocks any claude.ai c
 enabled, including ones added to the account later. Don't set `disableClaudeAiConnectors` in a
 profile's settings: `true` anywhere wins and `-c` would stop working.
 
+### google-docs-mcp (local)
+
+`-c google-docs-mcp` runs `~/src/fryorcraken/google-docs-mcp` (override with `APOD_GDOCS_MCP`) in the
+pod from a read-only mount; its OAuth client comes from the checkout's `credentials.json`. Each
+profile signs in to Google once, on the host where the browser is:
+
+```sh
+apod google-auth jitsu                       # token saved under ~/.agent-pod/jitsu/home/.config/google-docs-mcp/
+apod jitsu -c google-docs-mcp ~/src/franckjitsu/teaching-aid
+```
+
+Scopes are `docs,sheets,slides,drive` (no Gmail/Calendar; override with `APOD_GDOCS_SCOPES`, then
+re-run `apod google-auth`). `MCP_LAZY_TOOLS=1` keeps its tool catalog small. It can't be combined
+with `gdoc`.
+
 ## Changing mounts or connectors mid-session
 
 A running pod can't gain mounts or connectors. Exit and relaunch with the new options, resuming

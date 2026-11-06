@@ -10,7 +10,8 @@ _apod_profiles() {
 
 _apod_first() {
   local -a cmds
-  cmds=('token:set, replace or remove a profile GitHub token' 'profiles:list profiles and token status')
+  cmds=('token:set, replace or remove a profile GitHub token' 'profiles:list profiles and token status'
+        'google-auth:sign a profile in to Google for google-docs-mcp')
   _describe -t commands 'command' cmds
   _apod_profiles
 }
@@ -29,6 +30,7 @@ _apod_connectors() {
 
 case ${words[2]} in
   token)    _arguments '1: :(token)' '2:profile:_apod_profiles' '3:option:(--rm)'; return ;;
+  google-auth) _arguments '1: :(google-auth)' '2:profile:_apod_profiles'; return ;;
   profiles) return ;;
 esac
 
