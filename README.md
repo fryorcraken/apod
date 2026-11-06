@@ -90,8 +90,8 @@ apod marclaw -c notion ~/src/logos-co/logos-docs
 apod marclaw -c gdoc,notion -- --continue
 ```
 
-Groups: `notion`, `gdoc` (Docs, Drive, Sheets), `todoist`, `canva`, `lovable`, `jitsu`, `claudedocs`.
-A profile's `connectors` file (e.g. `~/.agent-pod/jitsu/connectors` containing `gdoc,jitsu`) sets
+Groups: `notion`, `gdoc` (Docs, Drive, Sheets), `todoist`, `canva`, `lovable`, `utsjitsu`, `claudedocs`.
+A profile's `connectors` file (e.g. `~/.agent-pod/jitsu/connectors` containing `gdoc,utsjitsu`) sets
 its defaults; `-c` replaces them for the run and `-c none` turns them off.
 Other known connectors are denied; a PreToolUse hook also blocks any claude.ai connector tool not
 enabled, including ones added to the account later. Don't set `disableClaudeAiConnectors` in a

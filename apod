@@ -15,7 +15,7 @@ declare -A connector_servers=(
   [todoist]="Todoist"
   [canva]="Canva"
   [lovable]="Lovable"
-  [jitsu]="UTS_Jitsu"
+  [utsjitsu]="UTS_Jitsu"
   [claudedocs]="Claude_Docs"
 )
 # For shell completion.
