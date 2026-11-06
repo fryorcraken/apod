@@ -74,7 +74,8 @@ if [ -z "$image" ] && [ -f "$root/$profile/image" ]; then image=$(head -n1 "$roo
 image=${image:-${APOD_IMAGE:-apod}}
 
 [ -f "$envf" ] || { echo "apod: missing $envf (git identity, see README)" >&2; exit 2; }
-podman secret exists "gh-$profile" || { echo "apod: missing podman secret gh-$profile (see README)" >&2; exit 2; }
+podman secret exists "gh-$profile" || {
+  echo "apod: profile $profile has no GitHub token. Add one with: apod token $profile" >&2; exit 2; }
 mkdir -p "$phome/.claude"
 
 case $agent in
