@@ -23,7 +23,7 @@ _apod_images() {
 
 _apod_connectors() {
   local -a groups
-  groups=(${(f)"$(apod --list-connectors 2>/dev/null)"})
+  groups=(none ${(f)"$(apod --list-connectors 2>/dev/null)"})
   _values -s , 'connector' $groups
 }
 

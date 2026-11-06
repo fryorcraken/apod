@@ -84,7 +84,13 @@ case $agent in
   *) usage ;;
 esac
 
-# claude.ai connectors come with the Claude account, not the pod: off unless enabled with -c.
+# claude.ai connectors come with the Claude account, not the pod: off unless enabled with -c or
+# the profile's connectors file (groups separated by commas, spaces or lines). -c replaces the
+# file's groups for the run; "-c none" turns them all off.
+if [ ${#connectors[@]} -eq 0 ] && [ -f "$root/$profile/connectors" ]; then
+  while IFS=', ' read -ra cs; do connectors+=("${cs[@]}"); done < <(grep -v '^[[:space:]]*#' "$root/$profile/connectors")
+fi
+[ "${connectors[*]}" = none ] && connectors=()
 for c in "${connectors[@]}"; do
   [ -n "${connector_servers[$c]+x}" ] || { echo "apod: unknown connector '$c' (known: ${!connector_servers[*]})" >&2; exit 2; }
 done
