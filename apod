@@ -95,6 +95,10 @@ envf=$root/$profile/env
 # Image: -i, else the profile's image file (first line), else $APOD_IMAGE, else apod.
 if [ -z "$image" ] && [ -f "$root/$profile/image" ]; then image=$(head -n1 "$root/$profile/image" | tr -d '[:space:]'); fi
 image=${image:-${APOD_IMAGE:-apod}}
+# Network: podman's default (pasta) unless the profile's network file says otherwise, e.g. "host"
+# to share the host's network (Tailscale routes and DNS included, but also host localhost services).
+network=
+if [ -f "$root/$profile/network" ]; then network=$(head -n1 "$root/$profile/network" | tr -d '[:space:]'); fi
 
 [ -f "$envf" ] || { echo "apod: missing $envf (git identity, see README)" >&2; exit 2; }
 ghsecret=(--secret "gh-$profile,type=env,target=GH_TOKEN")
@@ -210,6 +214,9 @@ for p in "${romounts[@]}"; do context+=$'\n'"- $p (read-only)"; done
 if [ ${#ghsecret[@]} -gt 0 ]; then gh_note="gh and git push over HTTPS use this profile's GitHub token."
 else gh_note="This profile has no GitHub token: gh and HTTPS pushes are unauthenticated."; fi
 context+=$'\n'"Nothing else from the host is available. $gh_note There are no permission prompts: the container is the isolation boundary."
+if [ "$network" = host ]; then
+  context+=$'\n'"Network: this pod shares the host's network (including Tailscale and services on the host's localhost)."
+fi
 if [ -n "$sshkey" ]; then
   context+=$'\n'"SSH: an ssh-agent on the host holds this profile's key (SSH_AUTH_SOCK); the key file itself isn't in the pod. Host aliases are in ~/.ssh/config."
 fi
@@ -250,6 +257,7 @@ run=(podman run --rm "${tty[@]}" --userns=keep-id
   -e APOD_PROFILE="$profile"
   "${gitenv[@]}"
   "${mounts[@]}" -w "$proj")
+[ -z "$network" ] || run+=(--network "$network")
 cmdline=("$image" bash -lc 'gh auth setup-git >/dev/null 2>&1 || true; exec "$@"' _ "${cmd[@]}" "$@")
 [ -n "$sshkey" ] || exec "${run[@]}" "${cmdline[@]}"
 

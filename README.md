@@ -80,6 +80,20 @@ echo logos-toolchain > ~/.agent-pod/marclaw-logos/image
 Rebuild it after rebuilding `apod`, or when LEZ bumps its Rust or risc0 versions. Proving is CPU-only
 in a pod; use `RISC0_DEV_MODE=1` for tests.
 
+## Network
+
+Pods use podman's default network (pasta). On this machine that gives pods IPv6 only, so
+Tailscale (IPv4) hosts and MagicDNS aren't reachable. A profile's `network` file containing `host`
+makes its pods share the host's network instead (e.g. `~/.agent-pod/fatso/network`); they can then
+also reach services on the host's localhost.
+
+## SSH
+
+A profile's `ssh-key` file names a private key (passphrase-protected, outside the profile's home).
+apod serves it from a dedicated ssh-agent for the run (asks for the passphrase, 4h lifetime via
+`APOD_SSH_TTL`, per-use confirmation if `ssh-confirm` exists) and passes only the socket into the
+pod. Put host aliases in `~/.agent-pod/<profile>/home/.ssh/config`.
+
 ## claude.ai connectors
 
 Connectors (Notion, Google Docs, …) come with the Claude account, not the pod, and act as you.
