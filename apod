@@ -97,8 +97,11 @@ if [ -z "$image" ] && [ -f "$root/$profile/image" ]; then image=$(head -n1 "$roo
 image=${image:-${APOD_IMAGE:-apod}}
 
 [ -f "$envf" ] || { echo "apod: missing $envf (git identity, see README)" >&2; exit 2; }
-podman secret exists "gh-$profile" || {
-  echo "apod: profile $profile has no GitHub token. Add one with: apod token $profile" >&2; exit 2; }
+ghsecret=(--secret "gh-$profile,type=env,target=GH_TOKEN")
+if ! podman secret exists "gh-$profile"; then
+  echo "apod: profile $profile has no GitHub token, so gh and HTTPS pushes are unauthenticated. Add one with: apod token $profile" >&2
+  ghsecret=()
+fi
 mkdir -p "$phome/.claude"
 
 case $agent in
@@ -196,7 +199,9 @@ context="You are running inside an apod container (podman), profile \"$profile\"
 - $proj (read-write, the project)"
 for p in "${rwmounts[@]}"; do context+=$'\n'"- $p (read-write)"; done
 for p in "${romounts[@]}"; do context+=$'\n'"- $p (read-only)"; done
-context+=$'\n'"Nothing else from the host is available. gh and git push over HTTPS use this profile's GitHub token. There are no permission prompts: the container is the isolation boundary."
+if [ ${#ghsecret[@]} -gt 0 ]; then gh_note="gh and git push over HTTPS use this profile's GitHub token."
+else gh_note="This profile has no GitHub token: gh and HTTPS pushes are unauthenticated."; fi
+context+=$'\n'"Nothing else from the host is available. $gh_note There are no permission prompts: the container is the isolation boundary."
 if [ ${#clocal[@]} -gt 0 ]; then
   context+=$'\n'"Local MCP servers enabled for this run: ${clocal[*]} (google-docs-mcp: Google Docs/Sheets/Slides/Drive as the profile's Google account). Servers from a project's .mcp.json that point at host paths won't start here."
 fi
@@ -228,7 +233,7 @@ case $agent in claude|opencode) export HERDR_AGENT=$agent ;; esac
 exec podman run --rm "${tty[@]}" --userns=keep-id \
   --name "apod-$profile-$(basename "$proj")-$$" \
   --hostname "apod-$profile" \
-  --secret "gh-$profile,type=env,target=GH_TOKEN" \
+  "${ghsecret[@]}" \
   --env-file "$envf" \
   -e HOME=/home/agent \
   -e APOD_PROFILE="$profile" \
