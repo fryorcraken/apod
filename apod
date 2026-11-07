@@ -103,6 +103,14 @@ if ! podman secret exists "gh-$profile"; then
   ghsecret=()
 fi
 mkdir -p "$phome/.claude"
+# SSH: the profile's ssh-key file names a private key (ideally passphrase-protected, kept outside
+# the profile's home). It's served for this run by a dedicated ssh-agent on the host; the pod gets
+# the agent socket, never the key file.
+sshkey=
+if [ -f "$root/$profile/ssh-key" ]; then
+  sshkey=$(head -n1 "$root/$profile/ssh-key" | tr -d '[:space:]'); sshkey=${sshkey/#\~/$HOME}
+  [ -f "$sshkey" ] || { echo "apod: $root/$profile/ssh-key points at a missing key: $sshkey" >&2; exit 2; }
+fi
 
 case $agent in
   claude)   cmd=(claude --permission-mode bypassPermissions) ;;
@@ -202,6 +210,9 @@ for p in "${romounts[@]}"; do context+=$'\n'"- $p (read-only)"; done
 if [ ${#ghsecret[@]} -gt 0 ]; then gh_note="gh and git push over HTTPS use this profile's GitHub token."
 else gh_note="This profile has no GitHub token: gh and HTTPS pushes are unauthenticated."; fi
 context+=$'\n'"Nothing else from the host is available. $gh_note There are no permission prompts: the container is the isolation boundary."
+if [ -n "$sshkey" ]; then
+  context+=$'\n'"SSH: an ssh-agent on the host holds this profile's key (SSH_AUTH_SOCK); the key file itself isn't in the pod. Host aliases are in ~/.ssh/config."
+fi
 if [ ${#clocal[@]} -gt 0 ]; then
   context+=$'\n'"Local MCP servers enabled for this run: ${clocal[*]} (google-docs-mcp: Google Docs/Sheets/Slides/Drive as the profile's Google account). Servers from a project's .mcp.json that point at host paths won't start here."
 fi
@@ -230,13 +241,26 @@ done
 # this into the container.
 case $agent in claude|opencode) export HERDR_AGENT=$agent ;; esac
 
-exec podman run --rm "${tty[@]}" --userns=keep-id \
-  --name "apod-$profile-$(basename "$proj")-$$" \
-  --hostname "apod-$profile" \
-  "${ghsecret[@]}" \
-  --env-file "$envf" \
-  -e HOME=/home/agent \
-  -e APOD_PROFILE="$profile" \
-  "${gitenv[@]}" \
-  "${mounts[@]}" -w "$proj" \
-  "$image" bash -lc 'gh auth setup-git >/dev/null 2>&1 || true; exec "$@"' _ "${cmd[@]}" "$@"
+run=(podman run --rm "${tty[@]}" --userns=keep-id
+  --name "apod-$profile-$(basename "$proj")-$$"
+  --hostname "apod-$profile"
+  "${ghsecret[@]}"
+  --env-file "$envf"
+  -e HOME=/home/agent
+  -e APOD_PROFILE="$profile"
+  "${gitenv[@]}"
+  "${mounts[@]}" -w "$proj")
+cmdline=("$image" bash -lc 'gh auth setup-git >/dev/null 2>&1 || true; exec "$@"' _ "${cmd[@]}" "$@")
+[ -n "$sshkey" ] || exec "${run[@]}" "${cmdline[@]}"
+
+# Dedicated ssh-agent for this run: asks for the key's passphrase here, drops the key after
+# $APOD_SSH_TTL (default 4h), confirms each use if the profile has an ssh-confirm file, and is
+# killed when the pod exits. SELinux blocks a container from connecting to a host process's
+# socket, so this pod runs without SELinux labelling (user namespace and mounts still apply).
+adir=$root/$profile/agent; mkdir -p "$adir"; chmod 700 "$adir"
+sock=$adir/ssh-$$.sock
+eval "$(ssh-agent -a "$sock")" >/dev/null
+trap 'kill "$SSH_AGENT_PID" 2>/dev/null; rm -f "$sock"' EXIT
+addopts=(-t "${APOD_SSH_TTL:-4h}"); [ -f "$root/$profile/ssh-confirm" ] && addopts+=(-c)
+SSH_AUTH_SOCK=$sock ssh-add -q "${addopts[@]}" "$sshkey"
+"${run[@]}" -v "$adir:$adir" -e SSH_AUTH_SOCK="$sock" --security-opt label=disable "${cmdline[@]}"
