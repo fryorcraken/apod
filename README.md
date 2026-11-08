@@ -80,6 +80,25 @@ echo logos-toolchain > ~/.agent-pod/marclaw-logos/image
 Rebuild it after rebuilding `apod`, or when LEZ bumps its Rust or risc0 versions. Proving is CPU-only
 in a pod; use `RISC0_DEV_MODE=1` for tests.
 
+`dialectica` adds what dialectica's CI uses: Qt 6.8.3 (qmllint/qmlformat/qmltestrunner,
+`QT_QPA_PLATFORM=offscreen`), Node 24, yq/tomlq, GL/EGL/Vulkan runtime, Nix 2.35.2 with flakes, and
+logos-scaffold (`lgs`) 0.3.1. Build it after `logos-toolchain`:
+
+```sh
+podman build -t dialectica -f ~/src/rad/scripts/apod/Containerfile.dialectica ~/src/rad/scripts/apod
+```
+
+## Volumes
+
+A profile's `volumes` file lists named podman volumes, `NAME /path` per line, kept between runs
+(e.g. `apod-dialectica-nix /nix` for a persistent Nix store). An empty volume is filled from the
+image on first use. `podman volume rm NAME` resets it.
+
+## Sharing a GitHub token
+
+A profile's `github` file names another profile whose token (`gh-<that profile>`) it uses, e.g.
+`~/.agent-pod/dialectica/github` containing `marclaw`.
+
 ## Network
 
 Pods use podman's default network (pasta). On this machine that gives pods IPv6 only, so

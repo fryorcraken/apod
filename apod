@@ -99,11 +99,23 @@ image=${image:-${APOD_IMAGE:-apod}}
 # to share the host's network (Tailscale routes and DNS included, but also host localhost services).
 network=
 if [ -f "$root/$profile/network" ]; then network=$(head -n1 "$root/$profile/network" | tr -d '[:space:]'); fi
+# Named podman volumes from the profile's volumes file, "NAME /path" per line (e.g. a persistent
+# /nix store). Podman fills an empty named volume from the image's content at that path.
+volumes=(); volpaths=()
+if [ -f "$root/$profile/volumes" ]; then
+  while read -r vname vpath; do
+    case $vname in ''|'#'*) continue ;; esac
+    volumes+=(-v "$vname:$vpath"); volpaths+=("$vpath")
+  done < "$root/$profile/volumes"
+fi
 
 [ -f "$envf" ] || { echo "apod: missing $envf (git identity, see README)" >&2; exit 2; }
-ghsecret=(--secret "gh-$profile,type=env,target=GH_TOKEN")
-if ! podman secret exists "gh-$profile"; then
-  echo "apod: profile $profile has no GitHub token, so gh and HTTPS pushes are unauthenticated. Add one with: apod token $profile" >&2
+# GitHub token: the podman secret gh-<profile>, or another profile's if the github file names one.
+ghprofile=$profile
+if [ -f "$root/$profile/github" ]; then ghprofile=$(head -n1 "$root/$profile/github" | tr -d '[:space:]'); fi
+ghsecret=(--secret "gh-$ghprofile,type=env,target=GH_TOKEN")
+if ! podman secret exists "gh-$ghprofile"; then
+  echo "apod: profile $ghprofile has no GitHub token, so gh and HTTPS pushes are unauthenticated. Add one with: apod token $ghprofile" >&2
   ghsecret=()
 fi
 mkdir -p "$phome/.claude"
@@ -214,6 +226,9 @@ for p in "${romounts[@]}"; do context+=$'\n'"- $p (read-only)"; done
 if [ ${#ghsecret[@]} -gt 0 ]; then gh_note="gh and git push over HTTPS use this profile's GitHub token."
 else gh_note="This profile has no GitHub token: gh and HTTPS pushes are unauthenticated."; fi
 context+=$'\n'"Nothing else from the host is available. $gh_note There are no permission prompts: the container is the isolation boundary."
+if [ ${#volpaths[@]} -gt 0 ]; then
+  context+=$'\n'"Persistent volumes (kept between runs, not on the host filesystem): ${volpaths[*]}."
+fi
 if [ "$network" = host ]; then
   context+=$'\n'"Network: this pod shares the host's network (including Tailscale and services on the host's localhost)."
 fi
@@ -258,6 +273,7 @@ run=(podman run --rm "${tty[@]}" --userns=keep-id
   "${gitenv[@]}"
   "${mounts[@]}" -w "$proj")
 [ -z "$network" ] || run+=(--network "$network")
+run+=("${volumes[@]}")
 cmdline=("$image" bash -lc 'gh auth setup-git >/dev/null 2>&1 || true; exec "$@"' _ "${cmd[@]}" "$@")
 [ -n "$sshkey" ] || exec "${run[@]}" "${cmdline[@]}"
 

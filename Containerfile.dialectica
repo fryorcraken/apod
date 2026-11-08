@@ -1,0 +1,38 @@
+# Dialectica image: logos-toolchain + the tooling dialectica's CI uses (.github/workflows):
+# Qt 6.8.3 (qmllint/qmlformat/qmltestrunner), Node 24 (sitometres), yq/tomlq, GL/EGL/Vulkan runtime,
+# Nix 2.35.2 with flakes, logos-scaffold (lgs) 0.3.1.
+# Build: podman build -t dialectica -f ~/src/rad/scripts/apod/Containerfile.dialectica ~/src/rad/scripts/apod
+# Give the profile a persistent store: echo "apod-dialectica-nix /nix" > ~/.agent-pod/<profile>/volumes
+FROM localhost/logos-toolchain
+
+USER root
+RUN dnf install -y nodejs24 nodejs24-npm python3-pip xz \
+        libglvnd-opengl libglvnd-glx libglvnd-egl mesa-libGL mesa-libEGL mesa-libGLU vulkan-loader \
+        mesa-dri-drivers libxkbcommon libxkbcommon-x11 fontconfig dejavu-sans-fonts dbus-libs \
+        xcb-util-cursor xcb-util-image xcb-util-keysyms xcb-util-renderutil xcb-util-wm \
+    && dnf clean all \
+    && ln -sf /usr/bin/node-24 /usr/local/bin/node \
+    && ln -sf /usr/bin/npm-24 /usr/local/bin/npm \
+    && ln -sf /usr/bin/npx-24 /usr/local/bin/npx
+
+# Qt 6.8.3 via aqtinstall, as install-qt-action does in CI.
+RUN pip install --no-cache-dir aqtinstall yq \
+    && aqt install-qt --outputdir /opt/Qt linux desktop 6.8.3 linux_gcc_64 \
+    && rm -rf /root/.cache aqtinstall.log
+ENV QT_ROOT_DIR=/opt/Qt/6.8.3/gcc_64 PATH=/opt/Qt/6.8.3/gcc_64/bin:$PATH QT_QPA_PLATFORM=offscreen
+
+# Nix, single-user and owned by agent; the per-profile /nix volume keeps the store between runs.
+RUN mkdir -p /nix /etc/nix && chown agent:agent /nix \
+    && printf 'experimental-features = nix-command flakes\nsandbox = false\n' > /etc/nix/nix.conf
+USER agent
+# The installer's profile lives under $HOME, which the mounted profile home hides at runtime, so
+# also register Nix in /nix/var/nix/profiles/default (inside /nix, and a GC root).
+RUN curl -fsSL https://releases.nixos.org/nix/nix-2.35.2/install | sh -s -- --no-daemon --no-modify-profile \
+    && nix=$(readlink -f /home/agent/.nix-profile) \
+    && "$nix/bin/nix-env" -p /nix/var/nix/profiles/default --set "$nix" \
+    && /nix/var/nix/profiles/default/bin/nix --version
+ENV PATH=/nix/var/nix/profiles/default/bin:$PATH NIX_SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt
+
+# logos-scaffold (lgs), into /opt/cargo/bin which is on PATH.
+RUN CARGO_HOME=/opt/cargo cargo install logos-scaffold --version 0.3.1 --locked \
+    && rm -rf /opt/cargo/registry /opt/cargo/git
