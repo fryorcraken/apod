@@ -158,6 +158,10 @@ the conversation: `apod marclaw --rw ~/new/dir -c notion <project> -- --continue
 
 ## Notes
 
+- Agent view and background sessions are off in pods (`CLAUDE_CODE_DISABLE_AGENT_VIEW=1`): the pod
+  lives only as long as its main process, so backgrounded sessions would die with it. Use herdr
+  panes on the host to run several pods side by side.
+
 - The project dir is mounted read-write, plus any `mounts` entries. Give each pod its own worktree; two pods on one checkout will collide.
 - Pods can write `.git/hooks` and `.claude/settings.json` in the mounted repo, which then run on the host.
   Use per-pod worktrees, or set `core.hooksPath` to an empty dir in your host git config.

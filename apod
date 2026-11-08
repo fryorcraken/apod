@@ -270,6 +270,7 @@ run=(podman run --rm "${tty[@]}" --userns=keep-id
   --env-file "$envf"
   -e HOME=/home/agent
   -e APOD_PROFILE="$profile"
+  -e CLAUDE_CODE_DISABLE_AGENT_VIEW=1
   "${gitenv[@]}"
   "${mounts[@]}" -w "$proj")
 [ -z "$network" ] || run+=(--network "$network")
