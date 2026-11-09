@@ -7,7 +7,7 @@ not the agent, is the security boundary.
 
 ## Where it lives
 
-- **Radicle (primary):** `rad clone RAD_RID`, published by `fryorgearo`
+- **Radicle (primary):** `rad clone rad:z2CjA38QDC7c5tgBkPV23UippSCjK`, published by `fryorgearo`
   (`did:key:z6MkowunyxpkcgCx2DdndJwebjcpk5pEnhaDE8JH3MbLnDBe`).
 - **GitHub (mirror):** <https://github.com/fryorcraken/apod>
 
@@ -37,7 +37,7 @@ Requirements: rootless podman, bash, jq, git; `gh` and `node` on the host only f
 `apod token` and `apod google-auth`.
 
 ```sh
-git clone https://github.com/fryorcraken/apod ~/src/rad/apod    # or: rad clone RAD_RID
+git clone https://github.com/fryorcraken/apod ~/src/rad/apod    # or: rad clone rad:z2CjA38QDC7c5tgBkPV23UippSCjK
 podman build -t apod ~/src/rad/apod
 ln -s ~/src/rad/apod/apod ~/.local/bin/apod
 # zsh completion (oh-my-zsh puts $ZSH_CUSTOM/completions on $fpath), then: rm -f ~/.zcompdump*; exec zsh
