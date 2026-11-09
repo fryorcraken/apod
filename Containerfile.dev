@@ -1,0 +1,7 @@
+# apod-dev image: apod + the tools to lint and syntax-check apod itself (zsh for _apod, shellcheck).
+# Build: podman build -t apod-dev -f ~/src/rad/apod/Containerfile.dev ~/src/rad/apod
+FROM localhost/apod
+
+USER root
+RUN dnf install -y zsh ShellCheck && dnf clean all
+USER agent
