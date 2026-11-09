@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
-"""End-to-end tests for apod-broker and gh-shim, without GitHub: a fake gh (real gh for --help,
-canned answers otherwise) and a local git upstream (git http-backend). Run: python3 tests/test_broker.py
+"""End-to-end tests for apod-broker and its pod shim, without GitHub, Radicle or sshd: a fake gh
+(the real gh for --help, canned answers otherwise), a local git upstream (git http-backend), a
+plain repository standing in for Radicle storage, real ssh-agents and ssh-keygen.
+Run: python3 tests/test_broker.py (KEEP=1 keeps the temporary directory)
 """
+import base64
+import itertools
+import socket
+import struct
 import http.server
 import json
 import os
@@ -18,7 +24,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
 BROKER = HERE / "apod-broker"
-SHIM = HERE / "gh-shim"
+SHIM = HERE / "broker/pod-shim"
+RID = "z3gqcJUoA1n9HaHKufZs5FCSGazv5"
+NID = "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
 REAL_GH = shutil.which("gh")
 
 FAKE_GH = textwrap.dedent(f"""\
@@ -89,6 +97,97 @@ class CGIUpstream(http.server.BaseHTTPRequestHandler):
     do_GET = do_POST = run
 
 
+FAKE_REMOTE_RAD = textwrap.dedent("""\
+    #!/usr/bin/env python3
+    # A stand-in for git-remote-rad: pushes into our namespace in storage, $FAKE_RAD_ONWARD/<rid>
+    # (refs/patches becomes refs/heads/patches-pushed), records push options next to it.
+    import os, subprocess, sys
+    url = sys.argv[2]
+    rid = url.split("://", 1)[1].split("/")[0]
+    onward = os.path.join(os.environ["FAKE_RAD_ONWARD"], rid)
+    opts, out = [], sys.stdout
+    for line in sys.stdin:
+        line = line.rstrip("\\n")
+        if line == "capabilities":
+            out.write("push\\noption\\n\\n")
+        elif line.startswith("option push-option "):
+            opts.append(line.split(" ", 2)[2]); out.write("ok\\n")
+        elif line.startswith("option "):
+            out.write("unsupported\\n")
+        elif line.startswith("list"):
+            ns = "refs/namespaces/" + os.environ["FAKE_RAD_NID"] + "/"
+            refs = subprocess.run(["git", "-C", onward, "for-each-ref", "--format=%(objectname) %(refname)", ns],
+                                  capture_output=True, text=True).stdout.replace(ns, "")
+            out.write(refs + "\\n")
+        elif line.startswith("push "):
+            batch = [line]
+            for l in sys.stdin:
+                if l.strip() == "":
+                    break
+                batch.append(l.strip())
+            for b in batch:
+                spec = b.split(" ", 1)[1]
+                src, dst = spec.lstrip("+").split(":")
+                to = "refs/namespaces/" + os.environ["FAKE_RAD_NID"] + "/" + \\
+                    ("refs/heads/patches-pushed" if dst == "refs/patches" else dst)
+                r = subprocess.run(["git", "push", "-q", "--force" if spec.startswith("+") else "--no-force",
+                                    onward, f"{src}:{to}"], capture_output=True, text=True)
+                out.write(f"ok {dst}\\n" if r.returncode == 0 else f"error {dst} {r.stderr.strip()}\\n")
+            with open(onward + ".options", "a") as f:
+                f.write("\\n".join(opts) + "\\n")
+            out.write("\\n")
+        elif line == "":
+            break
+        out.flush()
+""")
+
+
+class Echo(socketserver.BaseRequestHandler):
+    """Stands in for sshd behind the broker's CONNECT."""
+
+    def handle(self):
+        for d in iter(lambda: self.request.recv(65536), b""):
+            self.request.sendall(d)
+
+
+def sshstr(b):
+    return struct.pack(">I", len(b)) + b
+
+
+class Agent:
+    """A minimal ssh-agent protocol client."""
+
+    def __init__(self, path):
+        self.s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.s.connect(str(path))
+
+    def call(self, msg):
+        self.s.sendall(struct.pack(">I", len(msg)) + msg)
+        n = struct.unpack(">I", self.s.recv(4))[0]
+        out = b""
+        while len(out) < n:
+            out += self.s.recv(n - len(out))
+        return out
+
+    def identities(self):
+        r = self.call(bytes([11]))
+        n, i, blobs = struct.unpack(">I", r[1:5])[0], 5, []
+        for _ in range(n):
+            ln = struct.unpack(">I", r[i:i + 4])[0]
+            blobs.append(r[i + 4:i + 4 + ln])
+            i += 4 + ln
+            i += 4 + struct.unpack(">I", r[i:i + 4])[0]
+        return blobs
+
+    def sign(self, blob, data):
+        r = self.call(bytes([13]) + sshstr(blob) + sshstr(data) + struct.pack(">I", 0))
+        return r[5:] if r[0] == 14 else None
+
+
+def blob_of(pubfile):
+    return base64.b64decode(Path(pubfile).read_text().split()[1])
+
+
 class BrokerTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -100,7 +199,34 @@ class BrokerTest(unittest.TestCase):
         bin_.mkdir()
         (bin_ / "gh").write_text(FAKE_GH)
         (bin_ / "gh").chmod(0o755)
-        os.symlink(SHIM, bin_ / "apod-git-forward")
+        (bin_ / "git-remote-rad").write_text(FAKE_REMOTE_RAD)
+        (bin_ / "git-remote-rad").chmod(0o755)
+        for name in ("apod-git-forward", "apod-sign", "apod-ssh-connect"):
+            os.symlink(SHIM, bin_ / name)
+        cls.n = itertools.count()
+        # The host's ssh setup: a config entry for "fatso" (an echo server stands in for sshd) and
+        # its host key in known_hosts; a user key for logins and one for signing.
+        home = cls.tmp / "home"
+        (home / ".ssh").mkdir(parents=True)
+        cls.echo = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Echo)
+        threading.Thread(target=cls.echo.serve_forever, daemon=True).start()
+        port = cls.echo.server_address[1]
+        for k in ("hostkey", "hostkey2", "userkey", "signkey"):
+            subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", k, "-f", cls.tmp / k], check=True)
+        (home / ".ssh/config").write_text(f"Host fatso\n  HostName 127.0.0.1\n  Port {port}\n"
+                                          f"Host *\n  UserKnownHostsFile {home}/.ssh/known_hosts\n")
+        hk = (cls.tmp / "hostkey.pub").read_text().split()
+        (home / ".ssh/known_hosts").write_text(f"[127.0.0.1]:{port} {hk[0]} {hk[1]}\n")
+        # Radicle storage: canonical refs and our namespace, and where pushes go on to.
+        store = cls.tmp / "radstore" / RID
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "master", store], check=True)
+        rseed = cls.tmp / "rseed"
+        subprocess.run(["git", "init", "-q", "-b", "master", rseed], check=True)
+        subprocess.run(["git", "-C", rseed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+                        "--allow-empty", "-m", "rad init"], check=True)
+        subprocess.run(["git", "-C", rseed, "push", "-q", str(store), "master",
+                        f"master:refs/namespaces/{NID}/refs/heads/master"], check=True)
+        cls.onward = store
         # Upstream git server with a bare repo acme/widget holding main.
         up = cls.tmp / "upstream"
         (up / "acme").mkdir(parents=True)
@@ -115,9 +241,13 @@ class BrokerTest(unittest.TestCase):
         cls.upstream = socketserver.ThreadingTCPServer(("127.0.0.1", 0), CGIUpstream)
         threading.Thread(target=cls.upstream.serve_forever, daemon=True).start()
         cls.env = dict(os.environ, APOD_ROOT=str(cls.root), APOD_GH_BIN=str(bin_ / "gh"),
-                       APOD_GH_ASK_TIMEOUT="4",
-                       APOD_GH_GIT_UPSTREAM=f"http://127.0.0.1:{cls.upstream.server_address[1]}")
-        cls.env.pop("GH_REPO", None)
+                       APOD_BROKER_ASK_TIMEOUT="4", HOME=str(home), APOD_SSH_CONFIG=str(home / ".ssh/config"),
+                       APOD_GH_GIT_UPSTREAM=f"http://127.0.0.1:{cls.upstream.server_address[1]}",
+                       FAKE_RAD_ONWARD=str(cls.tmp / "radstore"), FAKE_RAD_NID=NID,
+                       PATH=f"{bin_}:{os.environ['PATH']}")
+        for k in list(cls.env):
+            if k in ("GH_REPO", "SSH_AUTH_SOCK") or k.startswith(("GIT_AUTHOR_", "GIT_COMMITTER_", "GIT_CONFIG")):
+                cls.env.pop(k)
         cls.broker = subprocess.Popen([sys.executable, BROKER, "serve"], env=cls.env,
                                       stderr=open(cls.tmp / "broker.log", "w"))
         for _ in range(100):
@@ -141,18 +271,38 @@ class BrokerTest(unittest.TestCase):
             shutil.rmtree(cls.tmp, ignore_errors=True)
 
     @classmethod
-    def register(cls, persona, scope, user=""):
-        args = ["register", "--profile", "test", "--persona", persona, "--project", "/p"]
-        if user:
-            args += ["--user", user]
+    def register(cls, persona, scope, user="", toml="", remotes=()):
+        pdir = cls.tmp / "profiles" / f"p{next(cls.n)}"
+        pdir.mkdir(parents=True)
+        (pdir / "env").write_text("GIT_AUTHOR_NAME=Agent\nGIT_AUTHOR_EMAIL=agent@example.com\n"
+                                  "GIT_COMMITTER_NAME=Agent\nGIT_COMMITTER_EMAIL=agent@example.com\n")
+        (pdir / "broker.toml").write_text((f'[gh]\nuser = "{user}"\n' if user else "") + toml)
+        args = ["register", "--profile", "test", "--profile-dir", str(pdir), "--persona", persona, "--project", "/p"]
         for s in scope:
             args += ["--scope", s]
+        for u in remotes:
+            args += ["--remote", u]
         r = subprocess.run([sys.executable, BROKER, *args], env=cls.env, capture_output=True, text=True)
         assert r.returncode == 0, r.stderr
-        return json.loads(r.stdout)
+        sess = json.loads(r.stdout)
+        for k in sess["need_keys"]:  # what apod does with ssh-add
+            subprocess.run(["ssh-add", "-q", k["path"]], env=dict(cls.env, SSH_AUTH_SOCK=sess["agent"]), check=True)
+        return sess
+
+    def pod_env(self, sess, forward=None):
+        """The pod's environment for a session: its env and git config, paths mapped to the test's."""
+        e = dict(self.env, APOD_BROKER_SOCK=str(Path(sess["dir"]) / "broker.sock"), GIT_TERMINAL_PROMPT="0",
+                 GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+        e.update({k: v.replace(sess["pod_dir"], sess["dir"]) for k, v in sess["env"].items()})
+        cfg = [(k.replace("{forward}", forward or "x"), v.replace("/usr/local/bin/", str(self.shim_bin) + "/"))
+               for k, v in sess["git_config"]] + [("user.name", "Agent"), ("user.email", "agent@example.com")]
+        e["GIT_CONFIG_COUNT"] = str(len(cfg))
+        for i, (k, v) in enumerate(cfg):
+            e[f"GIT_CONFIG_KEY_{i}"], e[f"GIT_CONFIG_VALUE_{i}"] = k, v
+        return e
 
     def gh(self, *args, sess=None, cwd=None, input=None, expect=0, env=None):
-        e = dict(self.env, APOD_GH_SOCK=str(Path((sess or self.sess)["dir"]) / "gh.sock"), **(env or {}))
+        e = dict(self.env, APOD_BROKER_SOCK=str(Path((sess or self.sess)["dir"]) / "broker.sock"), **(env or {}))
         r = subprocess.run([sys.executable, SHIM, *args], cwd=cwd or self.work, env=e, input=input,
                            capture_output=True, text=True)
         if expect is not None:
@@ -208,13 +358,13 @@ class BrokerTest(unittest.TestCase):
         r = self.gh("api", "user", expect=1)  # not in persona: asks
         self.assertIn("api GET /user", r.stderr)
         r = self.gh("secret", "list", expect=1)
-        self.assertIn("not allowed for persona dev: secret list", r.stderr)
+        self.assertIn("not allowed for persona dev: gh:secret list", r.stderr)
         r = self.gh("extension", "list", expect=1)
         self.assertIn("never allowed", r.stderr)
 
     def test_approve_once_and_for_session(self):
         p = subprocess.Popen([sys.executable, SHIM, "pr", "merge", "7", "--squash"], cwd=self.work,
-                             env=dict(self.env, APOD_GH_SOCK=str(Path(self.sess["dir"]) / "gh.sock")),
+                             env=dict(self.env, APOD_BROKER_SOCK=str(Path(self.sess["dir"]) / "broker.sock")),
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         eid = None
         for _ in range(40):
@@ -230,7 +380,7 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual(json.loads(o)["argv"], ["pr", "merge", "--squash", "7"])
         # Not granted beyond once: rejected again; then granted for the session, it passes.
         r = self.gh("pr", "merge", "8", expect=1)
-        eid = r.stderr.split("apod gh allow ")[1].split()[0]
+        eid = r.stderr.split("apod broker allow ")[1].split()[0]
         self.assertEqual(self.admin("allow", eid, "--session").returncode, 0)
         self.gh("pr", "merge", "8")
 
@@ -287,15 +437,11 @@ class BrokerTest(unittest.TestCase):
         self.gh("auth", "setup-git")
 
     def git_env(self, sess):
-        # What apod's wrapper does in the pod: start the forwarder, point github.com at it.
-        e = dict(self.env, APOD_GH_SOCK=str(Path(sess["dir"]) / "gh.sock"), GIT_TERMINAL_PROMPT="0",
-                 GIT_CONFIG_NOSYSTEM="1", HOME=str(self.tmp))
+        # What apod's wrapper does in the pod: start the forwarder, put its URL in the git config.
+        e = self.pod_env(sess)
         url = subprocess.run([str(self.shim_bin / "apod-git-forward")], env=e, capture_output=True,
                              text=True, check=True).stdout.strip()
-        e.update(GIT_CONFIG_COUNT="3", GIT_CONFIG_KEY_0=f"url.{url}.insteadOf", GIT_CONFIG_VALUE_0="https://github.com/",
-                 GIT_CONFIG_KEY_1=f"url.{url}.insteadOf", GIT_CONFIG_VALUE_1="git@github.com:",
-                 GIT_CONFIG_KEY_2="user.name", GIT_CONFIG_VALUE_2="t")
-        return e
+        return self.pod_env(sess, url)
 
     def test_git_clone_push_branch_and_default(self):
         e = self.git_env(self.sess)
@@ -309,10 +455,10 @@ class BrokerTest(unittest.TestCase):
         r = subprocess.run(["git", "-C", d, "push", "origin", "HEAD:main"], env=e, capture_output=True, text=True)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("needs your approval", r.stderr)
-        self.assertIn("git push default-branch", r.stderr)
+        self.assertIn("github:push default-branch", r.stderr)
         r = subprocess.run(["git", "-C", d, "push", "origin", ":topic"], env=e, capture_output=True, text=True)
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("git push delete", r.stderr)
+        self.assertIn("github:push delete", r.stderr)
         # Out of scope: a public repo can be fetched, not pushed.
         r = subprocess.run(["git", "ls-remote", "https://github.com/other/public"], env=e, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -341,6 +487,134 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual(p.returncode, 0, err)
         self.assertIn("waiting", err.lower())
 
+    # --- sign ------------------------------------------------------------------------------
+
+    def test_sign_commits(self):
+        sess = self.register("dev", [], toml=f'[sign]\nkey = "{self.tmp}/signkey"\n')
+        self.assertIn("sign", sess["providers"])
+        repo = self.tmp / "signed"
+        e = self.pod_env(sess)
+        subprocess.run(["git", "init", "-q", repo], check=True, env=e)
+        r = subprocess.run(["git", "-C", repo, "commit", "-q", "--allow-empty", "-m", "signed"], env=e,
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        obj = subprocess.run(["git", "-C", repo, "cat-file", "commit", "HEAD"], env=e, capture_output=True,
+                             text=True).stdout
+        self.assertIn("-----BEGIN SSH SIGNATURE-----", obj)
+        allowed = self.tmp / "allowed_signers"
+        allowed.write_text("agent@example.com " + (self.tmp / "signkey.pub").read_text())
+        r = subprocess.run(["git", "-C", repo, "-c", f"gpg.ssh.allowedSignersFile={allowed}", "verify-commit", "HEAD"],
+                           env=e, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Good", r.stderr)
+        # Signing as someone else: out of scope, waits, fails.
+        r = subprocess.run(["git", "-C", repo, "commit", "-q", "--allow-empty", "-m", "other",
+                            "--author", "Mallory <m@evil.example>"], env=e, capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("as m@evil.example", self.admin("log", "-n", "3").stdout)
+
+    # --- ssh -------------------------------------------------------------------------------
+
+    def bind(self, agent, hostkey, sid):
+        """session-bind@openssh.com as ssh sends it, signed by a host key held in a helper agent."""
+        helper = self.tmp / "helper.sock"
+        if not helper.exists():
+            subprocess.Popen(["ssh-agent", "-D", "-a", str(helper)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            for _ in range(50):
+                if helper.exists():
+                    break
+                time.sleep(0.05)
+            for k in ("hostkey", "hostkey2"):
+                subprocess.run(["ssh-add", "-q", self.tmp / k], env=dict(self.env, SSH_AUTH_SOCK=str(helper)), check=True)
+        hk = blob_of(self.tmp / f"{hostkey}.pub")
+        sig = Agent(helper).sign(hk, sid)
+        msg = bytes([27]) + sshstr(b"session-bind@openssh.com") + sshstr(hk) + sshstr(sid) + sshstr(sig) + b"\0"
+        return agent.call(msg)[0]
+
+    def login_data(self, sid, user, key):
+        return sshstr(sid) + bytes([50]) + sshstr(user.encode()) + sshstr(b"ssh-connection") + \
+            sshstr(b"publickey") + b"\1" + sshstr(b"ssh-ed25519") + sshstr(key)
+
+    def test_ssh_agent_signs_only_for_hosts_in_scope(self):
+        sess = self.register("ops", [], toml=f'[ssh]\nkey = "{self.tmp}/userkey"\nhosts = ["fatso"]\n')
+        sock = Path(sess["dir"]) / "agent.sock"
+        user = blob_of(self.tmp / "userkey.pub")
+        a = Agent(sock)
+        self.assertEqual(a.identities(), [user])  # the broker's other keys (signing) aren't offered
+        sid = os.urandom(32)
+        self.assertEqual(self.bind(a, "hostkey", sid), 6)
+        self.assertIsNotNone(a.sign(user, self.login_data(sid, "me", user)))
+        # A forged binding (signature over another session id) is refused by the real agent.
+        b = Agent(sock)
+        hk = blob_of(self.tmp / "hostkey.pub")
+        self.assertEqual(b.call(bytes([27]) + sshstr(b"session-bind@openssh.com") + sshstr(hk) + sshstr(os.urandom(32))
+                                + sshstr(b"\0" * 20) + b"\0")[0], 5)
+        # No binding: refused (after asking).
+        self.assertIsNone(b.sign(user, self.login_data(os.urandom(32), "me", user)))
+        # Another host: waits for approval; approved for the session, it then passes.
+        c = Agent(sock)
+        sid2 = os.urandom(32)
+        self.assertEqual(self.bind(c, "hostkey2", sid2), 6)
+        self.assertIsNone(c.sign(user, self.login_data(sid2, "root", user)))
+        log = self.admin("log", "-n", "1").stdout
+        self.assertIn("ssh login as root to key:SHA256:", log)
+        eid = log.split()[0]
+        self.admin("allow", eid, "--session")
+        self.assertIsNotNone(c.sign(user, self.login_data(sid2, "root", user)))
+        # Not a login: never signed through the pod's agent.
+        self.assertIsNone(a.sign(user, b"some other data"))
+
+    def test_ssh_connect_through_broker(self):
+        sess = self.register("ops", [], toml=f'[ssh]\nkey = "{self.tmp}/userkey"\nhosts = ["fatso"]\n')
+        e = self.pod_env(sess)
+        r = subprocess.run([str(self.shim_bin / "apod-ssh-connect"), "fatso", "22"], input=b"hello", env=e,
+                           capture_output=True, timeout=20)
+        self.assertEqual(r.stdout, b"hello", r.stderr)
+        r = subprocess.run([str(self.shim_bin / "apod-ssh-connect"), "evil.example", "22"], input=b"x", env=e,
+                           capture_output=True, timeout=20)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(b"rejected", r.stderr)
+        known = (Path(sess["dir"]) / "known_hosts").read_text()
+        self.assertIn("fatso ssh-ed25519", known)
+        self.assertIn("ProxyCommand", (Path(sess["dir"]) / "ssh_config").read_text())
+
+    # --- rad -------------------------------------------------------------------------------
+
+    def test_rad_fetch_and_push(self):
+        toml = f'[rad]\nnid = "{NID}"\nstorage = "{self.tmp}/radstore"\nhome = "{self.tmp}/radhome"\n'
+        sess = self.register("dev", [], toml=toml, remotes=[f"rad://{RID}"])
+        self.assertIn("rad", sess["providers"])
+        self.assertIn(f"rad:{RID}", sess["scope"])
+        e = self.git_env(sess)
+        d = self.tmp / "radclone"
+        r = subprocess.run(["git", "clone", "-q", f"rad://{RID}", d], env=e, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        refs = subprocess.run(["git", "-C", d, "ls-remote", "origin"], env=e, capture_output=True, text=True).stdout
+        self.assertIn("refs/heads/master", refs)
+        self.assertNotIn("namespaces", refs)
+        subprocess.run(["git", "-C", d, "commit", "-q", "--allow-empty", "-m", "work"], env=e, check=True)
+        r = subprocess.run(["git", "-C", d, "push", "origin", "HEAD:refs/heads/topic"], env=e, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        head = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"], env=e, capture_output=True, text=True).stdout.strip()
+        onward = lambda ref: subprocess.run(["git", "-C", self.onward, "rev-parse", "-q", "--verify",
+                                             f"refs/namespaces/{NID}/{ref}"], capture_output=True, text=True).stdout.strip()
+        self.assertEqual(onward("refs/heads/topic"), head)
+        r = subprocess.run(["git", "-C", d, "push", "-o", "patch.message=hi", "origin", "HEAD:refs/patches"], env=e,
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(onward("refs/heads/patches-pushed"), head)
+        self.assertIn("patch.message=hi", Path(str(self.onward) + ".options").read_text())
+        r = subprocess.run(["git", "-C", d, "push", "origin", "HEAD:master"], env=e, capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("rad:push default-branch", r.stderr)
+        self.assertNotEqual(onward("refs/heads/master"), head)
+        # Rewriting topic: a force push, which dev doesn't have.
+        subprocess.run(["git", "-C", d, "commit", "-q", "--amend", "--allow-empty", "-m", "rewritten"], env=e, check=True)
+        r = subprocess.run(["git", "-C", d, "push", "-f", "origin", "HEAD:refs/heads/topic"], env=e, capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("rad:push force", r.stderr)
+        self.assertEqual(onward("refs/heads/topic"), head)
+
     def test_tui_approves(self):
         import fcntl
         import pty
@@ -348,7 +622,7 @@ class BrokerTest(unittest.TestCase):
         import struct
         import termios
         p = subprocess.Popen([sys.executable, SHIM, "release", "delete", "v9", "--yes"], cwd=self.work,
-                             env=dict(self.env, APOD_GH_SOCK=str(Path(self.sess["dir"]) / "gh.sock")),
+                             env=dict(self.env, APOD_BROKER_SOCK=str(Path(self.sess["dir"]) / "broker.sock")),
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         for _ in range(40):
             if "release delete" in self.admin("pending").stdout:

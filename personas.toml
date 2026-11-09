@@ -1,21 +1,25 @@
-# Personas for the apod gh broker (apod-broker). A pod launched with --gh PERSONA gets these
-# actions on the repositories, owners and projects in its scope; anything else waits for your
-# approval. Override or add personas in ~/.agent-pod/gh-personas.toml (a persona there replaces
-# the one of the same name here). Approvals "for the persona" go to ~/.agent-pod/broker/grants.json.
+# Personas for the apod broker. A pod whose profile has a broker.toml (or that's launched with
+# --persona) gets these actions on what's in its scope; anything else waits for your approval.
+# Override or add personas in ~/.agent-pod/personas.toml (a persona there replaces the one of the
+# same name here). Approvals "for the persona" are saved in ~/.agent-pod/broker/grants.json.
 #
-# Actions are matched as shell-style patterns (* matches anything, including /):
-#   gh commands      "pr create", "issue comment", "project item-edit"; risky flags add
-#                    "<command> --<flag>", e.g. "pr merge --admin", "repo create --public"
-#   REST             "api METHOD PATH", with the repository as {repo} ("api GET /repos/{repo}/pulls/*")
-#                    and orgs/users as {owner} ("api GET /orgs/{owner}/teams")
-#   GraphQL          "graphql query FIELD", "graphql mutation NAME" (top-level fields; repository,
-#                    node ids, organization/user logins are checked against the scope)
-#   git              "git fetch", "git fetch public" (public repositories outside the scope),
-#                    "git push branch", "git push default-branch", "git push tag", "git push delete"
+# One list per provider; entries are shell-style patterns (* matches anything, including /):
+#   gh      gh commands ("pr create", "project item-edit"; risky flags add "<command> --<flag>",
+#           e.g. "pr merge --admin"); REST as "api METHOD PATH" with the repository as {repo}
+#           ("api GET /repos/{repo}/pulls/*") and orgs/users as {owner}; GraphQL as
+#           "graphql query FIELD" or "graphql mutation NAME" (top-level fields; repository,
+#           organization/user and node ids are checked against the scope)
+#   github  git over https to github.com: "fetch", "fetch public" (public repositories outside
+#           the scope), "push branch", "push default-branch", "push tag", "push delete"
+#   rad     git to rad:// remotes: "fetch", "push branch", "push default-branch", "push patch"
+#           (HEAD:refs/patches), "push tag", "push delete", "push force" (not a fast-forward)
+#   sign    "commit", "tag" (signed as the profile's git identity; anyone else is out of scope)
+#   ssh     "connect" (through the broker, ProxyCommand), "login" (the agent signs a login);
+#           which hosts is the scope's business (broker.toml [ssh] hosts, --scope ssh:HOST)
 
 [personas.reader]
-description = "Read code, PRs, issues and CI"
-allow = [
+description = "Read code, PRs, issues and CI; fetch"
+gh = [
   "pr list", "pr view", "pr diff", "pr checks", "pr status",
   "issue list", "issue view", "issue status",
   "run list", "run view", "run watch", "workflow list", "workflow view",
@@ -24,40 +28,44 @@ allow = [
   "repo gitignore *", "repo license *",
   "api GET /repos/{repo}", "api GET /repos/{repo}/*", "api GET /rate_limit",
   "graphql query repository", "graphql query rateLimit", "graphql query node", "graphql query nodes",
-  "git fetch", "git fetch public",
 ]
+github = ["fetch", "fetch public"]
+rad = ["fetch"]
+sign = ["commit", "tag"]
+ssh = ["connect", "login"]
 
 [personas.dev]
-description = "reader + push branches, create and edit PRs, create and comment on issues"
+description = "reader + push branches, open patches, create and edit PRs, create and comment on issues"
 extends = ["reader"]
-allow = [
+gh = [
   "pr create", "pr edit", "pr comment", "pr ready",
   "issue create", "issue comment",
-  "git push branch",
   "api POST /repos/{repo}/issues/*/comments", "api POST /repos/{repo}/pulls/*/comments",
   "api POST /repos/{repo}/pulls/*/comments/*/replies", "api PATCH /repos/{repo}/issues/comments/*",
-  "api GET /repos/{repo}/actions/runs/*/logs", "api GET /repos/{repo}/actions/jobs/*/logs",
   "graphql mutation addComment", "graphql mutation addPullRequestReviewComment",
   "graphql mutation addPullRequestReviewThreadReply", "graphql mutation resolveReviewThread",
 ]
+github = ["push branch"]
+rad = ["push branch", "push patch"]
 
 [personas.maintainer]
-description = "dev + merge and review PRs, manage issues and CI runs, fork and create repositories"
+description = "dev + merge and review PRs, manage issues and CI runs, fork and create repositories, tags"
 extends = ["dev"]
-allow = [
+gh = [
   "pr merge", "pr review", "pr close", "pr reopen", "pr update-branch",
   "issue edit", "issue close", "issue reopen", "label create", "label edit",
   "run rerun", "run cancel", "workflow run",
   "repo fork", "repo create",
-  "git push delete", "git push tag",
   "graphql mutation mergePullRequest", "graphql mutation addPullRequestReview",
   "graphql mutation submitPullRequestReview",
 ]
+github = ["push delete", "push tag"]
+rad = ["push delete", "push tag"]
 
 [personas.pm]
 description = "Project boards: read, move and add items, add fields; edit, create and comment on issues"
 extends = ["reader"]
-allow = [
+gh = [
   "project list", "project view", "project item-list", "project field-list",
   "project item-add", "project item-edit", "project item-archive", "project item-create",
   "project field-create", "project mark-template", "project copy", "project link",
@@ -72,3 +80,10 @@ allow = [
   "graphql mutation updateIssue", "graphql mutation addLabelsToLabelable",
   "graphql mutation removeLabelsFromLabelable", "graphql mutation addComment",
 ]
+
+[personas.ops]
+description = "ssh to the hosts in scope, sign commits; nothing on GitHub or Radicle beyond fetching"
+github = ["fetch", "fetch public"]
+rad = ["fetch"]
+sign = ["commit", "tag"]
+ssh = ["connect", "login"]

@@ -2,8 +2,8 @@
 
 `apod` runs coding agents (Claude Code, opencode, or a plain shell) in rootless podman containers,
 one **profile** per identity. Each profile has its own git identity, Claude login, mounts, image
-and network, and either its own GitHub token or no token at all, with GitHub reached through the
-host's [gh broker](#gh-broker). An agent can run with no permission prompts while the container,
+and network, and either its own GitHub token or no credentials at all, with GitHub, Radicle,
+commit signing and ssh handled by the host's [broker](#broker). An agent can run with no permission prompts while the container,
 not the agent, is the security boundary.
 
 ## Where it lives
@@ -35,8 +35,8 @@ herdr panes:
 ## Install
 
 Requirements: rootless podman, bash, jq, git; `gh` and `node` on the host only for
-`apod token` and `apod google-auth`; for the gh broker, `gh` logged in on the host and
-Python 3.11 or later (the pods' image has Python too).
+`apod token` and `apod google-auth`; for the broker, Python 3.11 or later and OpenSSH 8.9 or
+later on the host (the pods' image has both), plus `gh` logged in for GitHub and `rad` for Radicle.
 
 ```sh
 git clone https://github.com/fryorcraken/apod ~/src/rad/apod    # or: rad clone rad:z2CjA38QDC7c5tgBkPV23UippSCjK
@@ -74,16 +74,16 @@ inside the pod. Claude is told at startup what is mounted and what isn't.
 
 ```
 apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]...
-     [--gh PERSONA[:USER]] [--gh-scope SCOPE]... [dir] [-- agent args]
+     [--persona P] [--scope SCOPE]... [dir] [-- agent args]
 apod resume [--list|--latest|--claude] [dir]   resume a stopped Claude session started in dir
 apod history                                   folders and profiles launched, most recent first
 apod ps                                        running pods: profile, session, status, folder
 apod profiles                                  profiles, and whether each has a GitHub token / Google login
 apod token <profile> [--rm]                    set, replace or remove a profile's GitHub token
 apod google-auth <profile>                     sign a profile in to Google for google-docs-mcp
-apod gh [ui]|log [-f]|pending|sessions|personas  the gh broker: approval TUI, requests, sessions
-apod gh allow ID [--session|--persona]         approve a request (once, for the pod, for the persona)
-apod gh deny ID | grants [rm PERSONA ACTION] | restart | stop
+apod broker [ui]|log [-f]|pending|sessions|personas  the broker: approval TUI, requests, sessions
+apod broker allow ID [--session|--persona]     approve a request (once, for the pod, for the persona)
+apod broker deny ID | grants [rm PERSONA ACTION] | keys | restart | stop
 ```
 
 ## Profile files
@@ -99,8 +99,7 @@ Everything lives in `~/.agent-pod/<profile>/` (`APOD_ROOT` overrides the root):
 | `network` | `host` to share the host's network, e.g. to reach Tailscale hosts. |
 | `volumes` | Named podman volumes, `NAME /path` per line, e.g. `apod-myproj-nix /nix`. |
 | `github` | Use another profile's GitHub token (`gh-<that profile>`). |
-| `gh` | Use the gh broker instead of a token: `PERSONA` or `PERSONA:USER` (`--gh` overrides, `--gh none` turns it off). |
-| `gh-scope` | Extra gh broker scope, one entry per line (as `--gh-scope`). |
+| `broker.toml` | Use the [broker](#broker) instead of a token and `ssh-key` (`--persona none` turns it off for a run). |
 | `ssh-key` | Path to a passphrase-protected private key, served from a per-run ssh-agent. |
 | `ssh-confirm` | If present, confirm every use of that key on the host. |
 | `connectors` | Default claude.ai connector groups (`-c` replaces them). |
@@ -109,75 +108,129 @@ Everything lives in `~/.agent-pod/<profile>/` (`APOD_ROOT` overrides the root):
 The GitHub token is the podman secret `gh-<profile>`; without one, `gh` and HTTPS pushes are
 unauthenticated.
 
-### gh broker
+### Broker
 
-A profile with a `gh` file (or a run with `--gh`) gets no GitHub token. Instead, the pod's `gh` is a
-shim that sends each command to a broker on the host, `apod-broker`, which runs the real `gh` as one
-of the host's `gh` accounts if the pod's **persona** allows it. git's github.com remotes go through
-the broker too, so `git fetch` and `git push` need no token in the pod either. The broker starts
-with the first pod that uses it and keeps running; its state is in `~/.agent-pod/broker/`.
+A profile with a `broker.toml` (or a run with `--persona`) gets no credentials at all. A broker on
+the host, `apod-broker`, acts for the pod instead, through a socket directory mounted at
+`/run/apod-broker`:
 
-```sh
-apod work --gh dev ~/src/org/repo                  # persona dev, host gh's active account
-apod work --gh maintainer:fryorcraken ~/src/org/repo --gh-scope fryorcraken/*
-echo dev:fryorcraken > ~/.agent-pod/work/gh        # the profile's default
-apod gh                                            # approve requests in a terminal UI
+- **gh**: the pod's `gh` is a shim; the broker runs the real `gh` as one of the host's `gh`
+  accounts.
+- **github**: git's github.com remotes go through the broker, which pushes and fetches with that
+  account's token.
+- **rad**: `rad://` remotes go through the broker, which fetches from the host's Radicle storage
+  and pushes as the host's Radicle identity.
+- **sign**: git signs commits and tags with an SSH key held by the broker (`gpg.format=ssh`).
+- **ssh**: the pod's `SSH_AUTH_SOCK` is the broker's agent, which signs logins only to the hosts
+  in scope; connections go through the host too, so the pod needs no route to them.
+
+Every request is checked against the session's **persona** (what it may do) and **scope** (what
+it may touch); anything else waits for your approval. The broker starts with the first pod that
+uses it and keeps running; its state is in `~/.agent-pod/broker/`.
+
+```toml
+# ~/.agent-pod/work/broker.toml
+persona = "dev"
+scope = ["logos-co/*", "project:logos-co/5"]   # plus the project's GitHub and Radicle remotes
+
+[gh]
+user = "fryorcraken"            # host gh account (gh auth login --hostname github.com); default: the active one
+
+[sign]
+key = "~/.ssh/id_agent_sign"    # its .pub next to it; commit.gpgsign and tag.gpgsign on (auto = false: off)
+
+[ssh]
+key = "~/.ssh/id_agent"         # or keys = [...]; confirm = true to confirm each use on the host
+hosts = ["fatso", "root@q"]     # a host's name in the host's ~/.ssh/config, any user or USER@
+proxy = true                    # connect through the broker (the default); false: the pod connects itself
+
+[rad]
+home = "~/.radicle"             # RAD_HOME of the identity pushes land as (default $RAD_HOME or ~/.radicle)
 ```
 
-**Personas** (`gh-personas.toml` in this checkout; override or add your own in
-`~/.agent-pod/gh-personas.toml`; `apod gh personas` lists what each allows):
+```sh
+apod work ~/src/org/repo                           # as broker.toml says
+apod work --persona maintainer --scope fryorcraken/* ~/src/org/repo
+apod broker                                        # approve requests in a terminal UI
+```
+
+**Keys** (ssh, signing, and the Radicle key in `home/keys/radicle`) live in the broker's own
+ssh-agent, never in the pod. At launch, apod loads the ones it doesn't hold yet with `ssh-add`,
+which asks for their passphrases (they expire after `APOD_SSH_TTL`, default `4h`). After a broker
+restart, `apod broker keys` loads them again. One key can serve several hosts: the destination is
+checked per login, so there's no need for a key per host.
+
+**Personas** (`personas.toml` in this checkout; override or add your own in
+`~/.agent-pod/personas.toml`; `apod broker personas` lists what each allows). Each has one list
+per provider (`gh`, `github`, `rad`, `sign`, `ssh`):
 
 - `reader`: view PRs, issues, CI runs and repositories, read the REST and GraphQL APIs for the
-  repositories in scope, fetch.
-- `dev`: reader plus push branches (not the default branch), create and edit PRs, comment, create
-  issues.
+  repositories in scope, fetch; sign commits; ssh to the hosts in scope.
+- `dev`: reader plus push branches (not the default branch), open Radicle patches, create and edit
+  PRs, comment, create issues.
 - `maintainer`: dev plus merge and review PRs, edit and close issues, re-run CI, fork and create
   repositories, push tags and delete branches.
 - `pm`: reader plus project boards (list, view, add and move items, add fields, templates) and
   editing, creating and commenting on issues.
+- `ops`: ssh to the hosts in scope and sign commits; fetch only.
 
-**Scope.** A session only touches what's in its scope: the GitHub remotes of the project folder,
-plus the profile's `gh-scope` file and `--gh-scope`. Entries are `OWNER/REPO`, `OWNER/*`, `OWNER`
-(owner-level reads and creating repositories there) and `project:OWNER/NUMBER` (or
-`project:OWNER/*`). Forks and repositories the session creates join its scope.
+**Scope.** The project folder's GitHub and Radicle remotes, the profile's git identity, then
+`broker.toml`'s `scope` (and `[ssh] hosts`) and `--scope`. Entries: `OWNER/REPO`, `OWNER/*`,
+`OWNER` (owner-level reads, creating repositories there), `project:OWNER/NUMBER` (or
+`project:OWNER/*`), `rad:RID`, `ssh:HOST` or `ssh:USER@HOST`, `email:ADDRESS` (signing as another
+identity). Forks and repositories the session creates join its scope.
 
-**Approvals.** A request outside the persona or the scope waits (`APOD_GH_ASK_TIMEOUT`, default 90
-seconds; 0 rejects at once) and shows up in `apod gh` (a terminal UI), `apod gh pending` and as
-a desktop notification. Allow it once, for the rest of the session, or for the persona (saved in
-`~/.agent-pod/broker/grants.json`). A rejected request can be allowed after the fact for the
-session or the persona, and the agent retries. `apod gh log -f` follows every request with its
-decision. Some commands are never allowed: `auth`, `extension`, `alias`, `config`, `ssh-key`,
-`gpg-key`, `codespace`, `browse`.
+**Approvals.** A request outside the persona or the scope waits (`APOD_BROKER_ASK_TIMEOUT`,
+default 90 seconds; 0 rejects at once) and shows up in `apod broker` (a terminal UI),
+`apod broker pending` and as a desktop notification. Allow it once, for the rest of the session,
+or for the persona (saved in `~/.agent-pod/broker/grants.json`). A rejected request can be allowed
+after the fact for the session or the persona, and the agent retries. `apod broker log -f`
+follows every request with its decision. Some gh commands are never allowed: `auth`, `extension`,
+`alias`, `config`, `ssh-key`, `gpg-key`, `codespace`, `browse`.
 
-In the TUI (`apod gh`): view 1 lists waiting requests (with the seconds left) above recent ones,
-with the selected request's actions, targets and reason below; `a` allows once, `s` for the
-session, `p` for the persona, `d` denies, and it beeps and jumps to a new waiting request. View 2
-lists sessions with their scope and grants (`x` removes one), view 3 the persona grants (`x`
-removes one). Tab or 1–3 switch views, `q` quits.
+In the TUI: view 1 lists waiting requests (with the seconds left) above recent ones, with the
+selected request's actions, targets and reason below; `a` allows once, `s` for the session, `p`
+for the persona, `d` denies, and it beeps and jumps to a new waiting request. View 2 lists
+sessions with their scope and grants (`x` removes one), view 3 the persona grants (`x` removes
+one). Tab or 1–3 switch views, `q` quits.
 
-**How requests are classified.** gh commands by their full name, aliases resolved (`pr ls` is
-`pr list`), with risky flags as their own actions (`pr merge --admin`). `gh api` by method and path
-(`api GET /repos/{repo}/pulls/*`), the repository checked against the scope. GraphQL by operation
-and top-level field (`graphql query repository`, `graphql mutation addComment`): `repository` and
-`organization`/`user` arguments and any node ids (looked up on GitHub) are checked against the
-scope; a query or mutation that can't be scoped that way waits for approval. git pushes by ref:
-`git push branch`, `git push default-branch`, `git push tag`, `git push delete`.
+**How requests are classified.**
+
+- gh: commands by their full name, aliases resolved (`pr ls` is `pr list`), risky flags as their own
+  actions (`pr merge --admin`); `gh api` by method and path (`api GET /repos/{repo}/pulls/*`);
+  GraphQL by operation and top-level field (`graphql mutation addComment`), with `repository`,
+  `organization`/`user` arguments and node ids (looked up on GitHub) checked against the scope. A
+  query or mutation that can't be scoped that way waits for approval.
+- github and rad pushes by ref: `push branch`, `push default-branch`, `push tag`, `push delete`,
+  and for Radicle `push patch` (`HEAD:refs/patches`, push options such as `-o patch.message=...`
+  passed on) and `push force` (a branch update that isn't a fast-forward). A Radicle push lands in
+  a staging repository the broker owns first, then the broker pushes it on with the host's
+  `git-remote-rad`; nothing from the pod's repository runs on the host.
+- sign: `commit` or `tag`, by the author, committer or tagger email (in scope: the profile's git
+  identity).
+- ssh: `login` to the host whose host key the pod's ssh binds to the agent (OpenSSH 8.9's
+  `session-bind`, verified by the broker's ssh-agent, matched against the host's `known_hosts`
+  for the names in scope), every hop of a forwarded agent included; `connect` for the
+  ProxyCommand, where `ssh NAME` follows the host's ssh config for NAME. The pod gets the host's
+  known keys for the hosts in scope.
 
 **In the pod.** The broker runs `gh` with an empty config and home of its own and no access to the
-pod's files, so the shim sends the current repository and branch (for `-R` and the PR of the
-current branch) and the contents of files a command names (`--body-file`, `-F key=@file`,
-`--input`, release assets). Arguments that name host paths are refused. `gh repo clone` and
-`gh pr checkout` run locally through git. `pr create --fill` isn't available (pass `--title` and
-`--body`), and `gh auth status` describes the session. Pods using the broker run without SELinux
-labelling, as for `ssh-key`.
+pod's files, so the shim sends the current repository and branch and the contents of files a
+command names (`--body-file`, `-F key=@file`, `--input`, release assets). Arguments that name host
+paths are refused. `gh repo clone` and `gh pr checkout` run locally through git; `pr create
+--fill` isn't available (pass `--title` and `--body`); `gh auth status` describes the session.
+Pods using the broker run without SELinux labelling, as for `ssh-key`.
 
-Real-container check (the broker's own tests, `python3 tests/test_broker.py`, use a fake `gh` and a
-local git server):
+Real-container check (the broker's own tests, `python3 tests/test_broker.py`, use a fake `gh`, a
+local git server, a stand-in for Radicle storage and real ssh-agents):
 
 ```sh
-apod work --gh dev -a bash ~/src/org/repo
+apod work -a bash ~/src/org/repo
 gh auth status; gh pr list; git fetch; git push origin HEAD:refs/heads/apod-broker-test
-gh pr merge 1                                      # waits: approve or deny in apod gh
+git commit --allow-empty -m test && git log --show-signature -1
+ssh fatso true; ssh some-other-host true          # the second one waits: apod broker
+git push rad HEAD:refs/patches -o patch.message="broker test"
+gh pr merge 1                                      # waits: approve or deny in apod broker
 ```
 
 ### Mounts
@@ -263,9 +316,10 @@ rebuilding `apod`.
 - Pods can write `.git/hooks` and `.claude/settings.json` in a mounted repo, which then run on the
   host. Give pods their own worktrees, or point `core.hooksPath` at an empty folder on the host.
 - Two pods on one checkout will collide; use one worktree per pod.
-- Tokens should be fine-grained and scoped to what the profile needs. With the gh broker, pods
-  hold no token at all. The broker listens only on unix sockets: one per pod, mounted into that
-  pod alone, and an admin socket in `~/.agent-pod/broker/` (mode 0700) for `apod gh`.
+- Tokens should be fine-grained and scoped to what the profile needs. With the broker, pods hold
+  no token or key at all. The broker listens only on unix sockets: a directory per pod, mounted
+  into that pod alone, and an admin socket in `~/.agent-pod/broker/` (mode 0700) for
+  `apod broker`. What a pod does once logged in to a host is up to that host's account.
 
 ## Contributing
 

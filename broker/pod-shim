@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""gh for apod pods: sends gh commands to the host's apod gh broker, which runs the real gh with
-the session's GitHub account if the session's persona allows it (or once you approve it).
+"""The pod's side of the apod broker, one script under several names (mounted in /usr/local/bin):
 
-Mounted in the pod as /usr/local/bin/gh and /usr/local/bin/apod-git-forward. As
-apod-git-forward it serves git's github.com remotes on 127.0.0.1 (a random port and path secret)
-and relays them to the broker, which pushes and fetches with the account's token.
+  gh                 sends gh commands to the broker, which runs the real gh on the host
+  apod-git-forward   serves git's github.com and rad:// remotes on 127.0.0.1 (a random port and a
+                     path secret) and relays them to the broker
+  apod-sign          git's gpg.ssh.program: the broker signs commits and tags (-Y sign); verifying
+                     (-Y verify, find-principals, check-novalidate) runs the pod's ssh-keygen
+  apod-ssh-connect   ssh's ProxyCommand: the broker connects to the host, if it's in scope
 """
 import base64
 import http.client
@@ -17,7 +19,7 @@ import subprocess
 import sys
 import threading
 
-SOCK = os.environ.get("APOD_GH_SOCK", "/run/apod-gh/gh.sock")
+SOCK = os.environ.get("APOD_BROKER_SOCK", "/run/apod-broker/broker.sock")
 GH_REMOTE = re.compile(r"^(?:https?://(?:[^@/]+@)?github\.com/|(?:ssh://)?(?:git@)?(?:github\.com|github-[^:/]+)[:/])"
                        r"([^/]+)/([^/]+?)(?:\.git)?/?$")
 
@@ -108,7 +110,7 @@ def call(argv, capture=False):
         c.request("POST", "/gh", json.dumps(body), {"Content-Type": "application/json"})
         r = c.getresponse()
     except OSError as e:
-        sys.exit(f"gh (apod): can't reach the gh broker at {SOCK}: {e}")
+        sys.exit(f"gh (apod): can't reach the apod broker at {SOCK}: {e}")
     if r.status != 200:
         sys.exit(f"gh (apod): the broker answered {r.status}: {r.read().decode(errors='replace').strip()}")
     out, code = b"", 1
@@ -139,14 +141,14 @@ def local_auth(argv):
         try:
             w = whoami()
         except OSError as e:
-            sys.exit(f"gh (apod): can't reach the gh broker at {SOCK}: {e}")
-        print(f"github.com\n  ✓ Using the apod gh broker as {w['login']} (persona {w['persona']})\n"
+            sys.exit(f"gh (apod): can't reach the apod broker at {SOCK}: {e}")
+        print(f"github.com\n  ✓ Using the apod broker as {w['login']} (persona {w['persona']})\n"
               f"  - Scope: {', '.join(w['scope']) or 'none'}\n  - Allowed: {', '.join(w['allowed'])}\n"
               f"  - Anything else waits for the user's approval on the host. No token is available in this pod.")
         return 0
     if sub == "setup-git":
         return 0  # git's github.com remotes already go through the broker
-    print("gh (apod): gh auth isn't available here: requests go through the host's apod gh broker, "
+    print("gh (apod): gh auth isn't available here: requests go through the host's apod broker, "
           "and no token is available in the pod.", file=sys.stderr)
     return 1
 
@@ -265,8 +267,76 @@ def forward():
         threading.Thread(target=serve_conn, args=(conn, secret), daemon=True).start()
 
 
+# ---------------------------------------------------------------------------------------------
+# apod-sign: git's gpg.ssh.program
+
+def sign(argv):
+    if "-Y" not in argv or argv[argv.index("-Y") + 1:argv.index("-Y") + 2] != ["sign"]:
+        os.execv("/usr/bin/ssh-keygen", ["ssh-keygen", *argv])
+    ns = argv[argv.index("-n") + 1] if "-n" in argv else "git"
+    keyfile = argv[argv.index("-f") + 1] if "-f" in argv else None
+    path = argv[-1]
+    pub = open(keyfile).read().strip() if keyfile and os.path.isfile(keyfile) else ""
+    with open(path, "rb") as f:
+        data = f.read()
+    try:
+        c = UnixHTTP()
+        c.request("POST", "/sign", json.dumps({"namespace": ns, "pubkey": pub,
+                                               "data": base64.b64encode(data).decode()}),
+                  {"Content-Type": "application/json"})
+        r = json.loads(c.getresponse().read())
+    except (OSError, ValueError) as e:
+        sys.exit(f"apod-sign: can't reach the apod broker at {SOCK}: {e}")
+    if "signature" not in r:
+        sys.exit(f"apod-sign: {r.get('error', 'signing failed')}")
+    with open(path + ".sig", "w") as f:
+        f.write(r["signature"])
+    return 0
+
+
+# ---------------------------------------------------------------------------------------------
+# apod-ssh-connect: ssh's ProxyCommand
+
+def ssh_connect(argv):
+    if len(argv) != 2:
+        sys.exit("usage: apod-ssh-connect HOST PORT")
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.connect(SOCK)
+    except OSError as e:
+        sys.exit(f"apod-ssh-connect: can't reach the apod broker at {SOCK}: {e}")
+    s.sendall(f"CONNECT {argv[0]}:{argv[1]} HTTP/1.1\r\nHost: {argv[0]}\r\n\r\n".encode())
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        d = s.recv(4096)
+        if not d:
+            break
+        buf += d
+    head, _, rest = buf.partition(b"\r\n\r\n")
+    if not head.startswith(b"HTTP/1.1 200"):
+        rest += b"".join(iter(lambda: s.recv(65536), b""))
+        try:
+            sys.exit(f"apod-ssh-connect: {json.loads(rest)['error']}")
+        except (ValueError, KeyError):
+            sys.exit(f"apod-ssh-connect: {head.decode(errors='replace')}")
+    if rest:
+        os.write(1, rest)
+    t = threading.Thread(target=lambda: [os.write(1, d) for d in iter(lambda: s.recv(65536), b"")], daemon=True)
+    t.start()
+    for d in iter(lambda: os.read(0, 65536), b""):
+        s.sendall(d)
+    s.shutdown(socket.SHUT_WR)
+    t.join()
+    return 0
+
+
 if __name__ == "__main__":
-    if os.path.basename(sys.argv[0]) == "apod-git-forward":
+    name = os.path.basename(sys.argv[0])
+    if name == "apod-git-forward":
         forward()
+    elif name == "apod-sign":
+        sys.exit(sign(sys.argv[1:]))
+    elif name == "apod-ssh-connect":
+        sys.exit(ssh_connect(sys.argv[1:]))
     else:
         sys.exit(gh(sys.argv[1:]))

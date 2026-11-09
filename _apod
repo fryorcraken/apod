@@ -16,7 +16,7 @@ _apod_first() {
         'resume:resume a stopped Claude session started in a folder (this pane'"'"'s, or pick)'
         'history:folders and profiles launched, most recent first'
         'ps:running pods with their profile, folder and session'
-        'gh:gh broker: approvals, request log, sessions, web UI')
+        'broker:the broker: approvals, request log, sessions, keys')
   _describe -t commands 'command' cmds
   _apod_profiles
 }
@@ -46,15 +46,16 @@ case ${words[2]} in
               '(--list --claude)--latest[resume the newest without asking]' \
               '(--list --latest)--claude[use Claude'"'"'s own session picker]' '2:folder:_directories'; return ;;
   profiles|history|ps) return ;;
-  gh)
+  broker|gh)
     if (( CURRENT == 3 )); then
       local -a sub
-      sub=('ui:terminal UI to approve requests (also plain apod gh)' 'log:recent requests (-f to follow, -n N)'
+      sub=('ui:terminal UI to approve requests (also plain apod broker)' 'log:recent requests (-f to follow, -n N)'
            'pending:requests waiting for approval' 'allow:approve a request (--session, --persona)'
            'deny:deny a waiting request' 'sessions:sessions with their persona and scope'
            'personas:personas and what they allow' 'grants:approvals saved for personas (rm PERSONA ACTION)'
+           'keys:load keys the sessions use into the broker agent (after a restart)'
            'restart:restart the broker (sessions are kept)' 'stop:stop the broker')
-      _describe -t commands 'gh broker command' sub
+      _describe -t commands 'broker command' sub
     elif [[ ${words[3]} == allow ]]; then
       _arguments '3:request id:' '4:scope:(--session --persona)'
     fi
@@ -69,5 +70,5 @@ _arguments -s -S \
   '*'{-c,--connectors}'[enable claude.ai connectors for this run]:connectors:_apod_connectors' \
   '*'{-m,--ro}'[mount a file or folder read-only]:path:_files' \
   '*--rw[mount a file or folder read-write]:path:_files' \
-  '--gh[use the gh broker with this persona (PERSONA or PERSONA:USER, none)]:persona:_apod_personas' \
-  '*--gh-scope[add to the gh broker scope (OWNER/REPO, OWNER/*, OWNER, project:OWNER/N)]:scope:'
+  '--persona[use the broker with this persona (none: no broker)]:persona:_apod_personas' \
+  '*--scope[add to the broker scope (OWNER/REPO, OWNER/*, OWNER, project:OWNER/N, rad:RID, ssh:[USER@]HOST, email:ADDR)]:scope:'
