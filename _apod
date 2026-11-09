@@ -5,6 +5,7 @@
 _apod_profiles() {
   local -a profiles
   profiles=(${APOD_ROOT:-$HOME/.agent-pod}/*(N/:t))
+  profiles=(${profiles:#broker})
   _describe -t profiles 'profile' profiles
 }
 
@@ -14,9 +15,16 @@ _apod_first() {
         'google-auth:sign a profile in to Google for google-docs-mcp'
         'resume:resume a stopped Claude session started in a folder (this pane'"'"'s, or pick)'
         'history:folders and profiles launched, most recent first'
-        'ps:running pods with their profile, folder and session')
+        'ps:running pods with their profile, folder and session'
+        'gh:gh broker: approvals, request log, sessions, web UI')
   _describe -t commands 'command' cmds
   _apod_profiles
+}
+
+_apod_personas() {
+  local -a personas
+  personas=(none ${(f)"$(apod --list-personas 2>/dev/null)"})
+  _describe -t personas 'persona' personas
 }
 
 _apod_images() {
@@ -38,6 +46,19 @@ case ${words[2]} in
               '(--list --claude)--latest[resume the newest without asking]' \
               '(--list --latest)--claude[use Claude'"'"'s own session picker]' '2:folder:_directories'; return ;;
   profiles|history|ps) return ;;
+  gh)
+    if (( CURRENT == 3 )); then
+      local -a sub
+      sub=('ui:print the URL of the approval page' 'log:recent requests (-f to follow, -n N)'
+           'pending:requests waiting for approval' 'allow:approve a request (--session, --persona)'
+           'deny:deny a waiting request' 'sessions:sessions with their persona and scope'
+           'personas:personas and what they allow' 'grants:approvals saved for personas (rm PERSONA ACTION)'
+           'restart:restart the broker (sessions are kept)' 'stop:stop the broker')
+      _describe -t commands 'gh broker command' sub
+    elif [[ ${words[3]} == allow ]]; then
+      _arguments '3:request id:' '4:scope:(--session --persona)'
+    fi
+    return ;;
 esac
 
 _arguments -s -S \
@@ -47,4 +68,6 @@ _arguments -s -S \
   '(-i --image)'{-i,--image}'[container image for this run]:image:_apod_images' \
   '*'{-c,--connectors}'[enable claude.ai connectors for this run]:connectors:_apod_connectors' \
   '*'{-m,--ro}'[mount a file or folder read-only]:path:_files' \
-  '*--rw[mount a file or folder read-write]:path:_files'
+  '*--rw[mount a file or folder read-write]:path:_files' \
+  '--gh[use the gh broker with this persona (PERSONA or PERSONA:USER, none)]:persona:_apod_personas' \
+  '*--gh-scope[add to the gh broker scope (OWNER/REPO, OWNER/*, OWNER, project:OWNER/N)]:scope:'

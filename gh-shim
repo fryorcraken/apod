@@ -1,0 +1,272 @@
+#!/usr/bin/env python3
+"""gh for apod pods: sends gh commands to the host's apod gh broker, which runs the real gh with
+the session's GitHub account if the session's persona allows it (or once you approve it).
+
+Mounted in the pod as /usr/local/bin/gh and /usr/local/bin/apod-git-forward. As
+apod-git-forward it serves git's github.com remotes on 127.0.0.1 (a random port and path secret)
+and relays them to the broker, which pushes and fetches with the account's token.
+"""
+import base64
+import http.client
+import json
+import os
+import re
+import secrets
+import socket
+import subprocess
+import sys
+import threading
+
+SOCK = os.environ.get("APOD_GH_SOCK", "/run/apod-gh/gh.sock")
+GH_REMOTE = re.compile(r"^(?:https?://(?:[^@/]+@)?github\.com/|(?:ssh://)?(?:git@)?(?:github\.com|github-[^:/]+)[:/])"
+                       r"([^/]+)/([^/]+?)(?:\.git)?/?$")
+
+
+class UnixHTTP(http.client.HTTPConnection):
+    def __init__(self):
+        super().__init__("localhost")
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.connect(SOCK)
+
+
+def git(*args):
+    r = subprocess.run(["git", *args], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def remote_repo(url):
+    m = GH_REMOTE.match(url or "")
+    return f"{m.group(1)}/{m.group(2)}" if m else None
+
+
+def context():
+    """The current repository and branch, resolved as gh does (gh-resolved base, then upstream,
+    github, origin), and the head of a PR from this branch (OWNER:branch when it's a fork's)."""
+    ctx = {}
+    if os.environ.get("GH_REPO"):
+        ctx["repo"] = os.environ["GH_REPO"]
+    cfg = git("config", "--get-regexp", r"^(remote\..*\.(url|gh-resolved|pushurl)|branch\..*\.(remote|pushremote)|remote\.pushdefault)$")
+    if cfg is None and "repo" not in ctx:
+        return ctx
+    remotes, resolved, conf = {}, None, {}
+    for line in (cfg or "").splitlines():
+        k, _, v = line.partition(" ")
+        conf[k] = v
+        m = re.match(r"^remote\.(.+)\.url$", k)
+        if m and remote_repo(v):
+            remotes[m.group(1)] = remote_repo(v)
+        m = re.match(r"^remote\.(.+)\.gh-resolved$", k)
+        if m:
+            resolved = m.group(1) if v == "base" else None
+            if v not in ("base", ""):
+                ctx.setdefault("repo", v)
+    if "repo" not in ctx and remotes:
+        for name in [resolved, "upstream", "github", "origin", *remotes]:
+            if name in remotes:
+                ctx["repo"] = remotes[name]
+                break
+    branch = git("symbolic-ref", "--short", "-q", "HEAD")
+    if branch:
+        ctx["branch"] = branch
+        push = conf.get(f"branch.{branch}.pushremote") or conf.get("remote.pushdefault") or conf.get(f"branch.{branch}.remote")
+        head_repo = remotes.get(push)
+        if head_repo and ctx.get("repo") and head_repo.split("/")[0].lower() != ctx["repo"].split("/")[0].lower():
+            ctx["head"] = f"{head_repo.split('/')[0]}:{branch}"
+    return ctx
+
+
+def files_for(argv):
+    """Contents of the pod files the command names (the broker can't see the pod's files)."""
+    files, total = {}, 0
+    for a in argv:
+        cands = [a]
+        if "=" in a:
+            k, _, v = a.partition("=")
+            cands += [v, v[1:] if v.startswith("@") else v]
+        if "#" in a:
+            cands.append(a.split("#")[0])
+        for c in cands:
+            if c and c != "-" and c not in files and os.path.isfile(c):
+                size = os.path.getsize(c)
+                if total + size > 50 << 20:
+                    sys.exit(f"gh (apod): files too large to send to the broker: {c}")
+                total += size
+                with open(c, "rb") as f:
+                    files[c] = base64.b64encode(f.read()).decode()
+    return files
+
+
+def call(argv, capture=False):
+    body = {"argv": argv, "ctx": context(), "files": files_for(argv),
+            "tty": (os.get_terminal_size(1).columns if sys.stdout.isatty() else 0) if not capture else 0}
+    if any(a == "-" or a.endswith("@-") for a in argv):
+        body["stdin"] = base64.b64encode(sys.stdin.buffer.read()).decode()
+    try:
+        c = UnixHTTP()
+        c.request("POST", "/gh", json.dumps(body), {"Content-Type": "application/json"})
+        r = c.getresponse()
+    except OSError as e:
+        sys.exit(f"gh (apod): can't reach the gh broker at {SOCK}: {e}")
+    if r.status != 200:
+        sys.exit(f"gh (apod): the broker answered {r.status}: {r.read().decode(errors='replace').strip()}")
+    out, code = b"", 1
+    for line in r:
+        msg = json.loads(line)
+        if msg["t"] == "exit":
+            code = msg["code"]
+        else:
+            data = base64.b64decode(msg["d"])
+            if capture and msg["t"] == "out":
+                out += data
+            else:
+                stream = sys.stdout.buffer if msg["t"] == "out" else sys.stderr.buffer
+                stream.write(data)
+                stream.flush()
+    return (code, out) if capture else code
+
+
+def whoami():
+    c = UnixHTTP()
+    c.request("GET", "/whoami")
+    return json.loads(c.getresponse().read())
+
+
+def local_auth(argv):
+    sub = argv[1] if len(argv) > 1 else ""
+    if sub == "status":
+        try:
+            w = whoami()
+        except OSError as e:
+            sys.exit(f"gh (apod): can't reach the gh broker at {SOCK}: {e}")
+        print(f"github.com\n  ✓ Using the apod gh broker as {w['login']} (persona {w['persona']})\n"
+              f"  - Scope: {', '.join(w['scope']) or 'none'}\n  - Allowed: {', '.join(w['allowed'])}\n"
+              f"  - Anything else waits for the user's approval on the host. No token is available in this pod.")
+        return 0
+    if sub == "setup-git":
+        return 0  # git's github.com remotes already go through the broker
+    print("gh (apod): gh auth isn't available here: requests go through the host's apod gh broker, "
+          "and no token is available in the pod.", file=sys.stderr)
+    return 1
+
+
+def split_dashdash(args):
+    return (args[:args.index("--")], args[args.index("--") + 1:]) if "--" in args else (args, [])
+
+
+def repo_clone(args):
+    args, gitargs = split_dashdash(args)
+    pos = [a for a in args if not a.startswith("-")]
+    if not pos:
+        sys.exit("usage: gh repo clone OWNER/REPO [DIR] [-- git flags]")
+    repo = remote_repo(pos[0]) or pos[0]
+    if "/" not in repo:
+        repo = f"{whoami()['login']}/{repo}"
+    return subprocess.call(["git", "clone", *gitargs, f"https://github.com/{repo}.git", *pos[1:2]])
+
+
+def pr_checkout(args):
+    pos = [a for a in args if not a.startswith("-")]
+    code, out = call(["pr", "view", *pos[:1], "--json", "number,headRefName,isCrossRepository"], capture=True)
+    if code:
+        return code
+    pr = json.loads(out)
+    ctx = context()
+    remote = next((r for r in (git("remote") or "").split() if remote_repo(git("remote", "get-url", r)) and
+                   remote_repo(git("remote", "get-url", r)).lower() == (ctx.get("repo") or "").lower()), None)
+    if not remote:
+        sys.exit("gh (apod): no git remote for the base repository")
+    branch = pr["headRefName"] if not pr["isCrossRepository"] else f"pr-{pr['number']}-{pr['headRefName']}"
+    if subprocess.call(["git", "fetch", remote, f"refs/pull/{pr['number']}/head"]):
+        return 1
+    if git("rev-parse", "--verify", "-q", f"refs/heads/{branch}") is not None:
+        return subprocess.call(["git", "checkout", branch]) or subprocess.call(["git", "merge", "--ff-only", "FETCH_HEAD"])
+    code = subprocess.call(["git", "checkout", "-b", branch, "FETCH_HEAD"])
+    if not code and not pr["isCrossRepository"]:
+        git("config", f"branch.{branch}.remote", remote)
+        git("config", f"branch.{branch}.merge", f"refs/heads/{pr['headRefName']}")
+    return code
+
+
+def gh(argv):
+    words = [a for a in argv if not a.startswith("-")]
+    if words[:1] == ["auth"]:
+        return local_auth(words)
+    if words[:2] == ["repo", "clone"] and "--help" not in argv:
+        return repo_clone(argv[argv.index("clone") + 1:])
+    if words[:2] in (["pr", "checkout"], ["co"]) and "--help" not in argv:
+        return pr_checkout(argv[argv.index(words[1] if words[0] == "pr" else "co") + 1:])
+    return call(argv)
+
+
+# ---------------------------------------------------------------------------------------------
+# apod-git-forward: git (curl) can't talk to a unix socket, so relay a loopback port to it.
+
+def relay(a, b):
+    try:
+        while True:
+            data = a.recv(65536)
+            if not data:
+                break
+            b.sendall(data)
+    except OSError:
+        pass
+    try:
+        b.shutdown(socket.SHUT_WR)
+    except OSError:
+        pass
+
+
+def serve_conn(conn, secret):
+    try:
+        buf = b""
+        while b"\r\n" not in buf and len(buf) < 8192:
+            data = conn.recv(4096)
+            if not data:
+                return
+            buf += data
+        line, _, rest = buf.partition(b"\r\n")
+        parts = line.split(b" ")
+        prefix = b"/" + secret.encode() + b"/"
+        if len(parts) != 3 or not parts[1].startswith(prefix):
+            conn.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            return
+        parts[1] = b"/git/" + parts[1][len(prefix):]
+        up = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        up.connect(SOCK)
+        up.sendall(b" ".join(parts) + b"\r\n" + rest)
+        t = threading.Thread(target=relay, args=(conn, up), daemon=True)
+        t.start()
+        relay(up, conn)
+        t.join(5)
+        up.close()
+    except OSError:
+        pass
+    finally:
+        conn.close()
+
+
+def forward():
+    """Print the URL that stands for https://github.com/ and serve it in the background."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(16)
+    secret = secrets.token_hex(16)
+    print(f"http://127.0.0.1:{srv.getsockname()[1]}/{secret}/", flush=True)
+    if os.fork():
+        os._exit(0)
+    os.setsid()
+    devnull = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(devnull, fd)
+    while True:
+        conn, _ = srv.accept()
+        threading.Thread(target=serve_conn, args=(conn, secret), daemon=True).start()
+
+
+if __name__ == "__main__":
+    if os.path.basename(sys.argv[0]) == "apod-git-forward":
+        forward()
+    else:
+        sys.exit(gh(sys.argv[1:]))

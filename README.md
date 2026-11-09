@@ -1,8 +1,9 @@
 # apod: agents in podman
 
 `apod` runs coding agents (Claude Code, opencode, or a plain shell) in rootless podman containers,
-one **profile** per identity. Each profile has its own GitHub token, git identity, Claude login,
-mounts, image and network, so an agent can run with no permission prompts while the container,
+one **profile** per identity. Each profile has its own git identity, Claude login, mounts, image
+and network, and either its own GitHub token or no token at all, with GitHub reached through the
+host's [gh broker](#gh-broker). An agent can run with no permission prompts while the container,
 not the agent, is the security boundary.
 
 ## Where it lives
@@ -34,7 +35,8 @@ herdr panes:
 ## Install
 
 Requirements: rootless podman, bash, jq, git; `gh` and `node` on the host only for
-`apod token` and `apod google-auth`.
+`apod token` and `apod google-auth`; for the gh broker, `gh` logged in on the host and
+Python 3.11 or later (the pods' image has Python too).
 
 ```sh
 git clone https://github.com/fryorcraken/apod ~/src/rad/apod    # or: rad clone rad:z2CjA38QDC7c5tgBkPV23UippSCjK
@@ -71,13 +73,17 @@ inside the pod. Claude is told at startup what is mounted and what isn't.
 ## Commands
 
 ```
-apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [dir] [-- agent args]
+apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]...
+     [--gh PERSONA[:USER]] [--gh-scope SCOPE]... [dir] [-- agent args]
 apod resume [--list|--latest|--claude] [dir]   resume a stopped Claude session started in dir
 apod history                                   folders and profiles launched, most recent first
 apod ps                                        running pods: profile, session, status, folder
 apod profiles                                  profiles, and whether each has a GitHub token / Google login
 apod token <profile> [--rm]                    set, replace or remove a profile's GitHub token
 apod google-auth <profile>                     sign a profile in to Google for google-docs-mcp
+apod gh ui|log [-f]|pending|sessions|personas  the gh broker: approval page, requests, sessions
+apod gh allow ID [--session|--persona]         approve a request (once, for the pod, for the persona)
+apod gh deny ID | grants [rm PERSONA ACTION] | restart | stop
 ```
 
 ## Profile files
@@ -93,6 +99,8 @@ Everything lives in `~/.agent-pod/<profile>/` (`APOD_ROOT` overrides the root):
 | `network` | `host` to share the host's network, e.g. to reach Tailscale hosts. |
 | `volumes` | Named podman volumes, `NAME /path` per line, e.g. `apod-myproj-nix /nix`. |
 | `github` | Use another profile's GitHub token (`gh-<that profile>`). |
+| `gh` | Use the gh broker instead of a token: `PERSONA` or `PERSONA:USER` (`--gh` overrides, `--gh none` turns it off). |
+| `gh-scope` | Extra gh broker scope, one entry per line (as `--gh-scope`). |
 | `ssh-key` | Path to a passphrase-protected private key, served from a per-run ssh-agent. |
 | `ssh-confirm` | If present, confirm every use of that key on the host. |
 | `connectors` | Default claude.ai connector groups (`-c` replaces them). |
@@ -100,6 +108,71 @@ Everything lives in `~/.agent-pod/<profile>/` (`APOD_ROOT` overrides the root):
 
 The GitHub token is the podman secret `gh-<profile>`; without one, `gh` and HTTPS pushes are
 unauthenticated.
+
+### gh broker
+
+A profile with a `gh` file (or a run with `--gh`) gets no GitHub token. Instead, the pod's `gh` is a
+shim that sends each command to a broker on the host, `apod-broker`, which runs the real `gh` as one
+of the host's `gh` accounts if the pod's **persona** allows it. git's github.com remotes go through
+the broker too, so `git fetch` and `git push` need no token in the pod either. The broker starts
+with the first pod that uses it and keeps running; its state is in `~/.agent-pod/broker/`.
+
+```sh
+apod work --gh dev ~/src/org/repo                  # persona dev, host gh's active account
+apod work --gh maintainer:fryorcraken ~/src/org/repo --gh-scope fryorcraken/*
+echo dev:fryorcraken > ~/.agent-pod/work/gh        # the profile's default
+apod gh ui                                         # the approval page (prints its URL)
+```
+
+**Personas** (`gh-personas.toml` in this checkout; override or add your own in
+`~/.agent-pod/gh-personas.toml`; `apod gh personas` lists what each allows):
+
+- `reader`: view PRs, issues, CI runs and repositories, read the REST and GraphQL APIs for the
+  repositories in scope, fetch.
+- `dev`: reader plus push branches (not the default branch), create and edit PRs, comment, create
+  issues.
+- `maintainer`: dev plus merge and review PRs, edit and close issues, re-run CI, fork and create
+  repositories, push tags and delete branches.
+- `pm`: reader plus project boards (list, view, add and move items, add fields, templates) and
+  editing, creating and commenting on issues.
+
+**Scope.** A session only touches what's in its scope: the GitHub remotes of the project folder,
+plus the profile's `gh-scope` file and `--gh-scope`. Entries are `OWNER/REPO`, `OWNER/*`, `OWNER`
+(owner-level reads and creating repositories there) and `project:OWNER/NUMBER` (or
+`project:OWNER/*`). Forks and repositories the session creates join its scope.
+
+**Approvals.** A request outside the persona or the scope waits (`APOD_GH_ASK_TIMEOUT`, default 90
+seconds; 0 rejects at once) and shows up in `apod gh ui`, `apod gh pending` and as a desktop
+notification. Allow it once, for the rest of the session, or for the persona (saved in
+`~/.agent-pod/broker/grants.json`). A rejected request can be allowed after the fact for the
+session or the persona, and the agent retries. `apod gh log -f` follows every request with its
+decision. Some commands are never allowed: `auth`, `extension`, `alias`, `config`, `ssh-key`,
+`gpg-key`, `codespace`, `browse`.
+
+**How requests are classified.** gh commands by their full name, aliases resolved (`pr ls` is
+`pr list`), with risky flags as their own actions (`pr merge --admin`). `gh api` by method and path
+(`api GET /repos/{repo}/pulls/*`), the repository checked against the scope. GraphQL by operation
+and top-level field (`graphql query repository`, `graphql mutation addComment`): `repository` and
+`organization`/`user` arguments and any node ids (looked up on GitHub) are checked against the
+scope; a query or mutation that can't be scoped that way waits for approval. git pushes by ref:
+`git push branch`, `git push default-branch`, `git push tag`, `git push delete`.
+
+**In the pod.** The broker runs `gh` with an empty config and home of its own and no access to the
+pod's files, so the shim sends the current repository and branch (for `-R` and the PR of the
+current branch) and the contents of files a command names (`--body-file`, `-F key=@file`,
+`--input`, release assets). Arguments that name host paths are refused. `gh repo clone` and
+`gh pr checkout` run locally through git. `pr create --fill` isn't available (pass `--title` and
+`--body`), and `gh auth status` describes the session. Pods using the broker run without SELinux
+labelling, as for `ssh-key`.
+
+Real-container check (the broker's own tests, `python3 tests/test_broker.py`, use a fake `gh` and a
+local git server):
+
+```sh
+apod work --gh dev -a bash ~/src/org/repo
+gh auth status; gh pr list; git fetch; git push origin HEAD:refs/heads/apod-broker-test
+gh pr merge 1                                      # waits: approve or deny in apod gh ui
+```
 
 ### Mounts
 
@@ -184,7 +257,9 @@ rebuilding `apod`.
 - Pods can write `.git/hooks` and `.claude/settings.json` in a mounted repo, which then run on the
   host. Give pods their own worktrees, or point `core.hooksPath` at an empty folder on the host.
 - Two pods on one checkout will collide; use one worktree per pod.
-- Tokens should be fine-grained and scoped to what the profile needs.
+- Tokens should be fine-grained and scoped to what the profile needs. With the gh broker, pods
+  hold no token at all; the broker's approval page listens on 127.0.0.1 and needs the secret in its
+  URL (`apod gh ui`), since pods with host networking can reach the host's localhost.
 
 ## Contributing
 

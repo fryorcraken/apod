@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [project-dir] [-- agent args...]
+# apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [--gh PERSONA[:USER]] [--gh-scope S]... [project-dir] [-- agent args...]
 # Run a coding agent in a podman container as a given GitHub identity.
 # Per profile: ~/.agent-pod/<profile>/home (persistent $HOME), ~/.agent-pod/<profile>/env
-# (git identity), ~/.agent-pod/<profile>/mounts (optional extra mounts), and the podman
-# secret gh-<profile> (GitHub token).
+# (git identity), ~/.agent-pod/<profile>/mounts (optional extra mounts), and either the podman
+# secret gh-<profile> (GitHub token) or a gh persona served by the host's gh broker (apod-broker).
 set -euo pipefail
 
 usage() {
-  echo "usage: apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [project-dir] [-- agent args...]" >&2
+  echo "usage: apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [--gh PERSONA[:USER]] [--gh-scope S]... [project-dir] [-- agent args...]" >&2
   echo "       apod resume [--list|--latest|--claude] [dir] | history | ps | profiles | token <profile> [--rm] | google-auth <profile>" >&2
+  echo "       apod gh ui|log [-f]|pending|allow ID [--session|--persona]|deny ID|sessions|personas|grants|restart|stop" >&2
   exit 2
 }
 
@@ -38,12 +39,19 @@ pane_id() {
     if [ -n "${!v:-}" ]; then echo "$v:${!v}"; return; fi
   done
 }
+# This checkout: the gh broker and the pod's gh shim live next to apod.
+apoddir=$(dirname "$(realpath "${BASH_SOURCE[0]}")")
 # For shell completion.
+if [ "${1:-}" = --list-personas ]; then python3 "$apoddir/apod-broker" personas 2>/dev/null | sed -n 's/^\([^ :]*\):.*/\1/p'; exit 0; fi
 if [ "${1:-}" = --list-connectors ]; then printf '%s\n' "${!connector_servers[@]}" "${local_mcps[@]}" | sort; exit 0; fi
 
 # Subcommands: manage a profile's GitHub token (podman secret gh-<profile>) and Google login,
 # list profiles.
 case ${1:-} in
+  gh)
+    # The gh broker: approvals, log, sessions (see apod-broker).
+    shift; [ $# -ge 1 ] || set -- help
+    exec python3 "$apoddir/apod-broker" "$@" ;;
   google-auth)
     [ $# -ge 2 ] || { echo "usage: apod google-auth <profile>" >&2; exit 2; }
     pdir=${APOD_ROOT:-$HOME/.agent-pod}/$2
@@ -133,10 +141,12 @@ case ${1:-} in
     exec "$0" "${opts[@]}" "$dir" -- --resume "${sids[$((n - 1))]}" ;;
   profiles)
     for d in "${APOD_ROOT:-$HOME/.agent-pod}"/*/; do
-      p=$(basename "$d"); t=missing; g=no
-      podman secret exists "gh-$p" && t=set
+      p=$(basename "$d"); t=missing; g=no; b=-
+      [ "$p" = broker ] && continue
+      podman secret exists "gh-$p" && t="set"
       [ -f "$d/home/.config/google-docs-mcp/token.json" ] && g=yes
-      printf '%-24s token: %-8s google: %s\n' "$p" "$t" "$g"
+      [ -f "$d/gh" ] && b=$(head -n1 "$d/gh" | tr -d '[:space:]')
+      printf '%-24s token: %-8s google: %-4s gh broker: %s\n' "$p" "$t" "$g" "$b"
     done
     exit ;;
 esac
@@ -148,6 +158,8 @@ image=
 proj=
 climounts=()  # "mode path" entries from --ro/--rw, for this run only
 connectors=() # claude.ai connector groups enabled for this run (-c)
+ghpersona=    # gh broker persona[:user] for this run (--gh), else the profile's gh file
+ghscope=()    # extra gh broker scope for this run (--gh-scope)
 recopts=("$profile")  # profile and options of this launch, for the history and apod resume
 while [ $# -gt 0 ]; do
   case $1 in
@@ -156,6 +168,8 @@ while [ $# -gt 0 ]; do
     -c|--connectors) [ $# -ge 2 ] || usage; IFS=, read -ra cs <<< "$2"; connectors+=("${cs[@]}"); recopts+=("$1" "$2"); shift 2 ;;
     -m|--ro)    [ $# -ge 2 ] || usage; climounts+=("ro $2"); recopts+=(--ro "$(realpath -m "$2")"); shift 2 ;;
     --rw)       [ $# -ge 2 ] || usage; climounts+=("rw $2"); recopts+=(--rw "$(realpath -m "$2")"); shift 2 ;;
+    --gh)       [ $# -ge 2 ] || usage; ghpersona=$2; recopts+=("$1" "$2"); shift 2 ;;
+    --gh-scope) [ $# -ge 2 ] || usage; ghscope+=("$2"); recopts+=("$1" "$2"); shift 2 ;;
     --)         shift; break ;;
     -*)         usage ;;
     *)          [ -z "$proj" ] || usage; proj=$1; shift ;;
@@ -184,13 +198,19 @@ if [ -f "$root/$profile/volumes" ]; then
 fi
 
 [ -f "$envf" ] || { echo "apod: missing $envf (git identity, see README)" >&2; exit 2; }
-# GitHub token: the podman secret gh-<profile>, or another profile's if the github file names one.
-ghprofile=$profile
-if [ -f "$root/$profile/github" ]; then ghprofile=$(head -n1 "$root/$profile/github" | tr -d '[:space:]'); fi
-ghsecret=(--secret "gh-$ghprofile,type=env,target=GH_TOKEN")
-if ! podman secret exists "gh-$ghprofile"; then
-  echo "apod: profile $ghprofile has no GitHub token, so gh and HTTPS pushes are unauthenticated. Add one with: apod token $ghprofile" >&2
-  ghsecret=()
+# gh broker: --gh, else the profile's gh file ("persona" or "persona:user"); "none" turns it off.
+if [ -z "$ghpersona" ] && [ -f "$root/$profile/gh" ]; then ghpersona=$(head -n1 "$root/$profile/gh" | tr -d '[:space:]'); fi
+[ "$ghpersona" = none ] && ghpersona=
+ghsecret=()
+if [ -z "$ghpersona" ]; then
+  # GitHub token: the podman secret gh-<profile>, or another profile's if the github file names one.
+  ghprofile=$profile
+  if [ -f "$root/$profile/github" ]; then ghprofile=$(head -n1 "$root/$profile/github" | tr -d '[:space:]'); fi
+  ghsecret=(--secret "gh-$ghprofile,type=env,target=GH_TOKEN")
+  if ! podman secret exists "gh-$ghprofile"; then
+    echo "apod: profile $ghprofile has no GitHub token, so gh and HTTPS pushes are unauthenticated. Add one with: apod token $ghprofile (or use the gh broker: --gh dev)" >&2
+    ghsecret=()
+  fi
 fi
 mkdir -p "$phome/.claude"
 # SSH: the profile's ssh-key file names a private key (ideally passphrase-protected, kept outside
@@ -305,12 +325,36 @@ mounts+=("${filemounts[@]}" -v "$proj:$proj:z")
 [ -f "$HOME/.claude/CLAUDE.md" ] && mounts+=(-v "$HOME/.claude/CLAUDE.md:/home/agent/.claude/CLAUDE.md:ro,z")
 [ -d "$HOME/.claude/skills" ] && mounts+=(-v "$HOME/.claude/skills:/home/agent/.claude/skills:ro,z")
 
+# gh broker session: the persona and host gh account for this pod, and its scope (the project's
+# GitHub remotes, the profile's gh-scope file and --gh-scope: OWNER/REPO, OWNER/*, OWNER or
+# project:OWNER/NUMBER). The pod gets the session's socket and the gh shim, never a token.
+ghsid=; ghinfo=
+if [ -n "$ghpersona" ]; then
+  scopeargs=()
+  re='^(https?://([^@/]+@)?github\.com/|(ssh://)?(git@)?(github\.com|github-[^:/]+)[:/])([^/]+)/([^/]+)$'
+  while read -r _ url; do
+    if [[ $url =~ $re ]]; then n=${BASH_REMATCH[7]%/}; scopeargs+=(--scope "${BASH_REMATCH[6]}/${n%.git}"); fi
+  done < <(git -C "$proj" config --get-regexp '^remote\..*\.url$' 2>/dev/null || true)
+  if [ -f "$root/$profile/gh-scope" ]; then
+    while read -r s _; do case $s in ''|'#'*) ;; *) scopeargs+=(--scope "$s") ;; esac; done < "$root/$profile/gh-scope"
+  fi
+  for s in "${ghscope[@]}"; do scopeargs+=(--scope "$s"); done
+  ghsid=$(uuidgen | tr -d - | cut -c1-12)
+  ghuser=; [[ $ghpersona == *:* ]] && ghuser=${ghpersona#*:}
+  ghinfo=$(python3 "$apoddir/apod-broker" register --id "$ghsid" --profile "$profile" --persona "${ghpersona%%:*}" \
+    --user "$ghuser" --project "$proj" "${scopeargs[@]}") || exit 2
+  mounts+=(-v "$(jq -r .dir <<< "$ghinfo"):/run/apod-gh"
+    -v "$apoddir/gh-shim:/usr/local/bin/gh:ro" -v "$apoddir/gh-shim:/usr/local/bin/apod-git-forward:ro")
+fi
+
 # Tell the agent where it is and what it can see (Claude: appended to its system prompt).
 context="You are running inside an apod container (podman), profile \"$profile\". Only these host paths are mounted:
 - $proj (read-write, the project)"
 for p in "${rwmounts[@]}"; do context+=$'\n'"- $p (read-write)"; done
 for p in "${romounts[@]}"; do context+=$'\n'"- $p (read-only)"; done
-if [ ${#ghsecret[@]} -gt 0 ]; then gh_note="gh and git push over HTTPS use this profile's GitHub token."
+if [ -n "$ghinfo" ]; then
+  gh_note=$(jq -r '"gh here is a shim for the host'"'"'s apod gh broker: commands run on the host as GitHub user \(.login), persona \(.persona), on \(if (.scope | length) > 0 then (.scope | join(", ")) else "no repositories yet" end). Allowed without asking: \(.allowed | join(", ")). Anything else, or anything outside that scope, waits up to \(.ask_timeout)s for the user to approve it on the host, then fails: if that happens, tell the user what you need and why, and retry once they say it is allowed. git fetch and push to github.com go through the broker too (pushes are checked per ref: e.g. branches but not the default branch). There is no GitHub token in this pod: gh auth token and pr create --fill (pass --title and --body) are unavailable; gh repo clone and gh pr checkout run locally."' <<< "$ghinfo")
+elif [ ${#ghsecret[@]} -gt 0 ]; then gh_note="gh and git push over HTTPS use this profile's GitHub token."
 else gh_note="This profile has no GitHub token: gh and HTTPS pushes are unauthenticated."; fi
 context+=$'\n'"Nothing else from the host is available. $gh_note There are no permission prompts: the container is the isolation boundary."
 if [ ${#volpaths[@]} -gt 0 ]; then
@@ -370,8 +414,30 @@ printf '%s\0' "${recopts[@]}" | jq -cRs --argjson ts "$(date +%s)" --arg profile
     session: (if $session == "" then null else $session end), pane: (if $pane == "" then null else $pane end),
     opts: (split("\u0000") | .[:-1])}' \
   >> "$root/history.jsonl" || echo "apod: couldn't record this launch in the history" >&2
-cmdline=("$image" bash -lc 'gh auth setup-git >/dev/null 2>&1 || true; exec "$@"' _ "${cmd[@]}" "$@")
-[ -n "$sshkey" ] || exec "${run[@]}" "${cmdline[@]}"
+if [ -n "$ghsid" ]; then
+  # Start the git forwarder and point git's github.com remotes (already rewritten to HTTPS above)
+  # at it, so fetches and pushes go through the broker.
+  # shellcheck disable=SC2016 # expanded in the pod
+  wrap='u=$(apod-git-forward) || { echo "apod: the git forwarder did not start; git cannot reach GitHub" >&2; exec "$@"; }
+n=${GIT_CONFIG_COUNT:-0}
+for ((i = 0; i < n; i++)); do k=GIT_CONFIG_KEY_$i; [ "${!k}" = url.https://github.com/.insteadOf ] && export "$k=url.$u.insteadOf"; done
+export "GIT_CONFIG_KEY_$n=url.$u.insteadOf" "GIT_CONFIG_VALUE_$n=https://github.com/" GIT_CONFIG_COUNT=$((n + 1))
+exec "$@"'
+  cmdline=("$image" bash -lc "$wrap" _ "${cmd[@]}" "$@")
+  # SELinux blocks a container from connecting to a host process's socket (as for ssh-agent).
+  run+=(--security-opt label=disable --label apod.gh="$ghsid")
+else
+  cmdline=("$image" bash -lc 'gh auth setup-git >/dev/null 2>&1 || true; exec "$@"' _ "${cmd[@]}" "$@")
+fi
+[ -n "$sshkey" ] || [ -n "$ghsid" ] || exec "${run[@]}" "${cmdline[@]}"
+agentpid=
+cleanup() {
+  [ -z "$agentpid" ] || kill "$agentpid" 2>/dev/null
+  [ -z "${sock:-}" ] || rm -f "$sock"
+  [ -z "$ghsid" ] || python3 "$apoddir/apod-broker" unregister "$ghsid" 2>/dev/null || true
+}
+trap cleanup EXIT
+if [ -z "$sshkey" ]; then "${run[@]}" "${cmdline[@]}"; exit; fi
 
 # Dedicated ssh-agent for this run: asks for the key's passphrase here, drops the key after
 # $APOD_SSH_TTL (default 4h), confirms each use if the profile has an ssh-confirm file, and is
@@ -380,7 +446,7 @@ cmdline=("$image" bash -lc 'gh auth setup-git >/dev/null 2>&1 || true; exec "$@"
 adir=$root/$profile/agent; mkdir -p "$adir"; chmod 700 "$adir"
 sock=$adir/ssh-$$.sock
 eval "$(ssh-agent -a "$sock")" >/dev/null
-trap 'kill "$SSH_AGENT_PID" 2>/dev/null; rm -f "$sock"' EXIT
+agentpid=$SSH_AGENT_PID
 addopts=(-t "${APOD_SSH_TTL:-4h}"); [ -f "$root/$profile/ssh-confirm" ] && addopts+=(-c)
 SSH_AUTH_SOCK=$sock ssh-add -q "${addopts[@]}" "$sshkey"
 "${run[@]}" -v "$adir:$adir" -e SSH_AUTH_SOCK="$sock" --security-opt label=disable "${cmdline[@]}"

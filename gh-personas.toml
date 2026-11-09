@@ -1,0 +1,74 @@
+# Personas for the apod gh broker (apod-broker). A pod launched with --gh PERSONA gets these
+# actions on the repositories, owners and projects in its scope; anything else waits for your
+# approval. Override or add personas in ~/.agent-pod/gh-personas.toml (a persona there replaces
+# the one of the same name here). Approvals "for the persona" go to ~/.agent-pod/broker/grants.json.
+#
+# Actions are matched as shell-style patterns (* matches anything, including /):
+#   gh commands      "pr create", "issue comment", "project item-edit"; risky flags add
+#                    "<command> --<flag>", e.g. "pr merge --admin", "repo create --public"
+#   REST             "api METHOD PATH", with the repository as {repo} ("api GET /repos/{repo}/pulls/*")
+#                    and orgs/users as {owner} ("api GET /orgs/{owner}/teams")
+#   GraphQL          "graphql query FIELD", "graphql mutation NAME" (top-level fields; repository,
+#                    node ids, organization/user logins are checked against the scope)
+#   git              "git fetch", "git fetch public" (public repositories outside the scope),
+#                    "git push branch", "git push default-branch", "git push tag", "git push delete"
+
+[personas.reader]
+description = "Read code, PRs, issues and CI"
+allow = [
+  "pr list", "pr view", "pr diff", "pr checks", "pr status",
+  "issue list", "issue view", "issue status",
+  "run list", "run view", "run watch", "workflow list", "workflow view",
+  "repo view", "label list", "release list", "release view", "cache list", "ruleset list", "ruleset view",
+  "search issues", "search prs", "search code", "search commits", "search repos",
+  "repo gitignore *", "repo license *",
+  "api GET /repos/{repo}", "api GET /repos/{repo}/*", "api GET /rate_limit",
+  "graphql query repository", "graphql query rateLimit", "graphql query node", "graphql query nodes",
+  "git fetch", "git fetch public",
+]
+
+[personas.dev]
+description = "reader + push branches, create and edit PRs, create and comment on issues"
+extends = ["reader"]
+allow = [
+  "pr create", "pr edit", "pr comment", "pr ready",
+  "issue create", "issue comment",
+  "git push branch",
+  "api POST /repos/{repo}/issues/*/comments", "api POST /repos/{repo}/pulls/*/comments",
+  "api POST /repos/{repo}/pulls/*/comments/*/replies", "api PATCH /repos/{repo}/issues/comments/*",
+  "api GET /repos/{repo}/actions/runs/*/logs", "api GET /repos/{repo}/actions/jobs/*/logs",
+  "graphql mutation addComment", "graphql mutation addPullRequestReviewComment",
+  "graphql mutation addPullRequestReviewThreadReply", "graphql mutation resolveReviewThread",
+]
+
+[personas.maintainer]
+description = "dev + merge and review PRs, manage issues and CI runs, fork and create repositories"
+extends = ["dev"]
+allow = [
+  "pr merge", "pr review", "pr close", "pr reopen", "pr update-branch",
+  "issue edit", "issue close", "issue reopen", "label create", "label edit",
+  "run rerun", "run cancel", "workflow run",
+  "repo fork", "repo create",
+  "git push delete", "git push tag",
+  "graphql mutation mergePullRequest", "graphql mutation addPullRequestReview",
+  "graphql mutation submitPullRequestReview",
+]
+
+[personas.pm]
+description = "Project boards: read, move and add items, add fields; edit, create and comment on issues"
+extends = ["reader"]
+allow = [
+  "project list", "project view", "project item-list", "project field-list",
+  "project item-add", "project item-edit", "project item-archive", "project item-create",
+  "project field-create", "project mark-template", "project copy", "project link",
+  "issue create", "issue edit", "issue comment", "issue close", "issue reopen",
+  "issue edit --add-project", "issue edit --remove-project",
+  "label create",
+  "graphql query organization", "graphql query user", "graphql query repositoryOwner",
+  "graphql mutation addProjectV2ItemById", "graphql mutation updateProjectV2ItemFieldValue",
+  "graphql mutation updateProjectV2ItemPosition", "graphql mutation clearProjectV2ItemFieldValue",
+  "graphql mutation archiveProjectV2Item", "graphql mutation createProjectV2Field",
+  "graphql mutation updateProjectV2Field", "graphql mutation addProjectV2DraftIssue",
+  "graphql mutation updateIssue", "graphql mutation addLabelsToLabelable",
+  "graphql mutation removeLabelsFromLabelable", "graphql mutation addComment",
+]

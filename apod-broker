@@ -1,0 +1,1907 @@
+#!/usr/bin/env python3
+"""apod gh broker: runs gh, and git fetches and pushes to GitHub, on the host for apod pods.
+
+Pods hold no GitHub token. Each pod gets a session (a persona, a host gh account and a scope of
+repositories, owners and projects) and a unix socket. The pod's gh is a shim that sends its
+arguments to that socket, and git's github.com remotes go through it too. The broker turns each
+request into actions ("pr create", "api GET /repos/{repo}/pulls", "graphql mutation addComment",
+"git push branch") and targets (repositories, owners, projects). It runs the real gh with the
+account's token, or forwards the git request with it, when the persona allows every action and
+every target is in scope. Anything else waits for approval (apod gh ui, apod gh allow) until it
+times out.
+
+  apod-broker serve                 run the broker in the foreground
+  apod-broker register ...          start a session (used by apod; starts the broker if needed)
+  apod-broker unregister ID         end a session
+  apod-broker sessions|pending|log [-f] [-n N]|allow ID [--session|--persona]|deny ID
+  apod-broker ui|grants [rm PERSONA ACTION]|personas|stop
+"""
+import base64
+import collections
+import fnmatch
+import html
+import http.client
+import itertools
+import json
+import os
+import re
+import secrets
+import shlex
+import shutil
+import socket
+import socketserver
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import tomllib
+import urllib.parse
+import zlib
+from http.server import BaseHTTPRequestHandler
+from pathlib import Path
+
+ROOT = Path(os.environ.get("APOD_ROOT") or Path.home() / ".agent-pod")
+BDIR = ROOT / "broker"
+SDIR = BDIR / "sessions"
+ADMIN = BDIR / "admin.sock"
+GRANTS = BDIR / "grants.json"
+LOGF = BDIR / "log.jsonl"
+UIF = BDIR / "ui.json"
+HERE = Path(__file__).resolve().parent
+PERSONA_FILES = [HERE / "gh-personas.toml", ROOT / "gh-personas.toml"]
+ASK_TIMEOUT = float(os.environ.get("APOD_GH_ASK_TIMEOUT", "90"))
+if ASK_TIMEOUT.is_integer():
+    ASK_TIMEOUT = int(ASK_TIMEOUT)
+UPSTREAM = os.environ.get("APOD_GH_GIT_UPSTREAM", "https://github.com")
+UI_PORT = int(os.environ.get("APOD_GH_UI_PORT", "0"))
+
+# Never allowed, whatever the persona or grants say: these would hand out credentials, change the
+# broker's own gh, open things on the host, or need the pod's local git (the shim does those).
+HARD_DENY = ["auth *", "extension *", "alias *", "config *", "ssh-key *", "gpg-key *",
+             "codespace *", "browse", "repo deploy-key add", "pr checkout", "repo clone",
+             "repo set-default", "run download", "release download", "gist clone",
+             "graphql subscription *"]
+# Commands that act on one repository (-R, or the pod's current repository).
+REPO_GROUPS = {"pr", "issue", "run", "workflow", "release", "label", "cache", "ruleset",
+               "secret", "variable", "attestation"}
+# pr commands whose PR argument defaults to the current branch.
+SELECTOR_CMDS = {"pr view", "pr checks", "pr diff", "pr edit", "pr comment", "pr merge", "pr ready",
+                 "pr close", "pr reopen", "pr review", "pr update-branch", "pr lock", "pr unlock",
+                 "pr revert"}
+# Flags that make a command more powerful; each adds the action "<command> --<flag>".
+SENSITIVE = {"pr merge": ["admin"], "repo create": ["public"], "repo edit": ["visibility"],
+             "issue edit": ["add-project", "remove-project"], "pr edit": ["add-project", "remove-project"]}
+# Arguments that name local files without being typed "file" in gh's help: positionals from this
+# index on, and string flags. Their contents come from the pod, like --body-file.
+POSITIONAL_FILES = {"gist create": 0, "release create": 1, "release upload": 1, "release verify-asset": 1,
+                    "attestation verify": 0}
+PATH_FLAGS = {"gist edit": ["add"], "attestation verify": ["bundle", "custom-trusted-root"],
+              "attestation trusted-root": ["tuf-root"]}
+NODE_ID = re.compile(r"^(?:[A-Z]{1,8}_[A-Za-z0-9_-]{6,}|MD[A-Za-z0-9+/]{6,}={0,2})$")
+GH_URL = re.compile(r"https?://(?:www\.)?github\.com/([^/\s?#]+)(?:/([^/\s?#]+))?(?:/([^/\s?#]+))?(?:/([^/\s?#]+))?")
+NOT_OWNERS = {"orgs", "users", "settings", "marketplace", "sponsors", "notifications", "apps",
+              "features", "enterprise", "enterprises", "topics", "collections", "search", "login",
+              "new", "organizations", "explore", "codespaces", "pulls", "issues"}
+
+
+class BrokerError(Exception):
+    pass
+
+
+LOCK = threading.RLock()
+SESSIONS = {}   # id -> Session
+SERVERS = {}    # id -> unix socket server
+PENDING = {}    # event id -> Pending
+EVENTS = collections.deque(maxlen=500)
+COUNTER = itertools.count(1)
+UI = {}
+
+
+def now():
+    return time.time()
+
+
+def gh_bin():
+    return os.environ.get("APOD_GH_BIN") or shutil.which("gh") or "gh"
+
+
+def gh_env(token=None, tty=0, repo=None):
+    """Environment for the real gh: an empty config dir and home of the broker's own (no host
+    aliases, extensions or git config), no prompts, editors, pagers or browsers."""
+    home = BDIR / "home"
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(home),
+        "LANG": os.environ.get("LANG", "C.UTF-8"), "GH_CONFIG_DIR": str(home / "gh"),
+        "XDG_CONFIG_HOME": str(home / ".config"), "XDG_CACHE_HOME": str(home / ".cache"),
+        "XDG_STATE_HOME": str(home / ".local/state"), "XDG_DATA_HOME": str(home / ".local/share"),
+        "GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1",
+        "GH_NO_EXTENSION_UPDATE_NOTIFIER": "1", "GH_SPINNER_DISABLED": "1",
+        "GH_PAGER": "cat", "PAGER": "cat", "GH_EDITOR": "false", "EDITOR": "false",
+        "VISUAL": "false", "GIT_EDITOR": "false", "GH_BROWSER": "false", "BROWSER": "false",
+        "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_TERMINAL_PROMPT": "0",
+    }
+    if token:
+        env["GH_TOKEN"] = token
+    if tty:
+        env["GH_FORCE_TTY"] = str(tty)
+        env["CLICOLOR_FORCE"] = "1"
+    if repo:
+        env["GH_REPO"] = repo
+    return env
+
+
+_tokens = {}
+
+
+def token_for(user):
+    """The host gh's token for a GitHub account (the active account when user is empty)."""
+    t, ts = _tokens.get(user, (None, 0))
+    if t and now() - ts < 300:
+        return t
+    env = dict(os.environ)
+    env.pop("GH_TOKEN", None)
+    env.pop("GITHUB_TOKEN", None)
+    cmd = [gh_bin(), "auth", "token", "--hostname", "github.com"] + (["--user", user] if user else [])
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
+    t = r.stdout.strip()
+    if r.returncode or not t:
+        raise BrokerError(f"no gh login on the host for {user or 'the active account'} "
+                          f"({r.stderr.strip() or 'gh auth token failed'}); run gh auth login on the host")
+    _tokens[user] = (t, now())
+    return t
+
+
+def gh_query(sess, args, timeout=30):
+    """Run gh on the broker's own behalf (lookups); returns stdout or None."""
+    try:
+        r = subprocess.run([gh_bin(), *args], capture_output=True, text=True, timeout=timeout,
+                           env=gh_env(token_for(sess.user)), cwd=BDIR / "home",
+                           stdin=subprocess.DEVNULL)
+    except (subprocess.TimeoutExpired, BrokerError):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+# ---------------------------------------------------------------------------------------------
+# Personas, grants, scope
+
+def load_personas():
+    raw = {}
+    for f in PERSONA_FILES:
+        if f.exists():
+            raw.update(tomllib.loads(f.read_text()).get("personas", {}))
+    return raw
+
+
+def load_grants():
+    try:
+        return json.loads(GRANTS.read_text())
+    except (OSError, ValueError):
+        return {"personas": {}}
+
+
+def save_grants(g):
+    tmp = GRANTS.with_suffix(".tmp")
+    tmp.write_text(json.dumps(g, indent=2) + "\n")
+    tmp.replace(GRANTS)
+
+
+def persona_rules(name, raw=None, seen=None):
+    """(allow, deny) patterns of a persona: its own, its grants, and those of what it extends."""
+    raw = load_personas() if raw is None else raw
+    seen = set() if seen is None else seen
+    if name not in raw:
+        raise BrokerError(f"no persona {name} (known: {', '.join(sorted(raw)) or 'none'})")
+    if name in seen:
+        return [], []
+    seen.add(name)
+    p = raw[name]
+    allow = list(p.get("allow", [])) + list(load_grants()["personas"].get(name, []))
+    deny = list(p.get("deny", []))
+    ext = p.get("extends", [])
+    for e in [ext] if isinstance(ext, str) else ext:
+        a, d = persona_rules(e, raw, seen)
+        allow += a
+        deny += d
+    return allow, deny
+
+
+def matches(action, patterns):
+    return any(fnmatch.fnmatchcase(action, p) for p in patterns)
+
+
+def fmt_target(t):
+    kind, v = t
+    return {"repo": v, "owner": f"owner {v}", "project": f"project {v}",
+            "projects-of": f"projects of {v}", "forkdest": f"fork into {v}",
+            "unscoped": f"unscoped: {v}"}.get(kind, f"{kind} {v}")
+
+
+class Session:
+    FIELDS = ("id", "profile", "persona", "user", "login", "project", "scope", "grants", "created")
+
+    def __init__(self, d):
+        for k in self.FIELDS:
+            setattr(self, k, d.get(k))
+        self.scope = {k: list(self.scope.get(k, [])) for k in ("repos", "owners", "projects")} if self.scope else \
+            {"repos": [], "owners": [], "projects": []}
+        self.grants = {k: list((self.grants or {}).get(k, [])) for k in ("actions", "unscoped")}
+        self.temp = {}  # repo -> expiry, from a one-off approval of a push
+
+    def data(self):
+        return {k: getattr(self, k) for k in self.FIELDS}
+
+    @property
+    def dir(self):
+        return SDIR / self.id
+
+    def save(self):
+        (self.dir / "session.json").write_text(json.dumps(self.data(), indent=2) + "\n")
+
+    def in_scope(self, t):
+        kind, v = t
+        v = v.lower()
+        repos = [p.lower() for p in self.scope["repos"]]
+        owners = [p.lower() for p in self.scope["owners"]]
+        projects = [p.lower() for p in self.scope["projects"]]
+        if kind == "repo":
+            return any(fnmatch.fnmatchcase(v, p) for p in repos) or self.temp.get(v, 0) > now()
+        if kind == "owner":
+            return v in owners
+        if kind == "forkdest":
+            return v == (self.login or "").lower() or v in owners
+        if kind == "project":
+            return any(fnmatch.fnmatchcase(v, p) for p in projects)
+        if kind == "projects-of":
+            return v in owners or any(p.split("/")[0] == v for p in projects)
+        if kind == "unscoped":
+            return v in self.grants["unscoped"]
+        return False
+
+    def add_scope(self, t):
+        kind, v = t
+        lst = {"repo": self.scope["repos"], "owner": self.scope["owners"],
+               "forkdest": self.scope["owners"], "project": self.scope["projects"],
+               "projects-of": self.scope["projects"], "unscoped": self.grants["unscoped"]}[kind]
+        if kind == "projects-of":
+            v = f"{v}/*"
+        if v not in lst:
+            lst.append(v)
+
+    def summary(self):
+        allow, _ = persona_rules(self.persona)
+        scope = self.scope["repos"] + [f"owner {o}" for o in self.scope["owners"]] + \
+            [f"project {p}" for p in self.scope["projects"]]
+        return {"persona": self.persona, "login": self.login, "scope": scope,
+                "allowed": sorted(set(allow))}
+
+
+class Request:
+    """A classified request: what it does (actions) and what it touches (targets)."""
+
+    def __init__(self, kind, display):
+        self.kind, self.display = kind, display
+        self.actions, self.targets = [], []
+        self.argv, self.repo, self.created, self.notes, self.stdin = None, None, None, [], None
+        self.help = False
+
+
+def new_event(sess, req):
+    ev = {"id": next(COUNTER), "ts": now(), "session": sess.id, "profile": sess.profile,
+          "persona": sess.persona, "login": sess.login, "project": sess.project, "kind": req.kind,
+          "request": req.display, "actions": req.actions, "targets": [list(t) for t in req.targets],
+          "missing": [], "out": [], "decision": "pending", "reason": "", "exit": None}
+    with LOCK:
+        EVENTS.append(ev)
+    return ev
+
+
+def log_event(ev):
+    try:
+        with LOGF.open("a") as f:
+            f.write(json.dumps(ev) + "\n")
+    except OSError:
+        pass
+
+
+class Pending:
+    def __init__(self, ev):
+        self.ev, self.done, self.decision = ev, threading.Event(), None
+
+
+def evaluate(sess, req):
+    allow, deny = persona_rules(sess.persona)
+    allow = allow + sess.grants["actions"]
+    hard = [a for a in req.actions if matches(a, HARD_DENY + deny)]
+    if hard:
+        return "deny", [], [], f"never allowed: {', '.join(hard)}"
+    missing = [a for a in req.actions if not matches(a, allow)]
+    out = [list(t) for t in req.targets if not sess.in_scope(t)]
+    reasons = []
+    if missing:
+        reasons.append(f"not allowed for persona {sess.persona}: {', '.join(missing)}")
+    if out:
+        reasons.append(f"out of this session's scope: {', '.join(fmt_target(t) for t in out)}")
+    return ("ask" if reasons else "allow"), missing, out, "; ".join(reasons)
+
+
+def desktop_notify(ev):
+    if not shutil.which("notify-send"):
+        return
+    try:
+        subprocess.Popen(["notify-send", "-a", "apod", f"apod gh: {ev['profile']} asks",
+                          f"{ev['request']}\napod gh allow {ev['id']}"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+    except OSError:
+        pass
+
+
+def authorize(sess, req, ev, waiting=None):
+    """True if the request may go ahead: allowed outright, or approved while it waits."""
+    verdict, missing, out, reason = evaluate(sess, req)
+    ev.update(missing=missing, out=out, reason=reason)
+    if verdict == "allow":
+        ev["decision"] = "allowed"
+        return True
+    if verdict == "deny" or ASK_TIMEOUT <= 0:
+        ev["decision"] = "denied" if verdict == "deny" else "rejected"
+        return False
+    p = Pending(ev)
+    with LOCK:
+        PENDING[ev["id"]] = p
+    if waiting:
+        waiting(ev)
+    desktop_notify(ev)
+    got = p.done.wait(ASK_TIMEOUT)
+    with LOCK:
+        PENDING.pop(ev["id"], None)
+    if not got:
+        ev["decision"] = "timed out"
+        return False
+    if p.decision == "deny":
+        ev["decision"] = "denied by you"
+        return False
+    ev["decision"] = f"approved ({p.decision})"
+    return True
+
+
+def decide(eid, how):
+    """Approve (once, for the session, or for the persona) or deny a request. Approving a past
+    request for the session or persona adds its grants so that a retry goes through."""
+    if how not in ("once", "session", "persona", "deny"):
+        raise BrokerError(f"unknown decision {how}")
+    with LOCK:
+        p = PENDING.get(eid)
+        ev = p.ev if p else next((e for e in EVENTS if e["id"] == eid), None)
+        if ev is None:
+            raise BrokerError(f"no request {eid}")
+        if not p and how in ("once", "deny"):
+            raise BrokerError(f"request {eid} is no longer waiting; use --session or --persona to allow a retry")
+        sess = SESSIONS.get(ev["session"])
+        if how in ("session", "persona"):
+            if how == "persona":
+                g = load_grants()
+                lst = g["personas"].setdefault(ev["persona"], [])
+                lst += [a for a in ev["missing"] if a not in lst]
+                save_grants(g)
+            elif sess:
+                sess.grants["actions"] += [a for a in ev["missing"] if a not in sess.grants["actions"]]
+            if sess:
+                for t in ev["out"]:
+                    sess.add_scope(t)
+                sess.save()
+        elif how == "once" and sess and ev.get("push_adv"):
+            # The push itself comes as a second request right after the ref advertisement.
+            for t in ev["out"]:
+                if t[0] == "repo":
+                    sess.temp[t[1].lower()] = now() + 120
+        if p:
+            p.decision = how
+            p.done.set()
+        return ev
+
+
+# ---------------------------------------------------------------------------------------------
+# gh command lines
+
+class Spec:
+    def __init__(self):
+        self.subs, self.flags, self.short, self.canon = set(), {}, {}, None
+
+
+_specs = {}
+
+
+def spec(path):
+    """Commands and flags of gh <path>, read from its --help (None if there's no such command)."""
+    key = tuple(path)
+    if key in _specs:
+        return _specs[key]
+    try:
+        r = subprocess.run([gh_bin(), *path, "--help"], capture_output=True, text=True, timeout=20,
+                           env=gh_env(), cwd=BDIR / "home", stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return None
+    if r.returncode:
+        _specs[key] = None
+        return None
+    s, section = Spec(), None
+    for line in r.stdout.splitlines():
+        if line and not line[0].isspace():
+            section = line.strip()
+            continue
+        if section == "USAGE" and s.canon is None:
+            m = re.match(r"\s+gh((?: [a-z][\w-]*)*)", line)
+            if m:
+                s.canon = m.group(1).split()
+        elif section and section.endswith("COMMANDS"):
+            m = re.match(r"\s+([\w-]+):\s", line)
+            if m:
+                s.subs.add(m.group(1))
+        elif section in ("FLAGS", "INHERITED FLAGS"):
+            m = re.match(r"\s+(?:-(\w), )?--([\w-]+)(?: (\S+))?(?:\s{2,}|$)", line)
+            if m:
+                s.flags[m.group(2)] = m.group(3)
+                if m.group(1):
+                    s.short[m.group(1)] = m.group(2)
+    if s.canon is None:
+        s.canon = list(path)
+    _specs[key] = s
+    return s
+
+
+def takes_value(s, tok):
+    if tok.startswith("--"):
+        return "=" not in tok and bool(s.flags.get(tok[2:]))
+    long = s.short.get(tok[1:2])
+    return len(tok) == 2 and bool(long and s.flags.get(long))
+
+
+def parse_flags(s, toks):
+    """[(name, value or None)] and positionals. Unknown flags keep their leading dashes."""
+    flags, pos, i = [], [], 0
+    while i < len(toks):
+        t = toks[i]
+        if t == "--":
+            pos += toks[i + 1:]
+            break
+        if t.startswith("--") and len(t) > 2:
+            name, eq, val = t[2:].partition("=")
+            if name not in s.flags:
+                flags.append(("--" + name, val if eq else None))
+            elif eq:
+                flags.append((name, val))
+            elif s.flags[name]:
+                if i + 1 >= len(toks):
+                    raise BrokerError(f"flag needs an argument: --{name}")
+                flags.append((name, toks[i + 1]))
+                i += 1
+            else:
+                flags.append((name, None))
+        elif t.startswith("-") and len(t) > 1:
+            j = 1
+            while j < len(t):
+                long = s.short.get(t[j])
+                if long is None:
+                    flags.append(("-" + t[j:], None))
+                    break
+                if s.flags.get(long):
+                    rest = t[j + 1:]
+                    if rest:
+                        val = rest[1:] if rest.startswith("=") else rest
+                    elif i + 1 < len(toks):
+                        val = toks[i + 1]
+                        i += 1
+                    else:
+                        raise BrokerError(f"flag needs an argument: -{t[j]}")
+                    flags.append((long, val))
+                    break
+                flags.append((long, None))
+                j += 1
+        else:
+            pos.append(t)
+        i += 1
+    return flags, pos
+
+
+def parse_gh(argv):
+    """-> (canonical command path, spec, flags, positionals)."""
+    path, s, i, pre = [], spec([]), 0, []
+    if s is None:
+        raise BrokerError("gh isn't working on the host (gh --help failed)")
+    while s.subs:
+        j = i
+        while j < len(argv) and argv[j].startswith("-") and argv[j] != "--":
+            j += 2 if takes_value(s, argv[j]) else 1
+        if j >= len(argv) or argv[j] == "--":
+            break
+        cand = path + [argv[j]]
+        s2 = spec(cand)
+        if s2 is None:
+            raise BrokerError(f"unknown command: gh {' '.join(cand)}")
+        pre += argv[i:j]
+        path, s, i = s2.canon, s2, j + 1
+    if not path:
+        raise BrokerError("no gh command given")
+    flags, pos = parse_flags(s, pre + argv[i:])
+    return path, s, flags, pos
+
+
+def rebuild(path, flags, pos):
+    out = list(path)
+    for n, v in flags:
+        if n.startswith("-"):
+            out.append(n if v is None else f"{n}={v}")
+        else:
+            out.append(f"--{n}" if v is None else f"--{n}={v}")
+    if any(p.startswith("-") for p in pos):
+        out.append("--")
+    return out + list(pos)
+
+
+def opt(flags, name):
+    vals = [v for n, v in flags if n == name]
+    return vals[-1] if vals else None
+
+
+def optall(flags, name):
+    return [v for n, v in flags if n == name]
+
+
+def has(flags, name):
+    return any(n == name and v not in ("false", "0") for n, v in flags)
+
+
+def norm_repo(s):
+    s = s.strip()
+    m = re.match(r"^(?:https?://)?(?:www\.)?github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$", s)
+    if m:
+        return f"{m.group(1)}/{m.group(2)}".lower()
+    parts = s.split("/")
+    if len(parts) == 3:
+        if parts[0].lower() != "github.com":
+            raise BrokerError(f"only github.com is supported, not {parts[0]}")
+        parts = parts[1:]
+    if len(parts) == 2 and all(parts):
+        return f"{parts[0]}/{parts[1].removesuffix('.git')}".lower()
+    raise BrokerError(f"not a repository: {s} (expected OWNER/REPO)")
+
+
+def url_targets(values):
+    out = []
+    for v in values:
+        for m in GH_URL.finditer(v or ""):
+            a, b, c, d = m.groups()
+            if a in ("orgs", "users") and b and c == "projects" and d and d.isdigit():
+                out.append(("project", f"{b}/{d}".lower()))
+            elif a.lower() not in NOT_OWNERS and b:
+                out.append(("repo", f"{a}/{b.removesuffix('.git')}".lower()))
+    return out
+
+
+def write_file(work, files, key, n):
+    """Write a file the shim sent (keyed by the path as the agent gave it) into the request's
+    work dir; returns its path there."""
+    if key not in files:
+        raise BrokerError(f"file not found in the pod: {key}")
+    d = work / f"f{n}"
+    d.mkdir()
+    name = re.sub(r"[^\w.+-]", "_", Path(key).name)
+    p = d / (name if name not in ("", ".", "..") else "file")
+    p.write_bytes(files[key])
+    return str(p)
+
+
+def classify_gh(sess, argv, ctx, files, stdin, work):
+    req = Request("gh", shlex.join(["gh", *argv]))
+    head = argv[:argv.index("--")] if "--" in argv else argv
+    if not argv or argv[0] in ("help", "--version", "version") or "--help" in head or "-h" in head:
+        req.help, req.argv = True, argv
+        return req
+    path, s, flags, pos = parse_gh(argv)
+    if s.subs:  # a command group without a subcommand: gh prints its help
+        req.help, req.argv = True, argv
+        return req
+    cmd = " ".join(path)
+    group, sub = path[0], (path[1] if len(path) > 1 else "")
+    req.actions = [cmd] + [f"{cmd} --{f}" for f in SENSITIVE.get(cmd, []) if has(flags, f)]
+    login = (sess.login or "").lower()
+
+    # Files: flags of type "file", and release assets, come from what the shim sent.
+    n = itertools.count()
+    for i, (name, v) in enumerate(flags):
+        if s.flags.get(name) == "file" and v is not None:
+            flags[i] = (name, v if v == "-" else write_file(work, files, v, next(n)))
+    for i, (name, v) in enumerate(flags):
+        if name in PATH_FLAGS.get(cmd, []) and v not in (None, "-"):
+            flags[i] = (name, write_file(work, files, v, next(n)))
+    if cmd in POSITIONAL_FILES:
+        k = POSITIONAL_FILES[cmd]
+        pos = pos[:k] + [p if p == "-" else write_file(work, files, p.split("#")[0], next(n)) +
+                         ("#" + p.split("#", 1)[1] if "#" in p and cmd.startswith("release") else "")
+                         for p in pos[k:]]
+
+    repo_flag = opt(flags, "repo")
+    base = norm_repo(repo_flag) if repo_flag and group != "project" else (ctx.get("repo") or None)
+    if base:
+        base = base.lower()
+    req.repo = base
+    if group in REPO_GROUPS:
+        if not base:
+            raise BrokerError("no repository: run gh in a clone with a GitHub remote, or pass -R OWNER/REPO")
+        req.targets.append(("repo", base))
+    if cmd in SELECTOR_CMDS and not pos and ctx.get("branch"):
+        pos = [ctx.get("head") or ctx["branch"]]
+    if cmd == "pr create":
+        for f in ("fill", "fill-first", "fill-verbose"):
+            if has(flags, f):
+                raise BrokerError(f"--{f} needs the pod's git history, which the broker can't see: pass --title and --body")
+        if opt(flags, "head") is None and ctx.get("branch"):
+            flags.append(("head", ctx.get("head") or ctx["branch"]))
+    if cmd == "issue transfer" and len(pos) > 1:
+        req.targets.append(("repo", norm_repo(pos[1])))
+    if group == "repo":
+        if sub == "create":
+            if not pos:
+                raise BrokerError("gh repo create needs a name (OWNER/NAME or NAME) here")
+            owner, _, name = pos[0].rpartition("/")
+            owner = (owner or login).lower()
+            req.targets.append(("owner", owner))
+            req.created = f"{owner}/{name}".lower()
+            flags = [(k, v) for k, v in flags if k not in ("clone", "remote", "source", "push")]
+        elif sub == "list":
+            req.targets.append(("owner", (pos[0] if pos else login).lower()))
+        elif sub == "fork":
+            src = norm_repo(pos[0]) if pos else base
+            if not src:
+                raise BrokerError("no repository to fork: pass OWNER/REPO")
+            dest = (opt(flags, "org") or login).lower()
+            req.targets += [("repo", src), ("forkdest", dest)]
+            req.created = f"{dest}/{(opt(flags, 'fork-name') or src.split('/')[1]).lower()}"
+            flags = [(k, v) for k, v in flags if k not in ("clone", "remote", "remote-name")]
+            flags += [("clone", "false"), ("remote", "false")]
+            pos = [src] + pos[1:]
+            req.notes.append(f"the fork isn't added as a git remote here: git remote add fork https://github.com/{req.created}")
+        elif sub in ("gitignore", "license"):
+            pass
+        elif sub == "sync":
+            req.targets.append(("repo", norm_repo(pos[0]) if pos else base))
+            if opt(flags, "source"):
+                req.targets.append(("repo", norm_repo(opt(flags, "source"))))
+        else:
+            r = norm_repo(pos[0]) if pos and sub in ("view", "edit", "delete", "archive", "unarchive") else base
+            if not r:
+                raise BrokerError("no repository: pass OWNER/REPO or -R OWNER/REPO")
+            req.targets.append(("repo", r))
+    elif group == "search":
+        rs, os_ = optall(flags, "repo"), optall(flags, "owner")
+        req.targets += [("repo", norm_repo(r)) for r in rs] + [("owner", o.lower()) for o in os_]
+        if not rs and not os_:
+            req.targets.append(("unscoped", f"{cmd} across GitHub"))
+    elif group == "project":
+        owner = opt(flags, "owner")
+        owner = (login if owner in (None, "@me") else owner).lower()
+        number = pos[0] if pos and pos[0].isdigit() else None
+        if sub in ("list", "create"):
+            req.targets.append(("projects-of", owner))
+        elif sub == "copy":
+            src = opt(flags, "source-owner")
+            src = (login if src in (None, "@me") else src).lower()
+            req.targets.append(("project", f"{src}/{number}"))
+            tgt = opt(flags, "target-owner")
+            req.targets.append(("projects-of", (login if tgt in (None, "@me") else tgt).lower()))
+        elif number:
+            req.targets.append(("project", f"{owner}/{number}"))
+        if sub in ("link", "unlink") and repo_flag:
+            req.targets.append(("repo", norm_repo(repo_flag if "/" in repo_flag else f"{owner}/{repo_flag}")))
+        ids = [v for k in ("id", "project-id", "field-id") for v in optall(flags, k)]
+        req.targets += resolve_nodes(sess, ids)
+        if not req.targets:
+            req.targets.append(("unscoped", f"{cmd} without a project"))
+    elif group == "api":
+        return classify_api(sess, req, flags, pos, ctx, files, stdin, work, n)
+    elif group in ("gist", "status", "agent-task", "preview"):
+        req.targets.append(("unscoped", cmd))
+    req.targets += url_targets(pos + [v for _, v in flags if v])
+    req.targets = list(dict.fromkeys(req.targets))
+    req.argv = rebuild(path, flags, pos)
+    check_host_paths(req.argv, work)
+    return req
+
+
+def check_host_paths(argv, work):
+    """Refuse arguments that name an existing host path: gh runs on the host, and a path the
+    agent gives means a file in the pod (sent by the shim and rewritten above), never the host's."""
+    for a in argv:
+        for c in {a, a.partition("=")[2], a.partition("=@")[2], a.lstrip("@")}:
+            if c and (c.startswith(("/", "~")) or "../" in c or c == "..") and not c.startswith(str(work) + "/"):
+                if os.path.lexists(os.path.expanduser(c)) or "../" in c:
+                    raise BrokerError(f"refers to a path on the host, which gh can't use here: {c}")
+
+
+# ---------------------------------------------------------------------------------------------
+# gh api: REST and GraphQL
+
+def api_fields(flags, files, stdin):
+    """gh api's -f/-F parameters as a dict (typed for -F, @file read from what the shim sent)."""
+    params = {}
+    for name, v in flags:
+        if name not in ("field", "raw-field") or v is None:
+            continue
+        k, _, val = v.partition("=")
+        if name == "field":
+            if val.startswith("@"):
+                src = val[1:]
+                val = (stdin or b"" if src == "-" else files.get(src, b"")).decode("utf-8", "replace")
+            elif val in ("true", "false"):
+                val = val == "true"
+            elif val == "null":
+                val = None
+            elif re.fullmatch(r"-?\d+", val):
+                val = int(val)
+        parts = [k.split("[", 1)[0]] + re.findall(r"\[([^\]]*)\]", k)
+        cur = params
+        for j, part in enumerate(parts):
+            if j == len(parts) - 1:
+                cur[part] = val
+            elif parts[j + 1] == "":
+                cur.setdefault(part, []).append(val)
+                break
+            else:
+                cur = cur.setdefault(part, {})
+    return params
+
+
+def classify_api(sess, req, flags, pos, ctx, files, stdin, work, n):
+    host = opt(flags, "hostname")
+    if host not in (None, "github.com"):
+        raise BrokerError(f"only github.com is supported, not {host}")
+    if not pos:
+        raise BrokerError("gh api needs an endpoint")
+    endpoint = pos[0]
+    params = api_fields(flags, files, stdin)
+    inp = opt(flags, "input")
+    method = (opt(flags, "method") or ("POST" if params or inp else "GET")).upper()
+    # Files for -F key=@path and --input.
+    for i, (name, v) in enumerate(flags):
+        if name == "field" and v and "=@" in v:
+            k, _, src = v.partition("=@")
+            if src != "-":
+                flags[i] = (name, f"{k}=@{write_file(work, files, src, next(n))}")
+        if name == "input" and v and v != "-":
+            flags[i] = (name, write_file(work, files, v, next(n)))
+    req.argv = rebuild(["api"], flags, pos)
+    check_host_paths(req.argv, work)
+    owner, _, rname = (ctx.get("repo") or "/").partition("/")
+    if endpoint == "graphql":
+        body = None
+        if inp:
+            raw = stdin if inp == "-" else files.get(inp)
+            try:
+                body = json.loads(raw or b"")
+            except ValueError:
+                body = {}
+            query, variables = body.get("query"), body.get("variables") or {}
+        else:
+            variables = dict(params)
+            query = variables.pop("query", None)
+            variables.pop("operationName", None)
+        if not isinstance(query, str):
+            raise BrokerError("gh api graphql needs a query (-f query=...)")
+        classify_graphql(sess, req, query, variables)
+        req.targets = list(dict.fromkeys(req.targets))
+        return req
+    path = endpoint
+    if re.match(r"https?://", path):
+        u = urllib.parse.urlparse(path)
+        if u.hostname != "api.github.com":
+            raise BrokerError(f"only api.github.com is supported, not {u.hostname}")
+        path = u.path
+    path = path.split("?")[0].lstrip("/")
+    path = path.replace("{owner}", owner).replace("{repo}", rname).replace("{branch}", ctx.get("branch") or "{branch}")
+    if "{" in path and ("{owner}" in endpoint or "{repo}" in endpoint) and not ctx.get("repo"):
+        raise BrokerError("{owner}/{repo} need a current repository: run in a clone or use the full path")
+    m = re.match(r"repos/([^/]+)/([^/]+)(/.*)?$", path)
+    if m:
+        req.targets.append(("repo", f"{m.group(1)}/{m.group(2)}".lower()))
+        req.actions = [f"api {method} /repos/{{repo}}{m.group(3) or ''}"]
+        return req
+    m = re.match(r"(orgs|users)/([^/]+)(/.*)?$", path)
+    if m:
+        req.targets.append(("owner", m.group(2).lower()))
+        req.actions = [f"api {method} /{m.group(1)}/{{owner}}{m.group(3) or ''}"]
+        return req
+    req.actions = [f"api {method} /{path}"]
+    return req
+
+
+def gql_tokens(s):
+    i, n = 0, len(s)
+    while i < n:
+        c = s[i]
+        if c in " \t\r\n,﻿":
+            i += 1
+        elif c == "#":
+            while i < n and s[i] != "\n":
+                i += 1
+        elif s.startswith('"""', i):
+            j = s.find('"""', i + 3)
+            if j < 0:
+                raise ValueError("unterminated block string")
+            yield ("str", s[i + 3:j])
+            i = j + 3
+        elif c == '"':
+            j = i + 1
+            while j < n and s[j] != '"':
+                j += 2 if s[j] == "\\" else 1
+            yield ("str", json.loads(s[i:j + 1]))
+            i = j + 1
+        elif c.isalpha() or c == "_":
+            j = i
+            while j < n and (s[j].isalnum() or s[j] == "_"):
+                j += 1
+            yield ("name", s[i:j])
+            i = j
+        elif c == "$":
+            j = i + 1
+            while j < n and (s[j].isalnum() or s[j] == "_"):
+                j += 1
+            yield ("var", s[i + 1:j])
+            i = j
+        elif c == "-" or c.isdigit():
+            j = i + 1
+            while j < n and (s[j].isalnum() or s[j] in ".+-"):
+                j += 1
+            yield ("num", s[i:j])
+            i = j
+        elif s.startswith("...", i):
+            yield ("p", "...")
+            i += 3
+        elif c in "{}()[]:=!@|&":
+            yield ("p", c)
+            i += 1
+        else:
+            raise ValueError(f"unexpected character {c!r}")
+
+
+class GqlParser:
+    """Just enough GraphQL to see each operation's top-level fields and their arguments."""
+
+    def __init__(self, s):
+        self.t, self.i = list(gql_tokens(s)), 0
+
+    def peek(self):
+        return self.t[self.i] if self.i < len(self.t) else (None, None)
+
+    def take(self, want=None):
+        tok = self.peek()
+        if tok[0] is None or (want and tok[1] != want):
+            raise ValueError(f"expected {want or 'more'}, got {tok[1]}")
+        self.i += 1
+        return tok
+
+    def skip_balanced(self, open_, close):
+        depth = 0
+        while True:
+            k, v = self.take()
+            if k == "p" and v == open_:
+                depth += 1
+            elif k == "p" and v == close:
+                depth -= 1
+                if depth == 0:
+                    return
+
+    def skip_directives(self):
+        while self.peek() == ("p", "@"):
+            self.take()
+            self.take()
+            if self.peek() == ("p", "("):
+                self.skip_balanced("(", ")")
+
+    def value(self):
+        k, v = self.take()
+        if k == "var":
+            return ("var", v)
+        if k == "p" and v == "[":
+            out = []
+            while self.peek() != ("p", "]"):
+                out.append(self.value())
+            self.take("]")
+            return out
+        if k == "p" and v == "{":
+            out = {}
+            while self.peek() != ("p", "}"):
+                name = self.take()[1]
+                self.take(":")
+                out[name] = self.value()
+            self.take("}")
+            return out
+        if k == "name":
+            return {"true": True, "false": False, "null": None}.get(v, v)
+        return v
+
+    def selection(self):
+        fields = []
+        self.take("{")
+        while self.peek() != ("p", "}"):
+            if self.peek() == ("p", "..."):
+                self.take()
+                fields.append(("...", {}))
+                if self.peek() == ("name", "on"):
+                    self.take()
+                    self.take()
+                elif self.peek()[0] == "name":
+                    self.take()
+                self.skip_directives()
+                if self.peek() == ("p", "{"):
+                    self.skip_balanced("{", "}")
+                continue
+            name = self.take()[1]
+            if self.peek() == ("p", ":"):
+                self.take()
+                name = self.take()[1]
+            args = {}
+            if self.peek() == ("p", "("):
+                self.take()
+                while self.peek() != ("p", ")"):
+                    a = self.take()[1]
+                    self.take(":")
+                    args[a] = self.value()
+                self.take(")")
+            self.skip_directives()
+            if self.peek() == ("p", "{"):
+                self.skip_balanced("{", "}")
+            fields.append((name, args))
+        self.take("}")
+        return fields
+
+    def operations(self):
+        ops = []
+        while self.peek()[0] is not None:
+            k, v = self.peek()
+            if k == "name" and v == "fragment":
+                while self.peek() != ("p", "{"):
+                    self.take()
+                self.skip_balanced("{", "}")
+            elif k == "name" and v in ("query", "mutation", "subscription"):
+                self.take()
+                if self.peek()[0] == "name":
+                    self.take()
+                if self.peek() == ("p", "("):
+                    self.skip_balanced("(", ")")
+                self.skip_directives()
+                ops.append((v, self.selection()))
+            elif (k, v) == ("p", "{"):
+                ops.append(("query", self.selection()))
+            else:
+                raise ValueError(f"unexpected {v}")
+        return ops
+
+
+def gql_resolve(v, variables):
+    if isinstance(v, tuple) and v[0] == "var":
+        return variables.get(v[1])
+    if isinstance(v, list):
+        return [gql_resolve(x, variables) for x in v]
+    if isinstance(v, dict):
+        return {k: gql_resolve(x, variables) for k, x in v.items()}
+    return v
+
+
+def node_ids(v):
+    if isinstance(v, str):
+        return [v] if NODE_ID.match(v) else []
+    if isinstance(v, list):
+        return [i for x in v for i in node_ids(x)]
+    if isinstance(v, dict):
+        return [i for x in v.values() for i in node_ids(x)]
+    return []
+
+
+def classify_graphql(sess, req, query, variables):
+    try:
+        ops = GqlParser(query).operations()
+    except (ValueError, json.JSONDecodeError) as e:
+        req.actions = ["graphql (unparsed)"]
+        req.targets = [("unscoped", f"graphql query the broker couldn't parse: {e}")]
+        return
+    req.actions = []
+    for optype, fields in ops:
+        for name, args in fields:
+            if name == "__typename":
+                continue
+            req.actions.append(f"graphql {optype} {name}")
+            args = gql_resolve(args, variables)
+            if name == "...":
+                req.targets.append(("unscoped", f"graphql {optype} with a top-level fragment"))
+            elif optype == "query" and name == "repository":
+                o, r = args.get("owner"), args.get("name")
+                if isinstance(o, str) and isinstance(r, str):
+                    req.targets.append(("repo", f"{o}/{r}".lower()))
+                else:
+                    req.targets.append(("unscoped", "graphql repository without a literal owner and name"))
+            elif optype == "query" and name in ("organization", "user", "repositoryOwner"):
+                lg = args.get("login")
+                req.targets.append(("owner", lg.lower()) if isinstance(lg, str) else
+                                   ("unscoped", f"graphql {name} without a literal login"))
+            elif optype == "query" and name in ("node", "nodes"):
+                ids = node_ids(args)
+                req.targets += resolve_nodes(sess, ids) if ids else [("unscoped", f"graphql {name} without ids")]
+            elif optype == "mutation":
+                ids = node_ids(args)
+                if ids:
+                    req.targets += resolve_nodes(sess, ids)
+                else:
+                    req.targets.append(("unscoped", f"graphql mutation {name} (no node ids to scope it)"))
+    if not req.actions:
+        req.actions = ["graphql (empty)"]
+
+
+_nodes = {}
+NODE_QUERY = """query($ids:[ID!]!){nodes(ids:$ids){__typename id
+... on Repository{nameWithOwner}
+... on Issue{repository{nameWithOwner}} ... on PullRequest{repository{nameWithOwner}}
+... on IssueComment{repository{nameWithOwner}} ... on PullRequestReview{repository{nameWithOwner}}
+... on PullRequestReviewComment{repository{nameWithOwner}} ... on PullRequestReviewThread{repository{nameWithOwner}}
+... on Label{repository{nameWithOwner}} ... on Milestone{repository{nameWithOwner}}
+... on Discussion{repository{nameWithOwner}} ... on Commit{repository{nameWithOwner}} ... on Ref{repository{nameWithOwner}}
+... on ProjectV2{number owner{...O}} ... on ProjectV2Item{project{number owner{...O}}}
+... on ProjectV2Field{project{number owner{...O}}} ... on ProjectV2SingleSelectField{project{number owner{...O}}}
+... on ProjectV2IterationField{project{number owner{...O}}} ... on ProjectV2View{project{number owner{...O}}}
+... on User{login} ... on Organization{login} ... on Bot{login}}}
+fragment O on ProjectV2Owner{... on User{login} ... on Organization{login}}"""
+
+
+def node_target(n):
+    if not n:
+        return None
+    t = n.get("__typename")
+    repo = n.get("nameWithOwner") or (n.get("repository") or {}).get("nameWithOwner")
+    if repo:
+        return ("repo", repo.lower())
+    proj = n if t == "ProjectV2" else n.get("project")
+    if proj and proj.get("number") is not None:
+        return ("project", f"{(proj.get('owner') or {}).get('login', '?')}/{proj['number']}".lower())
+    if t == "Organization":
+        return ("owner", n["login"].lower())
+    if t in ("User", "Bot"):
+        return ("people", n["login"].lower())  # a person referenced (assignee, reviewer): no scope
+    return None
+
+
+def resolve_nodes(sess, ids):
+    """Targets of GraphQL node ids (what repository or project each belongs to)."""
+    todo = [i for i in dict.fromkeys(ids) if i not in _nodes]
+    if todo:
+        out = gh_query(sess, ["api", "graphql", "-f", f"query={NODE_QUERY}"] +
+                       [a for i in todo for a in ("-f", f"ids[]={i}")])
+        try:
+            nodes = json.loads(out or "")["data"]["nodes"]
+        except (ValueError, KeyError, TypeError):
+            nodes = [None] * len(todo)
+        for i, node in zip(todo, nodes):
+            _nodes[i] = node_target(node)
+    targets = []
+    for i in ids:
+        t = _nodes.get(i)
+        if t is None:
+            targets.append(("unscoped", f"node {i}"))
+        elif t[0] != "people":
+            targets.append(t)
+    return targets
+
+
+# ---------------------------------------------------------------------------------------------
+# Running gh
+
+class Framer:
+    """The response to the shim: one JSON object per line (stdout, stderr, exit status)."""
+
+    def __init__(self, wfile):
+        self.w, self.lock, self.broken = wfile, threading.Lock(), False
+
+    def send(self, obj):
+        with self.lock:
+            if self.broken:
+                return False
+            try:
+                self.w.write((json.dumps(obj) + "\n").encode())
+                self.w.flush()
+                return True
+            except OSError:
+                self.broken = True
+                return False
+
+    def data(self, stream, b):
+        return self.send({"t": stream, "d": base64.b64encode(b).decode()})
+
+    def msg(self, text):
+        return self.data("err", f"apod gh broker: {text}\n".encode())
+
+
+def run_gh(sess, req, tty, out, work):
+    env = gh_env(token_for(sess.user), tty, req.repo)
+    p = subprocess.Popen([gh_bin(), *req.argv], cwd=work, env=env,
+                         stdin=subprocess.PIPE if req.stdin is not None else subprocess.DEVNULL,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def pump(src, name):
+        for chunk in iter(lambda: src.read1(65536), b""):
+            if not out.data(name, chunk):
+                p.kill()
+                break
+
+    ts = [threading.Thread(target=pump, args=(p.stdout, "out"), daemon=True),
+          threading.Thread(target=pump, args=(p.stderr, "err"), daemon=True)]
+    for t in ts:
+        t.start()
+    if req.stdin is not None:
+        try:
+            p.stdin.write(req.stdin)
+            p.stdin.close()
+        except OSError:
+            pass
+    for t in ts:
+        t.join()
+    return p.wait()
+
+
+def handle_gh(h, sess, body):
+    try:
+        r = json.loads(body)
+        argv = [str(a) for a in r.get("argv", [])]
+        ctx = r.get("ctx") or {}
+        files = {k: base64.b64decode(v) for k, v in (r.get("files") or {}).items()}
+        stdin = base64.b64decode(r["stdin"]) if r.get("stdin") is not None else None
+        tty = int(r.get("tty") or 0)
+    except (ValueError, TypeError, KeyError):
+        h.send_error(400)
+        return
+    h.send_response(200)
+    h.send_header("Content-Type", "application/x-ndjson")
+    h.send_header("Connection", "close")
+    h.end_headers()
+    out = Framer(h.wfile)
+    (BDIR / "tmp").mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=BDIR / "tmp") as work:
+        work = Path(work)
+        try:
+            req = classify_gh(sess, argv, ctx, files, stdin, work)
+        except BrokerError as e:
+            out.msg(str(e))
+            out.send({"t": "exit", "code": 1})
+            return
+        req.stdin = stdin
+        if req.help:
+            code = run_gh(sess, req, tty, out, work)
+            out.send({"t": "exit", "code": code})
+            return
+        ev = new_event(sess, req)
+
+        def waiting(ev):
+            out.msg(f"`{req.display}` needs your approval ({ev['reason']}). Waiting up to "
+                    f"{ASK_TIMEOUT:.0f}s. On the host: apod gh allow {ev['id']} [--session|--persona], "
+                    f"apod gh deny {ev['id']}, or apod gh ui")
+
+        try:
+            ok = authorize(sess, req, ev, waiting)
+        except BrokerError as e:
+            ev.update(decision="error", reason=str(e))
+            ok = False
+        if not ok:
+            log_event(ev)
+            out.msg(f"rejected ({ev['decision']}): `{req.display}`: {ev['reason']}. "
+                    f"The user can allow it (apod gh allow {ev['id']} --session) and you can retry.")
+            out.send({"t": "exit", "code": 1})
+            return
+        try:
+            code = run_gh(sess, req, tty, out, work)
+        except BrokerError as e:
+            out.msg(str(e))
+            code = 1
+        ev["exit"] = code
+        log_event(ev)
+        if code == 0 and req.created:
+            with LOCK:
+                sess.add_scope(("repo", req.created))
+                sess.save()
+            out.msg(f"added {req.created} to this session's scope")
+        for note in req.notes if code == 0 else []:
+            out.msg(note)
+        out.send({"t": "exit", "code": code})
+
+
+# ---------------------------------------------------------------------------------------------
+# git over HTTP: the pod's github.com remotes come here (through the pod's apod-git-forward)
+
+def pkt(data):
+    return b"%04x" % (len(data) + 4) + data
+
+
+def sideband(band, data):
+    out = b""
+    for i in range(0, len(data), 65000):
+        out += pkt(bytes([band]) + data[i:i + 65000])
+    return out
+
+
+def read_body(h):
+    if h.headers.get("Transfer-Encoding", "").lower() == "chunked":
+        chunks = []
+        while True:
+            n = int(h.rfile.readline().split(b";")[0].strip() or b"0", 16)
+            if n == 0:
+                while h.rfile.readline() not in (b"\r\n", b"\n", b""):
+                    pass
+                break
+            chunks.append(h.rfile.read(n))
+            h.rfile.readline()
+        return b"".join(chunks)
+    return h.rfile.read(int(h.headers.get("Content-Length") or 0))
+
+
+def push_commands(body, gzipped):
+    """Ref updates and capabilities at the start of a receive-pack request."""
+    data = body[:1 << 20]
+    if gzipped:
+        data = zlib.decompressobj(16 + zlib.MAX_WBITS).decompress(body, 1 << 20)
+    cmds, caps, i = [], set(), 0
+    while i + 4 <= len(data):
+        n = int(data[i:i + 4], 16)
+        if n == 0:
+            break
+        line = data[i + 4:i + n].rstrip(b"\n")
+        i += n
+        if line.startswith(b"shallow "):
+            continue
+        if b"\0" in line:
+            line, c = line.split(b"\0", 1)
+            caps |= set(c.decode().split())
+        parts = line.decode().split(" ")
+        if len(parts) != 3:
+            raise BrokerError(f"unexpected push command: {line[:80]!r}")
+        cmds.append(parts)
+    return cmds, caps
+
+
+_repo_info = {}
+
+
+def repo_info(sess, repo):
+    if repo not in _repo_info:
+        out = gh_query(sess, ["api", f"repos/{repo}", "--jq", "{default_branch, private}"])
+        try:
+            _repo_info[repo] = json.loads(out or "")
+        except ValueError:
+            return {}
+    return _repo_info[repo]
+
+
+def upstream_request(sess, method, path, body, h, gzip_ok=True):
+    u = urllib.parse.urlparse(UPSTREAM)
+    conn = (http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection)(
+        u.hostname, u.port, timeout=600)
+    names = ("Content-Type", "Accept", "Content-Encoding", "Git-Protocol", "User-Agent") + \
+        (("Accept-Encoding",) if gzip_ok else ())
+    headers = {k: h.headers[k] for k in names if h.headers.get(k)}
+    tok = token_for(sess.user)
+    headers["Authorization"] = "Basic " + base64.b64encode(f"x-access-token:{tok}".encode()).decode()
+    conn.request(method, path, body=body, headers=headers)
+    return conn, conn.getresponse()
+
+
+def relay_response(h, resp, started=False):
+    if not started:
+        h.send_response(resp.status)
+        for k, v in resp.getheaders():
+            if k.lower() not in ("connection", "transfer-encoding", "keep-alive"):
+                h.send_header(k, v)
+        h.send_header("Connection", "close")
+        h.end_headers()
+    for chunk in iter(lambda: resp.read(65536), b""):
+        h.wfile.write(chunk)
+    h.wfile.flush()
+
+
+def git_deny(h, text, status=403):
+    data = f"apod gh broker: {text}\n".encode()
+    h.send_response(status)
+    h.send_header("Content-Type", "text/plain; charset=utf-8")
+    h.send_header("Content-Length", str(len(data)))
+    h.send_header("Connection", "close")
+    h.end_headers()
+    h.wfile.write(data)
+
+
+def handle_git(h, sess, method):
+    u = urllib.parse.urlparse(h.path)
+    m = re.match(r"^/git/([^/]+)/([^/]+?)(?:\.git)?/(info/refs|git-upload-pack|git-receive-pack)$", u.path)
+    if not m:
+        return git_deny(h, f"not a git request the broker handles: {u.path}", 404)
+    repo = f"{m.group(1)}/{m.group(2)}".lower()
+    endpoint = m.group(3)
+    service = urllib.parse.parse_qs(u.query).get("service", [""])[0] if endpoint == "info/refs" else endpoint
+    if service not in ("git-upload-pack", "git-receive-pack") or (endpoint == "info/refs") != (method == "GET"):
+        return git_deny(h, "unsupported git request", 400)
+    body = read_body(h) if method == "POST" else None
+    upath = f"/{m.group(1)}/{m.group(2)}.git/{endpoint}" + (f"?{u.query}" if u.query else "")
+    push = service == "git-receive-pack"
+    req = Request("git", f"git {'push' if push else 'fetch'} {repo}")
+    req.targets = [("repo", repo)]
+
+    def forward():
+        conn, resp = upstream_request(sess, method, upath, body, h, gzip_ok=not push)
+        relay_response(h, resp)
+
+    if not push:
+        req.actions = ["git fetch"]
+        if not sess.in_scope(("repo", repo)) and repo_info(sess, repo).get("private") is False:
+            req.actions, req.targets = ["git fetch public"], []
+        if method == "POST":
+            # Checked (and logged) at the ref advertisement; the negotiation rounds follow it.
+            if evaluate(sess, req)[0] != "allow" and not any(
+                    e["session"] == sess.id and e["request"] == req.display and now() - e["ts"] < 600
+                    and e["decision"].startswith(("allowed", "approved")) for e in list(EVENTS)):
+                return git_deny(h, f"fetch of {repo} not allowed")
+            return forward()
+    elif method == "GET":
+        # The ref advertisement before a push: only the repository's scope matters here; the ref
+        # updates themselves are checked when they come (POST).
+        if sess.in_scope(("repo", repo)):
+            return forward()
+        req.display += " (before a push)"
+    else:
+        return handle_push(h, sess, req, repo, upath, body)
+    ev = new_event(sess, req)
+    ev["push_adv"] = push
+    ok = authorize(sess, req, ev)
+    log_event(ev)
+    if not ok:
+        return git_deny(h, f"{req.display} rejected ({ev['decision']}): {ev['reason']}. "
+                           f"The user can allow it (apod gh allow {ev['id']} --session) and you can retry.")
+    forward()
+
+
+def handle_push(h, sess, req, repo, upath, body):
+    try:
+        cmds, caps = push_commands(body, h.headers.get("Content-Encoding", "").lower() == "gzip")
+    except (BrokerError, ValueError, zlib.error) as e:
+        return git_deny(h, f"couldn't read the push: {e}")
+    default = repo_info(sess, repo).get("default_branch")
+    kinds = []
+    for old, new, ref in cmds:
+        if set(new) == {"0"}:
+            kinds.append("git push delete")
+        elif ref.startswith("refs/tags/"):
+            kinds.append("git push tag")
+        elif ref == f"refs/heads/{default}" or (default is None and ref in ("refs/heads/main", "refs/heads/master")):
+            kinds.append("git push default-branch")
+        elif ref.startswith("refs/heads/"):
+            kinds.append("git push branch")
+        else:
+            kinds.append("git push other-ref")
+    req.actions = list(dict.fromkeys(kinds)) or ["git push"]
+    req.display = f"git push {repo} " + " ".join(ref for _, _, ref in cmds)
+    band = "side-band-64k" in caps or "side-band" in caps
+    started = False
+
+    def start():
+        nonlocal started
+        if not started:
+            h.send_response(200)
+            h.send_header("Content-Type", "application/x-git-receive-pack-result")
+            h.send_header("Cache-Control", "no-cache")
+            h.send_header("Connection", "close")
+            h.end_headers()
+            started = True
+
+    def waiting(ev):
+        # With side-band, git shows these as "remote: ..." lines while the push waits.
+        if band:
+            start()
+            h.wfile.write(sideband(2, f"apod gh broker: this push needs your approval ({ev['reason']}). "
+                                      f"Waiting up to {ASK_TIMEOUT:.0f}s. On the host: apod gh allow {ev['id']} "
+                                      f"[--session|--persona], or apod gh ui\n".encode()))
+            h.wfile.flush()
+
+    ev = new_event(sess, req)
+    ok = authorize(sess, req, ev, waiting)
+    log_event(ev)
+    if not ok:
+        msg = f"push rejected ({ev['decision']}): {ev['reason']}"
+        if not band and not started:
+            return git_deny(h, msg)
+        start()
+        report = pkt(b"unpack ok\n") + b"".join(pkt(f"ng {ref} {msg}\n".encode()) for _, _, ref in cmds) + b"0000"
+        h.wfile.write(sideband(2, f"apod gh broker: {msg}\n".encode()) + sideband(1, report) + b"0000")
+        return
+    conn, resp = upstream_request(sess, "POST", upath, body, h, gzip_ok=False)
+    if started and resp.status != 200:
+        h.wfile.write(sideband(3, f"GitHub answered {resp.status} {resp.reason}\n".encode()))
+        return
+    relay_response(h, resp, started)
+
+
+# ---------------------------------------------------------------------------------------------
+# Servers
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def address_string(self):
+        return "local"
+
+    def log_message(self, fmt, *args):
+        pass
+
+    def send_json(self, obj, status=200):
+        data = (json.dumps(obj) + "\n").encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(data)
+        self.close_connection = True
+
+
+class SessionHandler(Handler):
+    def sess(self):
+        return SESSIONS.get(self.server.session_id)
+
+    def do_GET(self):
+        self.close_connection = True
+        sess = self.sess()
+        if not sess:
+            return self.send_json({"error": "session closed"}, 410)
+        if self.path == "/whoami":
+            return self.send_json(sess.summary())
+        if self.path.startswith("/git/"):
+            return self.guard(handle_git, sess, "GET")
+        self.send_json({"error": "not found"}, 404)
+
+    def do_POST(self):
+        self.close_connection = True
+        sess = self.sess()
+        if not sess:
+            return self.send_json({"error": "session closed"}, 410)
+        if self.path == "/gh":
+            return self.guard(handle_gh, sess, read_body(self))
+        if self.path.startswith("/git/"):
+            return self.guard(handle_git, sess, "POST")
+        self.send_json({"error": "not found"}, 404)
+
+    def guard(self, fn, *args):
+        try:
+            fn(self, *args)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as e:  # keep the broker up; tell the client if we still can
+            print(f"apod-broker: {fn.__name__}: {e!r}", file=sys.stderr)
+            try:
+                git_deny(self, f"internal error: {e}", 500)
+            except OSError:
+                pass
+
+
+class UnixServer(socketserver.ThreadingUnixStreamServer):
+    daemon_threads = True
+
+
+def listen_session(sess):
+    sess.dir.mkdir(parents=True, exist_ok=True)
+    sock = sess.dir / "gh.sock"
+    if len(os.fsencode(sock)) > 107:
+        raise BrokerError(f"socket path too long for a unix socket: {sock} (use a shorter APOD_ROOT)")
+    if sock.exists():
+        sock.unlink()
+    srv = UnixServer(str(sock), SessionHandler)
+    srv.session_id = sess.id
+    os.chmod(sock, 0o600)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    SERVERS[sess.id] = srv
+
+
+def register(r):
+    sid = r.get("id") or secrets.token_hex(6)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{4,64}", sid):
+        raise BrokerError("bad session id")
+    persona = r.get("persona") or ""
+    persona_rules(persona)  # fails on an unknown persona
+    user = r.get("user") or ""
+    tok = token_for(user)
+    login = user
+    if not login:
+        try:
+            out = subprocess.run([gh_bin(), "api", "user", "--jq", ".login"], capture_output=True, text=True,
+                                 env=gh_env(tok), cwd=BDIR / "home", timeout=30, stdin=subprocess.DEVNULL)
+            login = out.stdout.strip()
+        except subprocess.TimeoutExpired:
+            pass
+    scope = {"repos": [], "owners": [], "projects": []}
+    for s in r.get("scope", []):
+        s = s.strip().lower()
+        if not s:
+            continue
+        if s.startswith("project:"):
+            scope["projects"].append(s[8:])
+        elif "/" in s:
+            scope["repos"].append(norm_repo(s) if "*" not in s else s)
+        else:
+            scope["owners"].append(s)
+    sess = Session({"id": sid, "profile": r.get("profile", ""), "persona": persona, "user": user,
+                    "login": login, "project": r.get("project", ""), "scope": scope,
+                    "grants": {}, "created": now()})
+    with LOCK:
+        if sid in SESSIONS:
+            unregister(sid)
+        SESSIONS[sid] = sess
+        listen_session(sess)
+        sess.save()
+    return {"id": sid, "dir": str(sess.dir), "ask_timeout": ASK_TIMEOUT, **sess.summary()}
+
+
+def unregister(sid):
+    with LOCK:
+        SESSIONS.pop(sid, None)
+        srv = SERVERS.pop(sid, None)
+        if srv:
+            srv.shutdown()
+            srv.server_close()
+        shutil.rmtree(SDIR / sid, ignore_errors=True)
+
+
+def state():
+    with LOCK:
+        return {"sessions": [s.data() for s in SESSIONS.values()],
+                "pending": [p.ev for p in PENDING.values()],
+                "events": list(EVENTS)[-200:],
+                "grants": load_grants()["personas"],
+                "ask_timeout": ASK_TIMEOUT}
+
+
+def admin_call(path, body):
+    if path == "/register":
+        return register(body)
+    if path == "/unregister":
+        unregister(body["id"])
+        return {"ok": True}
+    if path == "/decide":
+        return decide(int(body["id"]), body["how"])
+    if path == "/grants/remove":
+        g = load_grants()
+        lst = g["personas"].get(body["persona"], [])
+        if body["action"] in lst:
+            lst.remove(body["action"])
+        save_grants(g)
+        return {"ok": True}
+    if path == "/scope/remove":
+        sess = SESSIONS[body["session"]]
+        for k in ("repos", "owners", "projects"):
+            if body["value"] in sess.scope[k]:
+                sess.scope[k].remove(body["value"])
+        for k in ("actions", "unscoped"):
+            if body["value"] in sess.grants[k]:
+                sess.grants[k].remove(body["value"])
+        sess.save()
+        return {"ok": True}
+    if path == "/state":
+        return state()
+    if path == "/ui":
+        return {"url": UI.get("url")}
+    if path == "/stop":
+        threading.Thread(target=lambda: (time.sleep(0.2), os._exit(0)), daemon=True).start()
+        return {"ok": True}
+    raise BrokerError(f"unknown admin call {path}")
+
+
+class AdminHandler(Handler):
+    def do_POST(self):
+        self.close_connection = True
+        try:
+            body = json.loads(read_body(self) or b"{}")
+            self.send_json(admin_call(self.path, body))
+        except (BrokerError, KeyError, ValueError) as e:
+            self.send_json({"error": str(e)}, 400)
+
+
+class UIHandler(Handler):
+    def authed(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        tok = self.headers.get("X-Apod-Token") or q.get("t", [""])[0]
+        return secrets.compare_digest(tok, UI["token"])
+
+    def do_GET(self):
+        self.close_connection = True
+        if not self.authed():
+            return self.send_json({"error": "forbidden"}, 403)
+        if urllib.parse.urlparse(self.path).path == "/api/state":
+            return self.send_json(state())
+        data = UI_HTML.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_POST(self):
+        self.close_connection = True
+        if not self.authed() or self.headers.get("Origin") not in (None, UI["origin"]):
+            return self.send_json({"error": "forbidden"}, 403)
+        path = urllib.parse.urlparse(self.path).path
+        if path not in ("/api/decide", "/api/grants/remove", "/api/scope/remove"):
+            return self.send_json({"error": "not found"}, 404)
+        try:
+            body = json.loads(read_body(self) or b"{}")
+            self.send_json(admin_call(path[4:], body))
+        except (BrokerError, KeyError, ValueError) as e:
+            self.send_json({"error": str(e)}, 400)
+
+
+class TCPServer(socketserver.ThreadingTCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def serve():
+    for d in (BDIR, SDIR, BDIR / "home" / "gh", BDIR / "tmp"):
+        d.mkdir(parents=True, exist_ok=True)
+    os.chmod(BDIR, 0o700)
+    shutil.rmtree(BDIR / "tmp", ignore_errors=True)
+    (BDIR / "tmp").mkdir()
+    global COUNTER
+    last = 0
+    try:
+        with LOGF.open() as f:
+            for line in f:
+                try:
+                    last = max(last, json.loads(line).get("id", 0))
+                except ValueError:
+                    pass
+    except OSError:
+        pass
+    COUNTER = itertools.count(last + 1)
+    if ADMIN.exists():
+        try:
+            client("/state", {})
+            sys.exit("apod-broker: already running")
+        except (OSError, BrokerError):
+            ADMIN.unlink()
+    for d in SDIR.iterdir():
+        try:
+            sess = Session(json.loads((d / "session.json").read_text()))
+        except (OSError, ValueError):
+            shutil.rmtree(d, ignore_errors=True)
+            continue
+        try:
+            listen_session(sess)
+            SESSIONS[sess.id] = sess
+        except (OSError, BrokerError) as e:
+            print(f"apod-broker: dropping session {sess.id}: {e}", file=sys.stderr)
+            shutil.rmtree(d, ignore_errors=True)
+    ui = TCPServer(("127.0.0.1", UI_PORT), UIHandler)
+    UI["token"] = secrets.token_urlsafe(24)
+    UI["origin"] = f"http://127.0.0.1:{ui.server_address[1]}"
+    UI["url"] = f"{UI['origin']}/?t={UI['token']}"
+    UIF.write_text(json.dumps({"url": UI["url"]}) + "\n")
+    os.chmod(UIF, 0o600)
+    threading.Thread(target=ui.serve_forever, daemon=True).start()
+    admin = UnixServer(str(ADMIN), AdminHandler)
+    os.chmod(ADMIN, 0o600)
+    print(f"apod-broker: up ({len(SESSIONS)} sessions), ui {UI['origin']}", file=sys.stderr, flush=True)
+    admin.serve_forever()
+
+
+# ---------------------------------------------------------------------------------------------
+# Client side (apod and apod gh ...)
+
+class UnixHTTP(http.client.HTTPConnection):
+    def __init__(self, path, timeout=None):
+        super().__init__("localhost", timeout=timeout)
+        self.sock_path = path
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.connect(str(self.sock_path))
+
+
+def client(path, body, timeout=120):
+    c = UnixHTTP(ADMIN, timeout)
+    c.request("POST", path, json.dumps(body), {"Content-Type": "application/json"})
+    r = c.getresponse()
+    out = json.loads(r.read() or b"{}")
+    if r.status != 200:
+        raise BrokerError(out.get("error", f"broker answered {r.status}"))
+    return out
+
+
+def ensure():
+    try:
+        client("/state", {}, timeout=5)
+        return
+    except (OSError, BrokerError, ValueError):
+        pass
+    BDIR.mkdir(parents=True, exist_ok=True)
+    with (BDIR / "broker.log").open("a") as log:
+        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "serve"], stdin=subprocess.DEVNULL,
+                         stdout=log, stderr=log, start_new_session=True, cwd=str(BDIR))
+    for _ in range(50):
+        time.sleep(0.1)
+        try:
+            client("/state", {}, timeout=5)
+            return
+        except (OSError, BrokerError, ValueError):
+            pass
+    sys.exit(f"apod-broker: didn't start; see {BDIR / 'broker.log'}")
+
+
+def fmt_time(ts):
+    return time.strftime("%m-%d %H:%M:%S", time.localtime(ts))
+
+
+def print_event(e):
+    tg = ", ".join(fmt_target(tuple(t)) for t in e.get("targets", []))
+    line = f"{e['id']:>5}  {fmt_time(e['ts'])}  {e['profile']:<14} {e['decision']:<20} {e['request']}"
+    if tg:
+        line += f"  [{tg}]"
+    if e.get("reason") and not e["decision"].startswith("allowed"):
+        line += f"\n       {e['reason']}"
+    print(line)
+
+
+def main(argv):
+    if not argv:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    cmd, args = argv[0], argv[1:]
+    if cmd == "serve":
+        serve()
+        return 0
+    try:
+        if cmd == "register":
+            # register --id ID --profile P --persona P [--user U] --project DIR [--scope S]...
+            r = {"scope": []}
+            it = iter(args)
+            for a in it:
+                k = a.lstrip("-")
+                if k == "scope":
+                    r["scope"].append(next(it))
+                else:
+                    r[k] = next(it)
+            ensure()
+            print(json.dumps(client("/register", r)))
+        elif cmd == "unregister":
+            client("/unregister", {"id": args[0]}, timeout=10)
+        elif cmd == "ensure":
+            ensure()
+        elif cmd in ("allow", "deny"):
+            if not args:
+                sys.exit(f"usage: apod gh {cmd} ID" + (" [--session|--persona]" if cmd == "allow" else ""))
+            how = "deny" if cmd == "deny" else "persona" if "--persona" in args else "session" if "--session" in args else "once"
+            ev = client("/decide", {"id": int(args[0]), "how": how})
+            print(f"apod gh: {'denied' if how == 'deny' else 'allowed (' + how + ')'}: {ev['request']}")
+        elif cmd == "pending":
+            st = client("/state", {})
+            for e in st["pending"]:
+                print_event(e)
+            if not st["pending"]:
+                print("apod gh: nothing waiting for approval", file=sys.stderr)
+        elif cmd == "log":
+            n = int(args[args.index("-n") + 1]) if "-n" in args else 30
+            shown = {}
+            first = True
+            while True:
+                st = client("/state", {})
+                evs = st["events"] if not first else st["events"][-n:]
+                for e in evs:
+                    if shown.get(e["id"]) != e["decision"]:
+                        print_event(e)
+                        shown[e["id"]] = e["decision"]
+                sys.stdout.flush()
+                if "-f" not in args:
+                    break
+                first = False
+                time.sleep(1)
+        elif cmd == "sessions":
+            for s in client("/state", {})["sessions"]:
+                scope = s["scope"]["repos"] + [f"owner {o}" for o in s["scope"]["owners"]] + \
+                    [f"project {p}" for p in s["scope"]["projects"]]
+                print(f"{s['id'][:8]}  {s['profile']:<14} {s['persona']:<11} {s['login']:<16} {s['project']}\n"
+                      f"          scope: {', '.join(scope) or '-'}"
+                      + (f"\n          granted: {', '.join(s['grants']['actions'] + s['grants']['unscoped'])}"
+                         if s["grants"]["actions"] or s["grants"]["unscoped"] else ""))
+        elif cmd == "grants":
+            if args[:1] == ["rm"]:
+                client("/grants/remove", {"persona": args[1], "action": " ".join(args[2:])})
+            for p, lst in load_grants()["personas"].items():
+                for a in lst:
+                    print(f"{p:<12} {a}")
+        elif cmd == "personas":
+            raw = load_personas()
+            for name in raw:
+                allow, deny = persona_rules(name, raw)
+                print(f"{name}: {raw[name].get('description', '')}\n  allow: {', '.join(allow)}"
+                      + (f"\n  deny: {', '.join(deny)}" if deny else ""))
+        elif cmd == "ui":
+            ensure()
+            print(client("/ui", {})["url"])
+        elif cmd == "stop":
+            client("/stop", {}, timeout=5)
+        elif cmd == "restart":
+            try:
+                client("/stop", {}, timeout=5)
+                time.sleep(0.5)
+            except (OSError, BrokerError):
+                pass
+            ensure()
+        else:
+            print(__doc__.strip(), file=sys.stderr)
+            return 2
+    except (OSError, BrokerError) as e:
+        if isinstance(e, (FileNotFoundError, ConnectionRefusedError)):
+            sys.exit("apod gh: the broker isn't running (it starts with the first pod that uses it)")
+        sys.exit(f"apod gh: {e}")
+    return 0
+
+
+UI_HTML = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>apod gh broker</title>
+<style>
+:root{--bg:#f7f7f5;--fg:#1d1d1b;--mute:#6b6b66;--card:#fff;--line:#e2e1dc;--ok:#1f7a4d;--bad:#b3261e;--warn:#9a6700;--acc:#2d5bd7}
+@media (prefers-color-scheme:dark){:root{--bg:#161615;--fg:#ecebe6;--mute:#9a9992;--card:#1f1f1d;--line:#33332f;--ok:#5cc28e;--bad:#f2867e;--warn:#e0b44c;--acc:#86a6ff}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif}
+main{max-width:1100px;margin:0 auto;padding:20px 16px 60px}h1{font-size:20px;margin:0 0 4px}h2{font-size:15px;margin:28px 0 10px;color:var(--mute);text-transform:uppercase;letter-spacing:.06em}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+.req{font-weight:600;word-break:break-all}.mute{color:var(--mute)}.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+button{border:1px solid var(--line);background:var(--bg);color:var(--fg);border-radius:7px;padding:5px 10px;cursor:pointer;font:inherit}
+button.p{background:var(--acc);border-color:var(--acc);color:#fff}button.d{color:var(--bad)}
+.tag{display:inline-block;border:1px solid var(--line);border-radius:5px;padding:0 6px;margin:2px 4px 2px 0;font-size:12px}
+.tag.x{cursor:pointer}.tag.x:hover{border-color:var(--bad);color:var(--bad)}
+.allowed,.approved{color:var(--ok)}.denied,.rejected,.timed,.error{color:var(--bad)}.pending{color:var(--warn)}
+.wrap{overflow-x:auto}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--mute);font-weight:500}
+.pend{border-color:var(--warn)}
+</style>
+<main><h1>apod gh broker</h1><div class=mute id=sub></div>
+<h2>Waiting for approval</h2><div id=pending></div>
+<h2>Sessions</h2><div id=sessions></div>
+<h2>Persona grants</h2><div id=grants></div>
+<h2>Recent requests</h2><div class=wrap><table><thead><tr><th>#</th><th>time</th><th>profile</th><th>request</th><th>decision</th><th></th></tr></thead><tbody id=events></tbody></table></div>
+</main>
+<script>
+const T=new URLSearchParams(location.search).get('t');
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const tgt=t=>({repo:t[1],owner:'owner '+t[1],project:'project '+t[1],'projects-of':'projects of '+t[1],forkdest:'fork into '+t[1],unscoped:'unscoped: '+t[1]}[t[0]]||t.join(' '));
+const tm=ts=>new Date(ts*1000).toLocaleTimeString();
+async function post(p,b){const r=await fetch(p,{method:'POST',headers:{'X-Apod-Token':T,'Content-Type':'application/json'},body:JSON.stringify(b)});if(!r.ok){alert((await r.json()).error)}load()}
+const decide=(id,how)=>post('/api/decide',{id,how});
+function btns(e,live){return `<div class=row>${live?`<button class=p onclick="decide(${e.id},'once')">Allow once</button>`:''}
+<button onclick="decide(${e.id},'session')">${live?'Allow':'Grant'} for this session</button>
+<button onclick="decide(${e.id},'persona')">${live?'Allow':'Grant'} for persona ${esc(e.persona)}</button>
+${live?`<button class=d onclick="decide(${e.id},'deny')">Deny</button>`:''}</div>`}
+function cls(d){return (d||'').split(' ')[0]}
+async function load(){
+ const r=await fetch('/api/state',{headers:{'X-Apod-Token':T}});if(!r.ok){document.getElementById('sub').textContent='not authorised';return}
+ const s=await r.json();
+ document.getElementById('sub').textContent=`${s.sessions.length} session(s), requests wait ${s.ask_timeout}s for a decision`;
+ document.getElementById('pending').innerHTML=s.pending.length?s.pending.map(e=>`<div class="card pend"><div class=req><code>${esc(e.request)}</code></div>
+ <div class=mute>#${e.id} · ${esc(e.profile)} (${esc(e.persona)} as ${esc(e.login)}) · ${esc(e.project)}</div><div>${esc(e.reason)}</div>${btns(e,true)}</div>`).join(''):'<div class=mute>Nothing waiting.</div>';
+ document.getElementById('sessions').innerHTML=s.sessions.map(x=>`<div class=card><b>${esc(x.profile)}</b> <span class=mute>· persona ${esc(x.persona)} as ${esc(x.login)} · ${esc(x.project)} · ${esc(x.id.slice(0,8))}</span>
+ <div>scope: ${[...x.scope.repos,...x.scope.owners.map(o=>'owner '+o),...x.scope.projects.map(p=>'project '+p)].map(v=>`<span class="tag x" title="remove" onclick="post('/api/scope/remove',{session:'${x.id}',value:${esc(JSON.stringify(v.replace(/^(owner|project) /,'')))}})">${esc(v)}</span>`).join('')||'<span class=mute>none</span>'}</div>
+ ${x.grants.actions.length+x.grants.unscoped.length?`<div>granted: ${[...x.grants.actions,...x.grants.unscoped].map(v=>`<span class="tag x" title="remove" onclick="post('/api/scope/remove',{session:'${x.id}',value:${esc(JSON.stringify(v))}})">${esc(v)}</span>`).join('')}</div>`:''}</div>`).join('')||'<div class=mute>No sessions.</div>';
+ const g=Object.entries(s.grants).flatMap(([p,l])=>l.map(a=>[p,a]));
+ document.getElementById('grants').innerHTML=g.length?`<div class=card>${g.map(([p,a])=>`<span class="tag x" title="remove" onclick="post('/api/grants/remove',{persona:${esc(JSON.stringify(p))},action:${esc(JSON.stringify(a))}})">${esc(p)}: ${esc(a)}</span>`).join('')}</div>`:'<div class=mute>None (grants added here extend gh-personas.toml).</div>';
+ document.getElementById('events').innerHTML=s.events.slice().reverse().map(e=>`<tr><td class=mono>${e.id}</td><td class=mono>${tm(e.ts)}</td><td>${esc(e.profile)}</td>
+ <td><code>${esc(e.request)}</code><div class=mute>${e.actions.map(esc).join(', ')}${e.targets.length?' · '+e.targets.map(tgt).map(esc).join(', '):''}</div>${e.reason&&!e.decision.startsWith('allowed')?`<div class=mute>${esc(e.reason)}</div>`:''}</td>
+ <td class=${cls(e.decision)}>${esc(e.decision)}${e.exit!=null&&e.exit!==0?` (exit ${e.exit})`:''}</td>
+ <td>${/^(rejected|timed|denied by)/.test(e.decision)&&(e.missing.length||e.out.length)?btns(e,false):''}</td></tr>`).join('');
+}
+load();setInterval(load,2000);
+</script>"""
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
