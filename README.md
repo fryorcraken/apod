@@ -156,6 +156,25 @@ with `gdoc`.
 A running pod can't gain mounts or connectors. Exit and relaunch with the new options, resuming
 the conversation: `apod marclaw --rw ~/new/dir -c notion <project> -- --continue`.
 
+## History and resume
+
+Every launch is recorded in `~/.agent-pod/history.jsonl` (profile, folder, options, Claude session
+id, terminal tab). Each new Claude run gets its own session id, and pods are labelled with it.
+
+```sh
+apod history            # folders and profiles launched, most recent first
+apod ps                 # running pods: profile, session, status, folder
+apod resume [dir]       # resume a stopped Claude session started in dir (default: here)
+apod resume --list      # always choose from the list
+apod resume --latest    # newest without asking
+apod resume --claude    # Claude's own session picker, latest launch's profile
+```
+
+`resume` offers only sessions that aren't running and have a saved conversation, and relaunches
+with the same profile and options. If the tab it runs in launched one of them (same tab id), it
+resumes that one; otherwise it lists them and asks. The tab id is the first set variable among
+`$APOD_PANE_ENV` (default `HERDR_PANE_ID HC_SCOPE`); if none survives a restart, use the list.
+
 ## Notes
 
 - Agent view and background sessions are off in pods (`CLAUDE_CODE_DISABLE_AGENT_VIEW=1`): the pod

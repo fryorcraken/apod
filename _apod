@@ -11,7 +11,10 @@ _apod_profiles() {
 _apod_first() {
   local -a cmds
   cmds=('token:set, replace or remove a profile GitHub token' 'profiles:list profiles and token status'
-        'google-auth:sign a profile in to Google for google-docs-mcp')
+        'google-auth:sign a profile in to Google for google-docs-mcp'
+        'resume:resume a stopped Claude session started in a folder (this pane'"'"'s, or pick)'
+        'history:folders and profiles launched, most recent first'
+        'ps:running pods with their profile, folder and session')
   _describe -t commands 'command' cmds
   _apod_profiles
 }
@@ -31,7 +34,10 @@ _apod_connectors() {
 case ${words[2]} in
   token)    _arguments '1: :(token)' '2:profile:_apod_profiles' '3:option:(--rm)'; return ;;
   google-auth) _arguments '1: :(google-auth)' '2:profile:_apod_profiles'; return ;;
-  profiles) return ;;
+  resume)   _arguments '1: :(resume)' '(--latest --claude)--list[always list and ask]' \
+              '(--list --claude)--latest[resume the newest without asking]' \
+              '(--list --latest)--claude[use Claude'"'"'s own session picker]' '2:folder:_directories'; return ;;
+  profiles|history|ps) return ;;
 esac
 
 _arguments -s -S \
