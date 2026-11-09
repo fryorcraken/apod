@@ -1,188 +1,202 @@
-# apod — agents in podman, one GitHub identity per profile
+# apod: agents in podman
 
-## One-time setup
+`apod` runs coding agents (Claude Code, opencode, or a plain shell) in rootless podman containers,
+one **profile** per identity. Each profile has its own GitHub token, git identity, Claude login,
+mounts, image and network, so an agent can run with no permission prompts while the container,
+not the agent, is the security boundary.
 
-```sh
-podman build -t apod ~/src/rad/scripts/apod
-ln -s ~/src/rad/scripts/apod/apod ~/.local/bin/apod
-# zsh completion (oh-my-zsh puts $ZSH_CUSTOM/completions on $fpath); then: rm -f ~/.zcompdump*; exec zsh
-ln -s ~/src/rad/scripts/apod/_apod ~/.oh-my-zsh/custom/completions/_apod
-```
+## Where it lives
 
-In herdr, apod sets `HERDR_AGENT` on the podman process so herdr recognises the agent in the pane.
+- **Radicle (primary):** `rad clone RAD_RID`, published by `fryorgearo`
+  (`did:key:z6MkowunyxpkcgCx2DdndJwebjcpk5pEnhaDE8JH3MbLnDBe`).
+- **GitHub (mirror):** <https://github.com/fryorcraken/apod>
 
-## Per profile (e.g. `marclaw`, `fryorcraken`)
+Both are kept in sync: every push goes to both (`git sync`, see [Contributing](#contributing)).
+Patches are welcome on either.
 
-```sh
-# GitHub token (fine-grained, scoped): prompts without echo, stores or replaces podman secret
-# gh-marclaw and prints the token's GitHub account. `apod token marclaw --rm` deletes it.
-apod token marclaw
-apod profiles        # list profiles and whether each has a token
+## Works with herdr
 
-# git identity for commits made in this pod
-mkdir -p ~/.agent-pod/marclaw
-cat > ~/.agent-pod/marclaw/env <<'EOF'
-GIT_AUTHOR_NAME=marclawclaw
-GIT_AUTHOR_EMAIL=REPLACE_ME
-GIT_COMMITTER_NAME=marclawclaw
-GIT_COMMITTER_EMAIL=REPLACE_ME
-EOF
+[herdr](https://herdr.dev) is a terminal multiplexer for coding agents. apod is built to run in
+herdr panes:
 
-# first run: log in to Claude (and/or opencode) once; it persists in the profile's home
-apod marclaw ~/src/logos-co/logos-docs
-```
+- **Agent detection.** In a pane herdr sees `podman`, not the agent inside the container. apod sets
+  `HERDR_AGENT=claude` (or `opencode`) on the podman process, so herdr reads the pane as that agent
+  and shows its working, blocked and idle states. The variable stays on the host.
+- **Recovery after a herdr restart or crash.** herdr's own session restore can't resume an agent
+  inside a container: it restores those panes as plain shells in the right folder. Run
+  `apod resume` there. apod records the tab each session was launched from (`HERDR_PANE_ID`, or
+  `HC_SCOPE`, which survives a herdr server restart), so `apod resume` goes straight back to that
+  tab's session. When the tab can't be matched, it lists the stopped sessions for the folder and
+  asks.
+- **Many agents side by side.** Claude's agent view and background sessions are off inside pods (a
+  pod lives only as long as its main process). Run several pods in herdr panes instead.
 
-## Use
+## Install
 
-```sh
-apod marclaw ~/src/logos-co/logos-docs              # Claude Code, no permission prompts
-apod fryorcraken -a opencode ~/src/logos-co/rfp          # opencode as you
-apod marclaw -a bash .                               # a shell in the pod (gh, git as that identity)
-```
-
-## Extra mounts
-
-Optional `~/.agent-pod/<profile>/mounts`: one path per line, read-only unless prefixed `rw`.
-The project dir is always mounted read-write, even when it sits inside a read-only entry.
-
-```
-# ~/.agent-pod/marclaw-logos/mounts
-~/src/logos-co
-~/src/logos-blockchain
-rw ~/src/logos-co/tmp
-```
-
-For one run only, add files or folders on the command line (repeatable, before `--`):
+Requirements: rootless podman, bash, jq, git; `gh` and `node` on the host only for
+`apod token` and `apod google-auth`.
 
 ```sh
-apod marclaw --ro ~/notes/spec.md --ro ~/src/other-repo --rw ~/scratch ~/src/marclawclaw/research-cross-chain-dex
+git clone https://github.com/fryorcraken/apod ~/src/rad/apod    # or: rad clone RAD_RID
+podman build -t apod ~/src/rad/apod
+ln -s ~/src/rad/apod/apod ~/.local/bin/apod
+# zsh completion (oh-my-zsh puts $ZSH_CUSTOM/completions on $fpath), then: rm -f ~/.zcompdump*; exec zsh
+ln -s ~/src/rad/apod/_apod ~/.oh-my-zsh/custom/completions/_apod
 ```
 
-`-m` is short for `--ro`. A command-line entry overrides the mounts file's mode for the same path,
-and a command-line path that doesn't exist is an error.
-
-The first launch relabels each mounted tree for SELinux (`:z`), which can take a while on big trees.
-
-Claude is told at startup (via `--append-system-prompt`) which paths are mounted, read-write or
-read-only, and that nothing else from the host is available. opencode doesn't get this yet.
-
-## Images
-
-The image is `-i IMAGE` for one run, else the first line of `~/.agent-pod/<profile>/image`, else
-`$APOD_IMAGE`, else `apod`. `logos-toolchain` adds Rust 1.98.1 (LEZ's `rust-toolchain.toml`) and
-RISC Zero (rzup: cargo-risczero/r0vm 3.0.5, risc0 rust 1.91.1, cpp 2024.1.5) under `/opt`:
+## Quick start
 
 ```sh
-podman build -t logos-toolchain -f ~/src/rad/scripts/apod/Containerfile.logos-toolchain ~/src/rad/scripts/apod
-echo logos-toolchain > ~/.agent-pod/marclaw-logos/image
+mkdir -p ~/.agent-pod/bot
+cat > ~/.agent-pod/bot/env <<'ENV'
+GIT_AUTHOR_NAME=my-bot
+GIT_AUTHOR_EMAIL=12345+my-bot@users.noreply.github.com
+GIT_COMMITTER_NAME=my-bot
+GIT_COMMITTER_EMAIL=12345+my-bot@users.noreply.github.com
+ENV
+apod token bot                      # fine-grained GitHub token, prompted without echo
+apod bot ~/src/some-repo            # Claude Code in a pod; first run: log in to Claude once
 ```
-
-Rebuild it after rebuilding `apod`, or when LEZ bumps its Rust or risc0 versions. Proving is CPU-only
-in a pod; use `RISC0_DEV_MODE=1` for tests.
-
-`dialectica` adds what dialectica's CI uses: Qt 6.8.3 (qmllint/qmlformat/qmltestrunner,
-`QT_QPA_PLATFORM=offscreen`), Node 24, yq/tomlq, GL/EGL/Vulkan runtime, Nix 2.35.2 with flakes, and
-logos-scaffold (`lgs`) 0.3.1. Build it after `logos-toolchain`:
 
 ```sh
-podman build -t dialectica -f ~/src/rad/scripts/apod/Containerfile.dialectica ~/src/rad/scripts/apod
+apod bot -a opencode ~/src/some-repo        # opencode instead
+apod bot -a bash .                          # a shell in the pod (gh and git as the profile)
+apod bot ~/src/some-repo -- --continue      # anything after -- goes to the agent
 ```
 
-## Volumes
+Only the project folder is mounted (read-write). `gh` and `git push` use the profile's token:
+GitHub SSH remotes, including `github-*` host aliases from `~/.ssh/config`, are rewritten to HTTPS
+inside the pod. Claude is told at startup what is mounted and what isn't.
 
-A profile's `volumes` file lists named podman volumes, `NAME /path` per line, kept between runs
-(e.g. `apod-dialectica-nix /nix` for a persistent Nix store). An empty volume is filled from the
-image on first use. `podman volume rm NAME` resets it.
+## Commands
 
-## Sharing a GitHub token
-
-A profile's `github` file names another profile whose token (`gh-<that profile>`) it uses, e.g.
-`~/.agent-pod/dialectica/github` containing `marclaw`.
-
-## Network
-
-Pods use podman's default network (pasta). On this machine that gives pods IPv6 only, so
-Tailscale (IPv4) hosts and MagicDNS aren't reachable. A profile's `network` file containing `host`
-makes its pods share the host's network instead (e.g. `~/.agent-pod/fatso/network`); they can then
-also reach services on the host's localhost.
-
-## SSH
-
-A profile's `ssh-key` file names a private key (passphrase-protected, outside the profile's home).
-apod serves it from a dedicated ssh-agent for the run (asks for the passphrase, 4h lifetime via
-`APOD_SSH_TTL`, per-use confirmation if `ssh-confirm` exists) and passes only the socket into the
-pod. Put host aliases in `~/.agent-pod/<profile>/home/.ssh/config`.
-
-## claude.ai connectors
-
-Connectors (Notion, Google Docs, …) come with the Claude account, not the pod, and act as you.
-apod disables them unless you enable groups for the run with `-c` (comma-separated, repeatable):
-
-```sh
-apod marclaw -c notion ~/src/logos-co/logos-docs
-apod marclaw -c gdoc,notion -- --continue
+```
+apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [dir] [-- agent args]
+apod resume [--list|--latest|--claude] [dir]   resume a stopped Claude session started in dir
+apod history                                   folders and profiles launched, most recent first
+apod ps                                        running pods: profile, session, status, folder
+apod profiles                                  profiles, and whether each has a GitHub token / Google login
+apod token <profile> [--rm]                    set, replace or remove a profile's GitHub token
+apod google-auth <profile>                     sign a profile in to Google for google-docs-mcp
 ```
 
-Groups: `notion`, `gdoc` (Docs, Drive, Sheets), `todoist`, `canva`, `lovable`, `utsjitsu`, `claudedocs`.
-A profile's `connectors` file (e.g. `~/.agent-pod/jitsu/connectors` containing `gdoc,utsjitsu`) sets
-its defaults; `-c` replaces them for the run and `-c none` turns them off.
-Other known connectors are denied; a PreToolUse hook also blocks any claude.ai connector tool not
-enabled, including ones added to the account later. Don't set `disableClaudeAiConnectors` in a
-profile's settings: `true` anywhere wins and `-c` would stop working.
+## Profile files
 
-### google-docs-mcp (local)
+Everything lives in `~/.agent-pod/<profile>/` (`APOD_ROOT` overrides the root):
 
-`-c google-docs-mcp` runs `~/src/fryorcraken/google-docs-mcp` (override with `APOD_GDOCS_MCP`) in the
-pod from a read-only mount; its OAuth client comes from the checkout's `credentials.json`. Each
-profile signs in to Google once, on the host where the browser is:
+| File | Purpose |
+|---|---|
+| `env` | Required. Git identity (`GIT_AUTHOR_*`, `GIT_COMMITTER_*`) for commits made in the pod. |
+| `home/` | The pod's persistent `$HOME`: Claude/opencode login, settings, history. |
+| `mounts` | Extra mounts, one path per line, read-only unless prefixed `rw`. |
+| `image` | Image for this profile (default `apod`; `-i` overrides per run). |
+| `network` | `host` to share the host's network, e.g. to reach Tailscale hosts. |
+| `volumes` | Named podman volumes, `NAME /path` per line, e.g. `apod-myproj-nix /nix`. |
+| `github` | Use another profile's GitHub token (`gh-<that profile>`). |
+| `ssh-key` | Path to a passphrase-protected private key, served from a per-run ssh-agent. |
+| `ssh-confirm` | If present, confirm every use of that key on the host. |
+| `connectors` | Default claude.ai connector groups (`-c` replaces them). |
+| `google-credentials.json` | OAuth client for google-docs-mcp, instead of the checkout's. |
 
-```sh
-apod google-auth jitsu                       # token saved under ~/.agent-pod/jitsu/home/.config/google-docs-mcp/
-apod jitsu -c google-docs-mcp ~/src/franckjitsu/teaching-aid
+The GitHub token is the podman secret `gh-<profile>`; without one, `gh` and HTTPS pushes are
+unauthenticated.
+
+### Mounts
+
+```
+# ~/.agent-pod/work/mounts
+~/src/shared-libs
+rw ~/src/work/tmp
 ```
 
-To use a different OAuth client than the checkout's (e.g. one whose consent screen allows the
-profile's Google account), put it in `~/.agent-pod/<profile>/google-credentials.json` (Desktop app
-format, chmod 600): it's mounted over the checkout's `credentials.json` in the pod and used by
-`apod google-auth`. An existing `token.json` from the same client can be copied into
-`~/.agent-pod/<profile>/home/.config/google-docs-mcp/` instead of signing in again.
+For one run, add files or folders with `--ro PATH` (`-m`) and `--rw PATH`. A command-line entry
+overrides the file's mode for the same path; a missing command-line path is an error. The project
+folder stays writable even inside a read-only entry. The first launch relabels mounted trees for
+SELinux (`:z`), which can take a while on big trees.
 
-Scopes are `docs,sheets,slides,drive` (no Gmail/Calendar; override with `APOD_GDOCS_SCOPES`, then
-re-run `apod google-auth`). `MCP_LAZY_TOOLS=1` keeps its tool catalog small. It can't be combined
-with `gdoc`.
+### SSH
 
-## Changing mounts or connectors mid-session
+`ssh-key` names a private key kept outside the profile's home. apod starts a dedicated ssh-agent on
+the host for the run, asks for the passphrase, and passes only the agent socket into the pod; the
+key expires after `APOD_SSH_TTL` (default `4h`) and the agent is killed when the pod exits. Put
+host aliases in `home/.ssh/config`. These pods run without SELinux labelling, which would otherwise
+block the socket.
 
-A running pod can't gain mounts or connectors. Exit and relaunch with the new options, resuming
-the conversation: `apod marclaw --rw ~/new/dir -c notion <project> -- --continue`.
+### Network
+
+Pods use podman's default network (pasta). On some hosts (seen on Wi-Fi) pasta gives pods IPv6
+only, so IPv4-only destinations such as Tailscale hosts are unreachable; `network` set to `host`
+shares the host's network instead, including its localhost services.
+
+## claude.ai connectors and MCP servers
+
+claude.ai connectors (Notion, Google Docs, …) come with the Claude account and act as you, so apod
+turns them off unless enabled for the run with `-c` (comma-separated, repeatable) or the profile's
+`connectors` file; `-c none` turns them off.
+
+Groups: `notion`, `gdoc` (Docs, Drive, Sheets), `todoist`, `canva`, `lovable`, `utsjitsu`,
+`claudedocs`. Other known connectors are denied, and a PreToolUse hook blocks any claude.ai
+connector tool that isn't enabled, including ones added to the account later.
+
+`-c google-docs-mcp` runs a local
+[google-docs-mcp](https://github.com/fryorcraken/google-docs-mcp) checkout
+(`APOD_GDOCS_MCP`, default `~/src/fryorcraken/google-docs-mcp`) in the pod from a read-only mount,
+with scopes `docs,sheets,slides,drive` (`APOD_GDOCS_SCOPES`) and lazy tools. Each profile signs in
+once on the host with `apod google-auth <profile>`. It can't be combined with `gdoc`.
+
+A running pod can't gain mounts or connectors: exit and relaunch with the new options and
+`-- --continue`, or `apod resume`.
 
 ## History and resume
 
-Every launch is recorded in `~/.agent-pod/history.jsonl` (profile, folder, options, Claude session
-id, terminal tab). Each new Claude run gets its own session id, and pods are labelled with it.
+Every launch is recorded in `~/.agent-pod/history.jsonl`: profile, folder, options, Claude session
+id and terminal tab. Each new Claude run gets its own session id, and pods are labelled with
+profile, folder and session.
+
+`apod resume` offers only sessions that aren't running and have a saved conversation, and relaunches
+with the same profile and options. If the current tab launched one of them, it resumes that one;
+otherwise it lists them and asks. The tab id is the first set variable among `$APOD_PANE_ENV`
+(default `HERDR_PANE_ID HC_SCOPE`). `--list` always asks, `--latest` takes the newest, and `--claude`
+opens Claude's own picker.
+
+## Images
+
+`Containerfile` builds the base `apod` image (Fedora, Claude Code, opencode, gh, git, Node, Python).
+Two examples build on it for specific projects:
+
+- `Containerfile.logos-toolchain`: Rust 1.98.1 and RISC Zero (cargo-risczero/r0vm 3.0.5), for
+  [logos-execution-zone](https://github.com/logos-blockchain/logos-execution-zone).
+- `Containerfile.dialectica`: logos-toolchain plus Qt 6.8.3, Node 24, yq, Nix 2.35.2 and
+  logos-scaffold 0.3.1. Pair it with a `volumes` entry for a persistent `/nix`.
 
 ```sh
-apod history            # folders and profiles launched, most recent first
-apod ps                 # running pods: profile, session, status, folder
-apod resume [dir]       # resume a stopped Claude session started in dir (default: here)
-apod resume --list      # always choose from the list
-apod resume --latest    # newest without asking
-apod resume --claude    # Claude's own session picker, latest launch's profile
+podman build -t logos-toolchain -f ~/src/rad/apod/Containerfile.logos-toolchain ~/src/rad/apod
+echo logos-toolchain > ~/.agent-pod/work/image
 ```
 
-`resume` offers only sessions that aren't running and have a saved conversation, and relaunches
-with the same profile and options. If the tab it runs in launched one of them (same tab id), it
-resumes that one; otherwise it lists them and asks. The tab id is the first set variable among
-`$APOD_PANE_ENV` (default `HERDR_PANE_ID HC_SCOPE`); if none survives a restart, use the list.
+Tools live under `/opt` so the mounted home can't hide them. Rebuild derived images after
+rebuilding `apod`.
 
-## Notes
+## Security notes
 
-- Agent view and background sessions are off in pods (`CLAUDE_CODE_DISABLE_AGENT_VIEW=1`): the pod
-  lives only as long as its main process, so backgrounded sessions would die with it. Use herdr
-  panes on the host to run several pods side by side.
+- The container is the boundary: the agent runs with no permission prompts, and sees only the
+  profile's home, the project folder and the profile's mounts.
+- Pods can write `.git/hooks` and `.claude/settings.json` in a mounted repo, which then run on the
+  host. Give pods their own worktrees, or point `core.hooksPath` at an empty folder on the host.
+- Two pods on one checkout will collide; use one worktree per pod.
+- Tokens should be fine-grained and scoped to what the profile needs.
 
-- The project dir is mounted read-write, plus any `mounts` entries. Give each pod its own worktree; two pods on one checkout will collide.
-- Pods can write `.git/hooks` and `.claude/settings.json` in the mounted repo, which then run on the host.
-  Use per-pod worktrees, or set `core.hooksPath` to an empty dir in your host git config.
-- Not mounted yet: `/nix/store`, Android SDK/NDK. Add per project when needed.
-- Each profile has its own agent list; use herdr on the host to see all pods.
+## Contributing
+
+The repository is on Radicle and mirrored to GitHub. To push to both from a clone with both
+remotes (`rad` and `origin`):
+
+```sh
+git config alias.sync '!b=$(git branch --show-current); git push rad "$b" && git push origin "$b"'
+git sync
+```
+
+## Licence
+
+Dual-licensed under MIT ([LICENSE-MIT](LICENSE-MIT)) or Apache-2.0
+([LICENSE-APACHE-v2](LICENSE-APACHE-v2)), at your option.

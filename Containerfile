@@ -1,5 +1,5 @@
 # Agent pod image: Claude Code + opencode + gh, run as uid 1000 ("agent").
-# Build: podman build -t apod ~/src/rad/scripts/apod
+# Build: podman build -t apod ~/src/rad/apod
 FROM registry.fedoraproject.org/fedora:43
 
 RUN dnf install -y git gh jq ripgrep python3 nodejs npm which procps-ng findutils \

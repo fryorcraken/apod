@@ -1,7 +1,7 @@
 # Dialectica image: logos-toolchain + the tooling dialectica's CI uses (.github/workflows):
 # Qt 6.8.3 (qmllint/qmlformat/qmltestrunner), Node 24 (sitometres), yq/tomlq, GL/EGL/Vulkan runtime,
 # Nix 2.35.2 with flakes, logos-scaffold (lgs) 0.3.1.
-# Build: podman build -t dialectica -f ~/src/rad/scripts/apod/Containerfile.dialectica ~/src/rad/scripts/apod
+# Build: podman build -t dialectica -f ~/src/rad/apod/Containerfile.dialectica ~/src/rad/apod
 # Give the profile a persistent store: echo "apod-dialectica-nix /nix" > ~/.agent-pod/<profile>/volumes
 FROM localhost/logos-toolchain
 

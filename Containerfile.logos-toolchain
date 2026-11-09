@@ -1,5 +1,5 @@
 # Logos toolchain image: apod + Rust (as pinned by LEZ's rust-toolchain.toml) + RISC Zero.
-# Build: podman build -t logos-toolchain -f ~/src/rad/scripts/apod/Containerfile.logos-toolchain ~/src/rad/scripts/apod
+# Build: podman build -t logos-toolchain -f ~/src/rad/apod/Containerfile.logos-toolchain ~/src/rad/apod
 FROM localhost/apod
 
 USER root

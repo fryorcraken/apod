@@ -1,6 +1,6 @@
 #compdef apod
 # zsh completion for apod. Link this file into a directory on $fpath,
-# e.g. ln -s ~/src/rad/scripts/apod/_apod ~/.oh-my-zsh/custom/completions/_apod
+# e.g. ln -s ~/src/rad/apod/_apod ~/.oh-my-zsh/custom/completions/_apod
 
 _apod_profiles() {
   local -a profiles
