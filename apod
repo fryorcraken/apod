@@ -9,7 +9,7 @@ set -euo pipefail
 usage() {
   echo "usage: apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [--gh PERSONA[:USER]] [--gh-scope S]... [project-dir] [-- agent args...]" >&2
   echo "       apod resume [--list|--latest|--claude] [dir] | history | ps | profiles | token <profile> [--rm] | google-auth <profile>" >&2
-  echo "       apod gh ui|log [-f]|pending|allow ID [--session|--persona]|deny ID|sessions|personas|grants|restart|stop" >&2
+  echo "       apod gh [ui]|log [-f]|pending|allow ID [--session|--persona]|deny ID|sessions|personas|grants|restart|stop" >&2
   exit 2
 }
 
@@ -50,7 +50,7 @@ if [ "${1:-}" = --list-connectors ]; then printf '%s\n' "${!connector_servers[@]
 case ${1:-} in
   gh)
     # The gh broker: approvals, log, sessions (see apod-broker).
-    shift; [ $# -ge 1 ] || set -- help
+    shift; [ $# -ge 1 ] || set -- ui
     exec python3 "$apoddir/apod-broker" "$@" ;;
   google-auth)
     [ $# -ge 2 ] || { echo "usage: apod google-auth <profile>" >&2; exit 2; }

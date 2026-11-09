@@ -81,7 +81,7 @@ apod ps                                        running pods: profile, session, s
 apod profiles                                  profiles, and whether each has a GitHub token / Google login
 apod token <profile> [--rm]                    set, replace or remove a profile's GitHub token
 apod google-auth <profile>                     sign a profile in to Google for google-docs-mcp
-apod gh ui|log [-f]|pending|sessions|personas  the gh broker: approval page, requests, sessions
+apod gh [ui]|log [-f]|pending|sessions|personas  the gh broker: approval TUI, requests, sessions
 apod gh allow ID [--session|--persona]         approve a request (once, for the pod, for the persona)
 apod gh deny ID | grants [rm PERSONA ACTION] | restart | stop
 ```
@@ -121,7 +121,7 @@ with the first pod that uses it and keeps running; its state is in `~/.agent-pod
 apod work --gh dev ~/src/org/repo                  # persona dev, host gh's active account
 apod work --gh maintainer:fryorcraken ~/src/org/repo --gh-scope fryorcraken/*
 echo dev:fryorcraken > ~/.agent-pod/work/gh        # the profile's default
-apod gh ui                                         # the approval page (prints its URL)
+apod gh                                            # approve requests in a terminal UI
 ```
 
 **Personas** (`gh-personas.toml` in this checkout; override or add your own in
@@ -142,12 +142,18 @@ plus the profile's `gh-scope` file and `--gh-scope`. Entries are `OWNER/REPO`, `
 `project:OWNER/*`). Forks and repositories the session creates join its scope.
 
 **Approvals.** A request outside the persona or the scope waits (`APOD_GH_ASK_TIMEOUT`, default 90
-seconds; 0 rejects at once) and shows up in `apod gh ui`, `apod gh pending` and as a desktop
-notification. Allow it once, for the rest of the session, or for the persona (saved in
+seconds; 0 rejects at once) and shows up in `apod gh` (a terminal UI), `apod gh pending` and as
+a desktop notification. Allow it once, for the rest of the session, or for the persona (saved in
 `~/.agent-pod/broker/grants.json`). A rejected request can be allowed after the fact for the
 session or the persona, and the agent retries. `apod gh log -f` follows every request with its
 decision. Some commands are never allowed: `auth`, `extension`, `alias`, `config`, `ssh-key`,
 `gpg-key`, `codespace`, `browse`.
+
+In the TUI (`apod gh`): view 1 lists waiting requests (with the seconds left) above recent ones,
+with the selected request's actions, targets and reason below; `a` allows once, `s` for the
+session, `p` for the persona, `d` denies, and it beeps and jumps to a new waiting request. View 2
+lists sessions with their scope and grants (`x` removes one), view 3 the persona grants (`x`
+removes one). Tab or 1–3 switch views, `q` quits.
 
 **How requests are classified.** gh commands by their full name, aliases resolved (`pr ls` is
 `pr list`), with risky flags as their own actions (`pr merge --admin`). `gh api` by method and path
@@ -171,7 +177,7 @@ local git server):
 ```sh
 apod work --gh dev -a bash ~/src/org/repo
 gh auth status; gh pr list; git fetch; git push origin HEAD:refs/heads/apod-broker-test
-gh pr merge 1                                      # waits: approve or deny in apod gh ui
+gh pr merge 1                                      # waits: approve or deny in apod gh
 ```
 
 ### Mounts
@@ -258,8 +264,8 @@ rebuilding `apod`.
   host. Give pods their own worktrees, or point `core.hooksPath` at an empty folder on the host.
 - Two pods on one checkout will collide; use one worktree per pod.
 - Tokens should be fine-grained and scoped to what the profile needs. With the gh broker, pods
-  hold no token at all; the broker's approval page listens on 127.0.0.1 and needs the secret in its
-  URL (`apod gh ui`), since pods with host networking can reach the host's localhost.
+  hold no token at all. The broker listens only on unix sockets: one per pod, mounted into that
+  pod alone, and an admin socket in `~/.agent-pod/broker/` (mode 0700) for `apod gh`.
 
 ## Contributing
 

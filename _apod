@@ -49,7 +49,7 @@ case ${words[2]} in
   gh)
     if (( CURRENT == 3 )); then
       local -a sub
-      sub=('ui:print the URL of the approval page' 'log:recent requests (-f to follow, -n N)'
+      sub=('ui:terminal UI to approve requests (also plain apod gh)' 'log:recent requests (-f to follow, -n N)'
            'pending:requests waiting for approval' 'allow:approve a request (--session, --persona)'
            'deny:deny a waiting request' 'sessions:sessions with their persona and scope'
            'personas:personas and what they allow' 'grants:approvals saved for personas (rm PERSONA ACTION)'

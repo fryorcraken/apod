@@ -341,18 +341,48 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual(p.returncode, 0, err)
         self.assertIn("waiting", err.lower())
 
-    def test_ui_requires_token(self):
-        import urllib.request
-        import urllib.error
-        url = self.admin("ui").stdout.strip()
-        base = url.split("/?")[0]
-        with self.assertRaises(urllib.error.HTTPError):
-            urllib.request.urlopen(base + "/api/state")
-        st = json.loads(urllib.request.urlopen(urllib.request.Request(
-            base + "/api/state", headers={"X-Apod-Token": url.split("t=")[1]})).read())
-        self.assertTrue(st["sessions"])
-        self.assertIn("apod gh broker", urllib.request.urlopen(url).read().decode())
+    def test_tui_approves(self):
+        import fcntl
+        import pty
+        import select
+        import struct
+        import termios
+        p = subprocess.Popen([sys.executable, SHIM, "release", "delete", "v9", "--yes"], cwd=self.work,
+                             env=dict(self.env, APOD_GH_SOCK=str(Path(self.sess["dir"]) / "gh.sock")),
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        for _ in range(40):
+            if "release delete" in self.admin("pending").stdout:
+                break
+            time.sleep(0.1)
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 120, 0, 0))
+        ui = subprocess.Popen([sys.executable, BROKER, "ui"], stdin=slave, stdout=slave, stderr=slave,
+                              env=dict(self.env, TERM="xterm-256color"), start_new_session=True)
+        os.close(slave)
+        screen = b""
 
+        def read_until(text, timeout=5):
+            nonlocal screen
+            end = time.time() + timeout
+            while time.time() < end:
+                if select.select([master], [], [], 0.1)[0]:
+                    screen += os.read(master, 65536)
+                    if text in screen:
+                        return True
+            return False
+
+        self.assertTrue(read_until(b"release delete"), screen[-2000:])
+        self.assertTrue(read_until(b"allow once"))
+        os.write(master, b"a")
+        o, e = p.communicate(timeout=10)
+        self.assertEqual(p.returncode, 0, e)
+        self.assertTrue(read_until(b"allowed once"))
+        os.write(master, b"2")
+        self.assertTrue(read_until(b"acme/widget"))
+        os.write(master, b"q")
+        ui.wait(timeout=5)
+        os.close(master)
+        self.assertEqual(ui.returncode, 0)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
