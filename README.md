@@ -81,9 +81,19 @@ GIT_AUTHOR_EMAIL=12345+my-bot@users.noreply.github.com
 GIT_COMMITTER_NAME=my-bot
 GIT_COMMITTER_EMAIL=12345+my-bot@users.noreply.github.com
 ENV
-apod token bot                      # fine-grained GitHub token, prompted without echo
+cat > ~/.agent-pod/bot/broker.toml <<'TOML'
+persona = "dev"                     # PRs, issues, branch pushes; anything else waits for you
+[gh]
+user = "my-bot"                     # a host gh login: gh auth login --hostname github.com
+TOML
 apod bot ~/src/some-repo            # Claude Code in a pod; first run: log in to Claude once
+apod broker                         # in another terminal: approve what's out of scope
 ```
+
+The [broker](#broker) is the recommended way to give a pod GitHub, Radicle, signing and ssh: the
+pod holds no credentials, and you approve what's outside its persona and scope. A profile can
+use a token instead (`apod token bot` stores a fine-grained one, prompted without echo, and drop
+the `broker.toml`); `gh` and `git push` in the pod then have whatever that token allows.
 
 ```sh
 apod bot -a opencode ~/src/some-repo        # opencode instead
@@ -91,9 +101,10 @@ apod bot -a bash .                          # a shell in the pod (gh and git as 
 apod bot ~/src/some-repo -- --continue      # anything after -- goes to the agent
 ```
 
-Only the project folder is mounted (read-write). `gh` and `git push` use the profile's token:
-GitHub SSH remotes, including `github-*` host aliases from `~/.ssh/config`, are rewritten to HTTPS
-inside the pod. Claude is told at startup what is mounted and what isn't.
+Only the project folder is mounted (read-write). GitHub SSH remotes, including `github-*` host
+aliases from `~/.ssh/config`, are rewritten to HTTPS inside the pod, so `gh` and `git push` go
+through the broker (or use the profile's token). Claude is told at startup what is mounted and
+what isn't.
 
 ## Commands
 
@@ -103,7 +114,7 @@ apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH].
 apod resume [--list|--latest|--claude] [dir]   resume a stopped Claude session started in dir
 apod history                                   folders and profiles launched, most recent first
 apod ps                                        running pods: profile, session, status, folder
-apod profiles                                  profiles, and whether each has a GitHub token / Google login
+apod profiles                                  profiles: broker persona, GitHub token, Google login
 apod token <profile> [--rm]                    set, replace or remove a profile's GitHub token
 apod google-auth <profile>                     sign a profile in to Google for google-docs-mcp
 apod broker [ui]|log [-f]|pending|sessions|personas  the broker: approval TUI, requests, sessions
@@ -123,15 +134,28 @@ Everything lives in `~/.agent-pod/<profile>/` (`APOD_ROOT` overrides the root):
 | `image` | Image for this profile (default `apod`; `-i` overrides per run). |
 | `network` | `host` to share the host's network, e.g. to reach Tailscale hosts. |
 | `volumes` | Named podman volumes, `NAME /path` per line, e.g. `apod-myproj-nix /nix`. |
-| `github` | Use another profile's GitHub token (`gh-<that profile>`). |
-| `broker.toml` | Use the [broker](#broker) instead of a token and `ssh-key` (`--persona none` turns it off for a run). |
+| `broker.toml` | Recommended. Use the [broker](#broker) instead of a token and `ssh-key` (`--persona none` turns it off for a run). |
+| `github` | Without the broker: use another profile's GitHub token (`gh-<that profile>`). |
 | `ssh-key` | Path to a passphrase-protected private key, served from a per-run ssh-agent. |
 | `ssh-confirm` | If present, confirm every use of that key on the host. |
 | `connectors` | Default claude.ai connector groups (`-c` replaces them). |
 | `google-credentials.json` | OAuth client for google-docs-mcp, instead of the checkout's. |
 
-The GitHub token is the podman secret `gh-<profile>`; without one, `gh` and HTTPS pushes are
-unauthenticated.
+Without the broker, the GitHub token is the podman secret `gh-<profile>`; without one, `gh` and
+HTTPS pushes are unauthenticated.
+
+**Moving a profile from a token to the broker.** `apod profiles` shows each profile's token:
+`set` (its own), `gh-OTHER` (another profile's, through its `github` file), or `unused` once a
+`broker.toml` replaces it, and lists the tokens no profile launches with. For each profile:
+
+1. Log the token's GitHub account in to the host's `gh`, once per account:
+   `gh auth login --hostname github.com` (`gh auth status` lists them).
+2. Add a `broker.toml` with a persona, `[gh] user` and any extra scope. For `ssh-key` profiles,
+   an `[ssh]` section with the key and `hosts` replaces `ssh-key`, `ssh-confirm` and, if that was
+   only for ssh, `network`.
+3. Relaunch the pod, check `gh auth status` and a push in it, then remove what the broker made
+   redundant: `apod token PROFILE --rm`, the `github` file, and the token itself on GitHub
+   (Settings → Developer settings → Personal access tokens).
 
 ### Broker
 

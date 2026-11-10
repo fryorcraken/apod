@@ -79,6 +79,7 @@ case ${1:-} in
     login=$(GH_TOKEN=$tok gh api user --jq .login 2>/dev/null) || login="unknown (gh api user failed)"
     unset tok
     echo "apod: stored token for $2 (podman secret gh-$2), GitHub account: $login"
+    echo "apod: the broker is recommended instead of tokens: no credentials in the pod, and you approve what's out of scope (see README, Broker)" >&2
     exit ;;
   history)
     # Folders and profiles launched, most recent first (from history.jsonl, one line per launch).
@@ -141,14 +142,28 @@ case ${1:-} in
     echo "apod: resuming ${labels[$((n - 1))]}" >&2
     exec "$0" "${opts[@]}" "$dir" -- --resume "${sids[$((n - 1))]}" ;;
   profiles)
-    for d in "${APOD_ROOT:-$HOME/.agent-pod}"/*/; do
-      p=$(basename "$d"); t=missing; g=no; b=-
-      [ "$p" = broker ] && continue
-      podman secret exists "gh-$p" && t="set"
+    # token: the GitHub token the profile launches with (its own podman secret gh-<profile>, or
+    # another profile's through its github file); "unused" when broker.toml replaces it.
+    root=${APOD_ROOT:-$HOME/.agent-pod}; used=()
+    for d in "$root"/*/; do
+      p=$(basename "$d"); t=-; g=no; b=-
+      [ "$p" = broker ] || [ "$p" = broker-extensions ] && continue
+      src=$p; [ -f "$d/github" ] && src=$(head -n1 "$d/github" | tr -d '[:space:]')
+      if podman secret exists "gh-$src"; then t=$([ "$src" = "$p" ] && echo set || echo "gh-$src"); fi
       [ -f "$d/home/.config/google-docs-mcp/token.json" ] && g=yes
-      [ -f "$d/broker.toml" ] && b=$(sed -n 's/^persona *= *"\(.*\)".*/\1/p' "$d/broker.toml" | head -n1) && b=${b:-yes}
-      printf '%-24s token: %-8s google: %-4s broker: %s\n' "$p" "$t" "$g" "$b"
+      if [ -f "$d/broker.toml" ]; then
+        b=$(sed -n 's/^persona *= *"\(.*\)".*/\1/p' "$d/broker.toml" | head -n1); b=${b:-yes}
+        [ "$t" = - ] || t="unused"
+      elif [ "$t" != - ]; then used+=("gh-$src"); fi
+      printf '%-24s token: %-12s google: %-4s broker: %s\n' "$p" "$t" "$g" "$b"
     done
+    unused=()
+    while read -r sec; do
+      [[ " ${used[*]} " == *" $sec "* ]] || unused+=("$sec")
+    done < <(podman secret ls --format '{{.Name}}' 2>/dev/null | grep '^gh-' | sort)
+    if [ ${#unused[@]} -gt 0 ]; then
+      echo "GitHub tokens no profile launches with: ${unused[*]} (remove: apod token PROFILE --rm, or podman secret rm NAME)"
+    fi
     exit ;;
 esac
 
@@ -210,8 +225,10 @@ if [ -z "$usebroker" ]; then
   if [ -f "$root/$profile/github" ]; then ghprofile=$(head -n1 "$root/$profile/github" | tr -d '[:space:]'); fi
   ghsecret=(--secret "gh-$ghprofile,type=env,target=GH_TOKEN")
   if ! podman secret exists "gh-$ghprofile"; then
-    echo "apod: profile $ghprofile has no GitHub token, so gh and HTTPS pushes are unauthenticated. Add one with: apod token $ghprofile (or use the broker: --persona dev)" >&2
+    echo "apod: profile $ghprofile has no GitHub token, so gh and HTTPS pushes are unauthenticated. Use the broker (broker.toml, or --persona dev) or add a token: apod token $ghprofile" >&2
     ghsecret=()
+  else
+    echo "apod: profile $profile uses a GitHub token; the broker is recommended instead (a broker.toml in the profile, see README)" >&2
   fi
 fi
 mkdir -p "$phome/.claude"
