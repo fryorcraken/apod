@@ -210,7 +210,7 @@ class BrokerTest(unittest.TestCase):
         (bin_ / "fake-notify").write_text(f"#!/bin/sh\nprintf '%s|' \"$@\" >> {cls.tmp}/notified\n")
         (bin_ / "fake-notify").chmod(0o755)
         cls.n = itertools.count()
-        # The host's ssh setup: a config entry for "fatso" (an echo server stands in for sshd) and
+        # The host's ssh setup: a config entry for "devbox" (an echo server stands in for sshd) and
         # its host key in known_hosts; a user key for logins and one for signing.
         home = cls.tmp / "home"
         (home / ".ssh").mkdir(parents=True)
@@ -219,7 +219,7 @@ class BrokerTest(unittest.TestCase):
         port = cls.echo.server_address[1]
         for k in ("hostkey", "hostkey2", "userkey", "signkey"):
             subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", k, "-f", cls.tmp / k], check=True)
-        (home / ".ssh/config").write_text(f"Host fatso\n  HostName 127.0.0.1\n  Port {port}\n"
+        (home / ".ssh/config").write_text(f"Host devbox\n  HostName 127.0.0.1\n  Port {port}\n"
                                           f"Host *\n  UserKnownHostsFile {home}/.ssh/known_hosts\n")
         hk = (cls.tmp / "hostkey.pub").read_text().split()
         (home / ".ssh/known_hosts").write_text(f"[127.0.0.1]:{port} {hk[0]} {hk[1]}\n")
@@ -277,19 +277,21 @@ class BrokerTest(unittest.TestCase):
             shutil.rmtree(cls.tmp, ignore_errors=True)
 
     @classmethod
-    def register(cls, persona, scope, user="", toml="", remotes=()):
+    def register(cls, role, scope, user="agentbot", toml="", remotes=(), warnings=None):
         pdir = cls.tmp / "profiles" / f"p{next(cls.n)}"
         pdir.mkdir(parents=True)
         (pdir / "env").write_text("GIT_AUTHOR_NAME=Agent\nGIT_AUTHOR_EMAIL=agent@example.com\n"
                                   "GIT_COMMITTER_NAME=Agent\nGIT_COMMITTER_EMAIL=agent@example.com\n")
-        (pdir / "broker.toml").write_text((f'[gh]\nuser = "{user}"\n' if user else "") + toml)
-        args = ["register", "--profile", "test", "--profile-dir", str(pdir), "--project", "/p"] + (["--persona", persona] if persona else [])
+        (pdir / "broker.toml").write_text(toml + (f'\n[gh]\nuser = "{user}"\n' if user else ""))
+        args = ["register", "--profile", "test", "--profile-dir", str(pdir), "--project", "/p"] + (["--role", role] if role else [])
         for s in scope:
             args += ["--scope", s]
         for u in remotes:
             args += ["--remote", u]
         r = subprocess.run([sys.executable, BROKER, *args], env=cls.env, capture_output=True, text=True)
         assert r.returncode == 0, r.stderr
+        if warnings is not None:
+            warnings.append(r.stderr)
         sess = json.loads(r.stdout)
         sess["_pdir"] = pdir
         for k in sess["need_keys"]:  # what apod does with ssh-add
@@ -326,7 +328,7 @@ class BrokerTest(unittest.TestCase):
         out = self.ran("pr", "list", "--state", "open")
         self.assertEqual(out["argv"], ["pr", "list", "--state=open"])
         self.assertEqual(out["GH_REPO"], "acme/widget")
-        self.assertEqual(out["GH_TOKEN"], "tok-active")
+        self.assertEqual(out["GH_TOKEN"], "tok-agentbot")
         self.assertFalse(out["cwd_has_git"])
 
     def test_alias_and_current_branch_selector(self):
@@ -367,7 +369,7 @@ class BrokerTest(unittest.TestCase):
         self.assertIn("project:acme/11", sess["context"])
         self.assertIn("gh auth status", sess["context"])
         r = self.gh("auth", "status", sess=sess)
-        self.assertIn("persona pm", r.stdout)
+        self.assertIn("role pm", r.stdout)
         self.assertIn("  gh: ", r.stdout)
         # Claude Code's /rename lands in the transcript, in the profile's home; the TUI shows it.
         d = sess["_pdir"] / "home/.claude/projects/-p"
@@ -387,8 +389,8 @@ class BrokerTest(unittest.TestCase):
         return json.loads(data.split(b"\r\n\r\n", 1)[1])
 
     def test_extension(self):
-        (self.root / "personas.toml").write_text('[personas.dev-notify]\nextends = ["dev"]\nnotify = ["send"]\n')
-        self.addCleanup((self.root / "personas.toml").unlink)
+        (self.root / "roles.toml").write_text('[roles.dev-notify]\nextends = ["dev"]\nnotify = ["send"]\n')
+        self.addCleanup((self.root / "roles.toml").unlink)
         sess = self.register("dev-notify", ["acme/widget"], toml=f'[notify]\nenabled = true\n'
                              f'command = ["{self.tmp}/bin/fake-notify"]\n')
         self.assertIn("notify", sess["providers"])
@@ -399,10 +401,10 @@ class BrokerTest(unittest.TestCase):
         r = subprocess.run([*client, "build", "done"], env=e, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual((self.tmp / "notified").read_text(), "apod test|build done|")
-        # notify:urgent isn't in the persona: it waits, then times out.
+        # notify:urgent isn't in the role: it waits, then times out.
         r = subprocess.run([*client, "--urgent", "help"], env=e, capture_output=True, text=True)
         self.assertEqual(r.returncode, 1)
-        self.assertIn("not allowed for persona dev-notify: notify:urgent", r.stderr)
+        self.assertIn("not allowed for role dev-notify: notify:urgent", r.stderr)
         # The broken extension was skipped, with a warning in the broker's log.
         self.assertIn("broken.py not loaded", (self.tmp / "broker.log").read_text())
 
@@ -411,7 +413,7 @@ class BrokerTest(unittest.TestCase):
         subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "pk", "-f", key], check=True)
         (self.root / "keyprof").mkdir()
         self.addCleanup(shutil.rmtree, self.root / "keyprof")
-        (self.root / "keyprof/broker.toml").write_text(f'[ssh]\nkey = "{key}"\nhosts = ["fatso"]\n')
+        (self.root / "keyprof/broker.toml").write_text(f'[ssh]\nkey = "{key}"\nhosts = ["devbox"]\n')
         r = self.admin("keys")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertRegex(r.stdout, rf"to load +{key} +keyprof \[ssh\]")
@@ -428,10 +430,10 @@ class BrokerTest(unittest.TestCase):
         self.assertIn("evil/repo", r.stderr)
 
     def test_hard_deny(self):
-        r = self.gh("api", "user", expect=1)  # not in persona: asks
+        r = self.gh("api", "user", expect=1)  # not in role: asks
         self.assertIn("api GET /user", r.stderr)
         r = self.gh("secret", "list", expect=1)
-        self.assertIn("not allowed for persona dev: gh:secret list", r.stderr)
+        self.assertIn("not allowed for role dev: gh:secret list", r.stderr)
         r = self.gh("extension", "list", expect=1)
         self.assertIn("never allowed", r.stderr)
 
@@ -494,7 +496,7 @@ class BrokerTest(unittest.TestCase):
         r = self.gh("project", "item-list", "6", "--owner", "acme", sess=pm, expect=1)
         self.assertIn("project acme/6", r.stderr)
         r = self.gh("pr", "create", "--title", "x", "--body", "y", sess=pm, expect=1)
-        self.assertIn("not allowed for persona pm", r.stderr)
+        self.assertIn("not allowed for role pm", r.stderr)
 
     def test_fork_adds_scope(self):
         m = self.register("maintainer", ["acme/widget"], user="octo")
@@ -505,7 +507,7 @@ class BrokerTest(unittest.TestCase):
 
     def test_auth_local(self):
         r = self.gh("auth", "status")
-        self.assertIn("persona dev", r.stdout)
+        self.assertIn("role dev", r.stdout)
         self.gh("auth", "token", expect=1)
         self.gh("auth", "setup-git")
 
@@ -521,7 +523,7 @@ class BrokerTest(unittest.TestCase):
         d = self.tmp / "clone"
         r = subprocess.run(["git", "clone", "-q", "git@github.com:acme/widget.git", d], env=e, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertTrue(any(a == "Basic eC1hY2Nlc3MtdG9rZW46dG9rLWFjdGl2ZQ==" for _, _, a in CGIUpstream.seen))
+        self.assertTrue(any(a == "Basic eC1hY2Nlc3MtdG9rZW46dG9rLWFnZW50Ym90" for _, _, a in CGIUpstream.seen))
         subprocess.run(["git", "-C", d, "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"], env=e, check=True)
         r = subprocess.run(["git", "-C", d, "push", "origin", "HEAD:refs/heads/topic"], env=e, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -609,24 +611,59 @@ class BrokerTest(unittest.TestCase):
             sshstr(b"publickey") + b"\1" + sshstr(b"ssh-ed25519") + sshstr(key)
 
     def test_global_config_and_hosts_per_launch(self):
-        (self.root / "broker.toml").write_text(f'persona = "ops"\n[ssh]\nkey = "{self.tmp}/userkey"\n')
+        (self.root / "broker.toml").write_text(f'role = "ops"\nscope = ["evil/*"]\n[ssh]\nkey = "{self.tmp}/userkey"\n')
         self.addCleanup((self.root / "broker.toml").unlink)
-        # The global key, hosts from the launch (--scope ssh:...), persona from the global file.
-        sess = self.register("", ["ssh:fatso", "ssh:root@q"])
-        self.assertEqual(sess["persona"], "ops")
+        # The global key; hosts from the launch (--scope ssh:...). The global file's role and scope
+        # are ignored, with a warning: the role is the default, reader.
+        w = []
+        sess = self.register("", ["ssh:devbox", "ssh:root@nas"], warnings=w)
+        self.assertEqual(sess["role"], "reader")
+        self.assertIn("role is ignored there", w[0])
+        self.assertNotIn("evil/*", sess["scope"])
         self.assertIn("ssh", sess["providers"])
-        self.assertEqual([s for s in sess["scope"] if s.startswith("ssh:")], ["ssh:fatso", "ssh:root@q"])
+        self.assertEqual([s for s in sess["scope"] if s.startswith("ssh:")], ["ssh:devbox", "ssh:root@nas"])
         self.assertEqual(sess["env"]["SSH_AUTH_SOCK"], f"{sess['pod_dir']}/agent.sock")
         # A profile's table merges over the global one: its hosts, the global key.
-        sess = self.register("dev", [], toml='[ssh]\nhosts = ["fatso"]\n')
-        self.assertEqual(sess["persona"], "dev")
-        self.assertIn("ssh:fatso", sess["scope"])
+        sess = self.register("dev", [], toml='[ssh]\nhosts = ["devbox"]\n')
+        self.assertEqual(sess["role"], "dev")
+        self.assertIn("ssh:devbox", sess["scope"])
         self.assertEqual(Agent(Path(sess["dir"]) / "agent.sock").identities(), [blob_of(self.tmp / "userkey.pub")])
         r = self.admin("keys")
         self.assertRegex(r.stdout, rf"{self.tmp}/userkey +all profiles \[ssh\]\n")
 
+    def test_github_needs_a_named_account(self):
+        w = []
+        sess = self.register("dev", [], user="", remotes=["git@github.com:acme/widget.git"], warnings=w)
+        self.assertNotIn("gh", sess["providers"])
+        self.assertNotIn("github", sess["providers"])
+        self.assertIn('add [gh] user = "ACCOUNT"', w[0])
+        self.assertIn("names no GitHub account", sess["context"])
+        # No GitHub remote: no warning (a profile that doesn't use GitHub isn't nagged).
+        w = []
+        self.register("ops", [], user="", warnings=w)
+        self.assertNotIn("[gh] user", w[0])
+
+    def test_old_persona_names_still_work(self):
+        w = []
+        sess = self.register("", [], toml='persona = "maintainer"\n', warnings=w)
+        self.assertEqual(sess["role"], "maintainer")
+        self.assertIn("persona = is now role =", w[0])
+        grants = self.root / "broker/grants.json"
+        old = grants.read_text() if grants.exists() else None
+        self.addCleanup(lambda: grants.write_text(old) if old is not None else grants.unlink(missing_ok=True))
+        grants.write_text(json.dumps({"personas": {"dev": ["gh:pr merge"]}}))
+        self.assertIn("dev          gh:pr merge", self.admin("grants").stdout)
+
+    def test_your_roles_add_to_built_in_ones(self):
+        (self.root / "roles.toml").write_text('[roles.dev]\nsign = ["other"]\n')
+        self.addCleanup((self.root / "roles.toml").unlink)
+        out = self.admin("roles").stdout
+        dev = out.split("dev:", 1)[1].split("\n  allow: ", 1)[1].split("\n", 1)[0]
+        self.assertIn("sign:other", dev)
+        self.assertIn("gh:pr create", dev)
+
     def test_ssh_agent_signs_only_for_hosts_in_scope(self):
-        sess = self.register("ops", [], toml=f'[ssh]\nkey = "{self.tmp}/userkey"\nhosts = ["fatso"]\n')
+        sess = self.register("ops", [], toml=f'[ssh]\nkey = "{self.tmp}/userkey"\nhosts = ["devbox"]\n')
         sock = Path(sess["dir"]) / "agent.sock"
         user = blob_of(self.tmp / "userkey.pub")
         a = Agent(sock)
@@ -655,9 +692,9 @@ class BrokerTest(unittest.TestCase):
         self.assertIsNone(a.sign(user, b"some other data"))
 
     def test_ssh_connect_through_broker(self):
-        sess = self.register("ops", [], toml=f'[ssh]\nkey = "{self.tmp}/userkey"\nhosts = ["fatso"]\n')
+        sess = self.register("ops", [], toml=f'[ssh]\nkey = "{self.tmp}/userkey"\nhosts = ["devbox"]\n')
         e = self.pod_env(sess)
-        r = subprocess.run([str(self.shim_bin / "apod-ssh-connect"), "fatso", "22"], input=b"hello", env=e,
+        r = subprocess.run([str(self.shim_bin / "apod-ssh-connect"), "devbox", "22"], input=b"hello", env=e,
                            capture_output=True, timeout=20)
         self.assertEqual(r.stdout, b"hello", r.stderr)
         r = subprocess.run([str(self.shim_bin / "apod-ssh-connect"), "evil.example", "22"], input=b"x", env=e,
@@ -665,7 +702,7 @@ class BrokerTest(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn(b"rejected", r.stderr)
         known = (Path(sess["dir"]) / "known_hosts").read_text()
-        self.assertIn("fatso ssh-ed25519", known)
+        self.assertIn("devbox ssh-ed25519", known)
         self.assertIn("ProxyCommand", (Path(sess["dir"]) / "ssh_config").read_text())
 
     # --- rad -------------------------------------------------------------------------------

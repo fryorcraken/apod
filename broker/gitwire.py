@@ -96,7 +96,7 @@ class PushReply:
 
     def waiting(self, ev):
         self.message(f"this push needs your approval ({ev['reason']}). Waiting up to {ASK_TIMEOUT}s. "
-                     f"On the host: apod broker allow {ev['id']} [--session|--persona], or apod broker ui")
+                     f"On the host: apod broker allow {ev['id']} [--session|--role], or apod broker ui")
 
     def report(self, results, unpack="ok"):
         """results: [(ref, None or error)]: ok/ng lines, in a side-band if git asked for one."""

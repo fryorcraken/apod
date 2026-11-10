@@ -144,7 +144,7 @@ def local_auth(argv):
             sys.exit(f"gh (apod): can't reach the apod broker at {SOCK}: {e}")
         print(f"github.com\n  ✓ Using the apod broker as {w['login'] or 'the host gh account'} "
               f"(no token is available in this pod)\n")
-        print(w.get("text") or f"persona {w['persona']}; scope: {', '.join(w['scope'])}; allowed: {', '.join(w['allowed'])}")
+        print(w.get("text") or f"role {w['role']}; scope: {', '.join(w['scope'])}; allowed: {', '.join(w['allowed'])}")
         return 0
     if sub == "setup-git":
         return 0  # git's github.com remotes already go through the broker

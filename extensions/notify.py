@@ -1,7 +1,7 @@
 """Example apod broker extension: the agent sends you a desktop notification on the host.
 
 In the pod: apod-notify [--urgent] TEXT. The broker checks the request (action notify:send or
-notify:urgent; no target, so the scope doesn't come into it) against the persona, then runs
+notify:urgent; no target, so the scope doesn't come into it) against the role, then runs
 notify-send on the host, titled with the agent session's name.
 
 To use it:
@@ -16,13 +16,13 @@ To use it:
     # command = ["notify-send", "-a", "apod"]    # the default; called with TITLE TEXT
     # urgent = ["-u", "critical"]                 # added to the command for --urgent
 
-    # ~/.agent-pod/personas.toml: a persona that may send notifications without asking
-    [personas.dev-notify]
-    extends = ["dev"]
+    # ~/.agent-pod/roles.toml: let dev pods send notifications without asking (this adds to
+    # the built-in dev role)
+    [roles.dev]
     notify = ["send"]
 
-Without a persona that allows it, each notification waits for your approval like any other
-request (approve "for the persona" once to stop being asked). See README.md, "Writing a broker
+Without a role that allows it, each notification waits for your approval like any other
+request (approve "for the role" once to stop being asked). See README.md, "Writing a broker
 extension", for the API this uses.
 """
 import json
@@ -50,7 +50,7 @@ def handle(h, sess, method):
     req = Request("notify", f"notify{' (urgent)' if urgent else ''}: {text[:60]}")
     req.actions = ["notify:urgent" if urgent else "notify:send"]
 
-    # 3. Check it: allowed by the persona, or approved by the user while it waits.
+    # 3. Check it: allowed by the role, or approved by the user while it waits.
     ok, ev = check(sess, req)
     if not ok:
         return h.send_json({"error": rejected_msg(req, ev)}, 403)
@@ -66,7 +66,7 @@ def handle(h, sess, method):
 
 
 class NotifyProvider:
-    name = "notify"  # the [notify] table in broker.toml, the notify list in personas, notify:* actions
+    name = "notify"  # the [notify] table in broker.toml, the notify list in roles, notify:* actions
     routes = [("POST", "/notify", handle)]
 
     def configure(self, sess, cfg, reg, out):

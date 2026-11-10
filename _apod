@@ -21,10 +21,10 @@ _apod_first() {
   _apod_profiles
 }
 
-_apod_personas() {
-  local -a personas
-  personas=(none ${(f)"$(apod --list-personas 2>/dev/null)"})
-  _describe -t personas 'persona' personas
+_apod_roles() {
+  local -a roles
+  roles=(${(f)"$(apod --list-roles 2>/dev/null)"})
+  _describe -t roles 'role' roles
 }
 
 _apod_images() {
@@ -50,14 +50,14 @@ case ${words[2]} in
     if (( CURRENT == 3 )); then
       local -a sub
       sub=('ui:terminal UI to approve requests (also plain apod broker)' 'log:recent requests (-f to follow, -n N)'
-           'pending:requests waiting for approval' 'allow:approve a request (--session, --persona)'
-           'deny:deny a waiting request' 'sessions:sessions with their persona and scope'
-           'personas:personas and what they allow' 'grants:approvals saved for personas (rm PERSONA ACTION)'
+           'pending:requests waiting for approval' 'allow:approve a request (--session, --role)'
+           'deny:deny a waiting request' 'sessions:sessions with their role and scope'
+           'roles:roles and what they allow' 'grants:approvals saved for roles (rm ROLE ACTION)'
            'keys:load keys the sessions use into the broker agent (after a restart)'
            'restart:restart the broker (sessions are kept)' 'stop:stop the broker')
       _describe -t commands 'broker command' sub
     elif [[ ${words[3]} == allow ]]; then
-      _arguments '3:request id:' '4:scope:(--session --persona)'
+      _arguments '3:request id:' '4:scope:(--session --role)'
     fi
     return ;;
 esac
@@ -70,5 +70,6 @@ _arguments -s -S \
   '*'{-c,--connectors}'[enable claude.ai connectors for this run]:connectors:_apod_connectors' \
   '*'{-m,--ro}'[mount a file or folder read-only]:path:_files' \
   '*--rw[mount a file or folder read-write]:path:_files' \
-  '--persona[use the broker with this persona (none: no broker)]:persona:_apod_personas' \
+  '--role[use the broker with this role (default: from broker.toml, else reader)]:role:_apod_roles' \
+  '--no-broker[no broker for this run, even with a broker.toml]' \
   '*--scope[use the broker, adding to its scope (OWNER/REPO, OWNER/*, OWNER, project:OWNER/N, rad:RID, ssh:USER@HOST or ssh:HOST, email:ADDR)]:scope:'

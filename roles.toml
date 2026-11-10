@@ -1,7 +1,7 @@
-# Personas for the apod broker. A pod whose profile has a broker.toml (or that's launched with
-# --persona) gets these actions on what's in its scope; anything else waits for your approval.
-# Override or add personas in ~/.agent-pod/personas.toml (a persona there replaces the one of the
-# same name here). Approvals "for the persona" are saved in ~/.agent-pod/broker/grants.json.
+# Roles for the apod broker: what a pod may do without asking, on what's in its scope; anything
+# else waits for your approval. A pod's role is its profile's broker.toml role, or --role, else
+# reader. Add roles in ~/.agent-pod/roles.toml; a role there with a name used here adds its lists
+# to this one. Approvals "for the role" are saved in ~/.agent-pod/broker/grants.json.
 #
 # One list per provider; entries are shell-style patterns (* matches anything, including /):
 #   gh      gh commands ("pr create", "project item-edit"; risky flags add "<command> --<flag>",
@@ -17,7 +17,7 @@
 #   ssh     "connect" (through the broker, ProxyCommand), "login" (the agent signs a login);
 #           which hosts is the scope's business (broker.toml [ssh] hosts, --scope ssh:HOST)
 
-[personas.reader]
+[roles.reader]
 description = "Read code, PRs, issues and CI; fetch"
 gh = [
   "pr list", "pr view", "pr diff", "pr checks", "pr status",
@@ -34,7 +34,7 @@ rad = ["fetch"]
 sign = ["commit", "tag"]
 ssh = ["connect", "login"]
 
-[personas.dev]
+[roles.dev]
 description = "reader + push branches, open patches, create and edit PRs, create and comment on issues"
 extends = ["reader"]
 gh = [
@@ -48,7 +48,7 @@ gh = [
 github = ["push branch"]
 rad = ["push branch", "push patch"]
 
-[personas.maintainer]
+[roles.maintainer]
 description = "dev + merge and review PRs, manage issues and CI runs, fork and create repositories, tags"
 extends = ["dev"]
 gh = [
@@ -62,7 +62,7 @@ gh = [
 github = ["push delete", "push tag"]
 rad = ["push delete", "push tag"]
 
-[personas.pm]
+[roles.pm]
 description = "Project boards: read, move and add items, add fields; edit, create and comment on issues"
 extends = ["reader"]
 gh = [
@@ -81,7 +81,7 @@ gh = [
   "graphql mutation removeLabelsFromLabelable", "graphql mutation addComment",
 ]
 
-[personas.ops]
+[roles.ops]
 description = "ssh to the hosts in scope, sign commits; nothing on GitHub or Radicle beyond fetching"
 github = ["fetch", "fetch public"]
 rad = ["fetch"]

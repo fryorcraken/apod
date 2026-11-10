@@ -18,7 +18,7 @@ from pathlib import Path
 from core import (BDIR, HARD_DENY, LOCK, SHIM, BrokerError, Request, check, now, provider, read_body,
                   rejected_msg, waiting_msg)
 
-# Never allowed, whatever the persona or grants say: these would hand out credentials, change the
+# Never allowed, whatever the role or grants say: these would hand out credentials, change the
 # broker's own gh, open things on the host, or need the pod's local git (the shim does those).
 GH_HARD_DENY = ["auth *", "extension *", "alias *", "config *", "ssh-key *", "gpg-key *",
              "codespace *", "browse", "repo deploy-key add", "pr checkout", "repo clone",
@@ -941,11 +941,21 @@ class GhProvider:
     routes = [("POST", "/gh", handle_gh)]
 
     def configure(self, sess, cfg, reg, out):
+        # The GitHub account is always named: never your active host login by default, which
+        # would have a pod act as you.
         user = cfg.get("user", "")
+        if not user:
+            where = Path(reg.get("profile_dir") or "the profile") / "broker.toml"
+            out["context"].append("gh and git pushes to GitHub are unavailable: this profile names no GitHub account.")
+            if any(github_repo(u) for u in reg.get("remotes", [])):
+                out["warnings"].append(f"gh and GitHub remotes are off for this pod: add [gh] user = \"ACCOUNT\" "
+                                       f"to {where} (an account logged in to the host's gh)")
+            return False
         try:
             login = gh_login(user)
         except BrokerError as e:
             out["context"].append(f"gh and GitHub over git are unavailable: {e}.")
+            out["warnings"].append(f"gh and GitHub remotes are off for this pod: {e}")
             return False
         sess.cfg["gh"] = {"user": user, "login": login}
         for url in reg.get("remotes", []):

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [--persona P] [--scope S]... [project-dir] [-- agent args...]
+# apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [--role R] [--scope S]... [--no-broker] [project-dir] [-- agent args...]
 # Run a coding agent in a podman container as a given GitHub identity.
 # Per profile: ~/.agent-pod/<profile>/home (persistent $HOME), ~/.agent-pod/<profile>/env
 # (git identity), ~/.agent-pod/<profile>/mounts (optional extra mounts), and either the podman
@@ -8,9 +8,9 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [--persona P] [--scope S]... [project-dir] [-- agent args...]" >&2
+  echo "usage: apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [--role R] [--scope S]... [--no-broker] [project-dir] [-- agent args...]" >&2
   echo "       apod resume [--list|--latest|--claude] [dir] | history | ps | profiles | token <profile> [--rm] | google-auth <profile>" >&2
-  echo "       apod broker [ui]|log [-f]|pending|allow ID [--session|--persona]|deny ID|sessions|personas|grants|keys|restart|stop" >&2
+  echo "       apod broker [ui]|log [-f]|pending|allow ID [--session|--role]|deny ID|sessions|roles|grants|keys|restart|stop" >&2
   exit 2
 }
 
@@ -43,7 +43,7 @@ pane_id() {
 # This checkout: the broker (apod-broker, broker/) lives next to apod.
 apoddir=$(dirname "$(realpath "${BASH_SOURCE[0]}")")
 # For shell completion.
-if [ "${1:-}" = --list-personas ]; then python3 "$apoddir/apod-broker" personas 2>/dev/null | sed -n 's/^\([^ :]*\):.*/\1/p'; exit 0; fi
+if [ "${1:-}" = --list-roles ]; then python3 "$apoddir/apod-broker" roles 2>/dev/null | sed -n 's/^\([^ :]*\):.*/\1/p'; exit 0; fi
 if [ "${1:-}" = --list-connectors ]; then printf '%s\n' "${!connector_servers[@]}" "${local_mcps[@]}" | sort; exit 0; fi
 
 # Subcommands: manage a profile's GitHub token (podman secret gh-<profile>) and Google login,
@@ -152,7 +152,7 @@ case ${1:-} in
       if podman secret exists "gh-$src"; then t=$([ "$src" = "$p" ] && echo set || echo "gh-$src"); fi
       [ -f "$d/home/.config/google-docs-mcp/token.json" ] && g=yes
       if [ -f "$d/broker.toml" ]; then
-        b=$(sed -n 's/^persona *= *"\(.*\)".*/\1/p' "$d/broker.toml" | head -n1); b=${b:-yes}
+        b=$(sed -n 's/^\(role\|persona\) *= *"\(.*\)".*/\2/p' "$d/broker.toml" | head -n1); b=${b:-reader}
         [ "$t" = - ] || t="unused"
       elif [ "$t" != - ]; then used+=("gh-$src"); fi
       printf '%-24s token: %-12s google: %-4s broker: %s\n' "$p" "$t" "$g" "$b"
@@ -174,7 +174,8 @@ image=
 proj=
 climounts=()  # "mode path" entries from --ro/--rw, for this run only
 connectors=() # claude.ai connector groups enabled for this run (-c)
-persona=      # broker persona for this run (--persona), else broker.toml's; "none" turns the broker off
+role=      # broker role for this run (--role), else broker.toml's, else reader
+nobroker=  # --no-broker: no broker for this run, even with a broker.toml
 scopes=()     # extra broker scope for this run (--scope)
 recopts=("$profile")  # profile and options of this launch, for the history and apod resume
 while [ $# -gt 0 ]; do
@@ -184,7 +185,10 @@ while [ $# -gt 0 ]; do
     -c|--connectors) [ $# -ge 2 ] || usage; IFS=, read -ra cs <<< "$2"; connectors+=("${cs[@]}"); recopts+=("$1" "$2"); shift 2 ;;
     -m|--ro)    [ $# -ge 2 ] || usage; climounts+=("ro $2"); recopts+=(--ro "$(realpath -m "$2")"); shift 2 ;;
     --rw)       [ $# -ge 2 ] || usage; climounts+=("rw $2"); recopts+=(--rw "$(realpath -m "$2")"); shift 2 ;;
-    --persona)  [ $# -ge 2 ] || usage; persona=$2; recopts+=("$1" "$2"); shift 2 ;;
+    --role)     [ $# -ge 2 ] || usage; role=$2; recopts+=("$1" "$2"); shift 2 ;;
+    --persona)  [ $# -ge 2 ] || usage; role=$2; recopts+=(--role "$2"); shift 2
+                echo "apod: --persona is now --role" >&2 ;;
+    --no-broker) nobroker=1; recopts+=("$1"); shift ;;
     --scope)    [ $# -ge 2 ] || usage; scopes+=("$2"); recopts+=("$1" "$2"); shift 2 ;;
     --)         shift; break ;;
     -*)         usage ;;
@@ -214,13 +218,13 @@ if [ -f "$root/$profile/volumes" ]; then
 fi
 
 [ -f "$envf" ] || { echo "apod: missing $envf (git identity, see README)" >&2; exit 2; }
-# Broker: when the profile has a broker.toml, or --persona or --scope is given ("--persona none"
-# turns it off). The persona comes from --persona, else the profile's or the global broker.toml.
+# Broker: when the profile has a broker.toml, or --role or --scope is given; --no-broker turns it
+# off. The role comes from --role, else the profile's broker.toml, else reader.
 usebroker=
-if [ "$persona" = none ]; then
-  persona=
-  [ ${#scopes[@]} -eq 0 ] || { echo "apod: --scope needs the broker, which --persona none turns off" >&2; exit 2; }
-elif [ -n "$persona" ] || [ ${#scopes[@]} -gt 0 ] || [ -f "$root/$profile/broker.toml" ]; then usebroker=1; fi
+[ "$role" = none ] && { role=; nobroker=1; }  # the old way to say --no-broker
+if [ -n "$nobroker" ]; then
+  [ ${#scopes[@]} -eq 0 ] && [ -z "$role" ] || { echo "apod: --role and --scope need the broker, which --no-broker turns off" >&2; exit 2; }
+elif [ -n "$role" ] || [ ${#scopes[@]} -gt 0 ] || [ -f "$root/$profile/broker.toml" ]; then usebroker=1; fi
 ghsecret=()
 if [ -z "$usebroker" ]; then
   # GitHub token: the podman secret gh-<profile>, or another profile's if the github file names one.
@@ -228,7 +232,7 @@ if [ -z "$usebroker" ]; then
   if [ -f "$root/$profile/github" ]; then ghprofile=$(head -n1 "$root/$profile/github" | tr -d '[:space:]'); fi
   ghsecret=(--secret "gh-$ghprofile,type=env,target=GH_TOKEN")
   if ! podman secret exists "gh-$ghprofile"; then
-    echo "apod: profile $ghprofile has no GitHub token, so gh and HTTPS pushes are unauthenticated. Use the broker (broker.toml, or --persona dev) or add a token: apod token $ghprofile" >&2
+    echo "apod: profile $ghprofile has no GitHub token, so gh and HTTPS pushes are unauthenticated. Use the broker (broker.toml, or --role dev) or add a token: apod token $ghprofile" >&2
     ghsecret=()
   else
     echo "apod: profile $profile uses a GitHub token; the broker is recommended instead (a broker.toml in the profile, see README)" >&2
@@ -246,7 +250,7 @@ fi
 
 case $agent in
   claude)   cmd=(claude --permission-mode bypassPermissions) ;;
-  opencode) cmd=(opencode) ;;
+  opencode) cmd=(opencode) ;;  # permissions: see agentenv below
   bash)     cmd=(bash -l) ;;
   *) usage ;;
 esac
@@ -353,7 +357,7 @@ mounts+=("${filemounts[@]}" -v "$proj:$proj:z")
 bsid=; binfo=; bproviders=
 if [ -n "$usebroker" ]; then
   regargs=(--id "$(uuidgen | tr -d - | cut -c1-12)" --profile "$profile" --profile-dir "$root/$profile" --project "$proj")
-  [ -z "$persona" ] || regargs+=(--persona "$persona")
+  [ -z "$role" ] || regargs+=(--role "$role")
   for s in "${scopes[@]}"; do regargs+=(--scope "$s"); done
   while read -r _ url; do regargs+=(--remote "$url"); done < <(git -C "$proj" config --get-regexp '^remote\..*\.(url|pushurl)$' 2>/dev/null || true)
   binfo=$(python3 "$apoddir/apod-broker" register "${regargs[@]}") || exit 2
@@ -441,6 +445,13 @@ if [ -n "$bsid" ] || [ -n "$sshkey" ]; then
     m=${m%:z}; m=${m/%,z/}; mounts[i]=$m
   done
 fi
+# No permission prompts, as for Claude (bypassPermissions): opencode allows most tools by default
+# but asks before touching files outside the project, such as the profile's mounts. Its loop guard
+# (doom_loop: the same call three times) still asks. The profile's env can set its own.
+agentenv=()
+if [ "$agent" = opencode ] && ! grep -q '^OPENCODE_PERMISSION=' "$envf"; then
+  agentenv=(-e 'OPENCODE_PERMISSION={"external_directory":"allow"}')
+fi
 run=(podman run --rm "${tty[@]}" --userns=keep-id
   --name "apod-$profile-$(basename "$proj")-$$"
   --hostname "apod-$profile"
@@ -449,7 +460,7 @@ run=(podman run --rm "${tty[@]}" --userns=keep-id
   -e HOME=/home/agent
   -e APOD_PROFILE="$profile"
   -e CLAUDE_CODE_DISABLE_AGENT_VIEW=1
-  "${gitenv[@]}" "${benv[@]}"
+  "${gitenv[@]}" "${benv[@]}" "${agentenv[@]}"
   "${mounts[@]}" -w "$proj")
 [ -z "$network" ] || run+=(--network "$network")
 run+=("${volumes[@]}" --label apod.profile="$profile" --label apod.project="$proj" --label apod.session="$session")

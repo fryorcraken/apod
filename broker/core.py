@@ -1,10 +1,10 @@
-"""apod broker core: sessions, personas, scope, approvals, the audit log and the servers.
+"""apod broker core: sessions, roles, scope, approvals, the audit log and the servers.
 
 The broker runs on the host and does things for apod pods that would otherwise need credentials
-in the pod. Each pod gets a session (a profile, a persona and a scope) and a socket directory
+in the pod. Each pod gets a session (a profile, a role and a scope) and a socket directory
 mounted at /run/apod-broker. Providers (gh, github, rad, sign, ssh) turn what a pod asks for into
 actions ("gh:pr create", "github:push branch", "sign:commit", "ssh:login") and targets (a
-repository, a project, a host, a git identity). A request goes ahead when the persona allows every
+repository, a project, a host, a git identity). A request goes ahead when the role allows every
 action and every target is in the session's scope; anything else waits for the user's approval
 (apod broker ui, apod broker allow) until it times out.
 """
@@ -37,7 +37,8 @@ GRANTS = BDIR / "grants.json"
 LOGF = BDIR / "log.jsonl"
 HERE = Path(__file__).resolve().parent
 CHECKOUT = HERE.parent
-PERSONA_FILES = [CHECKOUT / "personas.toml", ROOT / "personas.toml"]
+ROLE_FILES = [CHECKOUT / "roles.toml", ROOT / "roles.toml"]  # built-in, then yours (added to them)
+OLD_ROLE_FILE = ROOT / "personas.toml"  # before roles were called roles; read if roles.toml isn't there
 SHIM = HERE / "pod-shim"
 POD_DIR = "/run/apod-broker"
 ASK_TIMEOUT = float(os.environ.get("APOD_BROKER_ASK_TIMEOUT", "90"))
@@ -119,21 +120,43 @@ def run_quiet(cmd, **kw):
 
 
 # ---------------------------------------------------------------------------------------------
-# Personas, grants, scope
+# Roles, grants, scope
 
-def load_personas():
+def merge_role(base, more):
+    """A role from your roles.toml over the built-in one of the same name: its lists (per
+    provider, allow, deny, extends) are added; its description replaces the built-in one."""
+    out = dict(base)
+    for k, v in more.items():
+        if isinstance(v, (list, str)) and k != "description" and k in out:
+            old = [out[k]] if isinstance(out[k], str) else list(out[k])
+            out[k] = old + [x for x in ([v] if isinstance(v, str) else v) if x not in old]
+        else:
+            out[k] = v
+    return out
+
+
+def load_roles():
     raw = {}
-    for f in PERSONA_FILES:
+    files = ROLE_FILES + ([OLD_ROLE_FILE] if OLD_ROLE_FILE.exists() and not ROLE_FILES[1].exists() else [])
+    for f in files:
         if f.exists():
-            raw.update(tomllib.loads(f.read_text()).get("personas", {}))
+            data = tomllib.loads(f.read_text())
+            for name, role in {**data.get("personas", {}), **data.get("roles", {})}.items():
+                raw[name] = merge_role(raw[name], role) if name in raw else role
     return raw
 
 
 def load_grants():
     try:
-        return json.loads(GRANTS.read_text())
+        g = json.loads(GRANTS.read_text())
     except (OSError, ValueError):
-        return {"personas": {}}
+        return {"roles": {}}
+    if "personas" in g:  # grants saved before roles were called roles
+        g.setdefault("roles", {})
+        for name, lst in g.pop("personas").items():
+            g["roles"].setdefault(name, []).extend(a for a in lst if a not in g["roles"].get(name, []))
+    g.setdefault("roles", {})
+    return g
 
 
 def save_grants(g):
@@ -142,25 +165,25 @@ def save_grants(g):
     tmp.replace(GRANTS)
 
 
-def persona_rules(name, raw=None, seen=None):
-    """(allow, deny) patterns of a persona, as "provider:action": its own (one list per provider),
-    its grants, and those of the personas it extends."""
-    raw = load_personas() if raw is None else raw
+def role_rules(name, raw=None, seen=None):
+    """(allow, deny) patterns of a role, as "provider:action": its own (one list per provider),
+    its grants, and those of the roles it extends."""
+    raw = load_roles() if raw is None else raw
     seen = set() if seen is None else seen
     if name not in raw:
-        raise BrokerError(f"no persona {name} (known: {', '.join(sorted(raw)) or 'none'})")
+        raise BrokerError(f"no role {name} (known: {', '.join(sorted(raw)) or 'none'})")
     if name in seen:
         return [], []
     seen.add(name)
     p = raw[name]
-    allow = list(p.get("allow", [])) + list(load_grants()["personas"].get(name, []))
+    allow = list(p.get("allow", [])) + list(load_grants()["roles"].get(name, []))
     deny = list(p.get("deny", []))
     for pname, rules in p.items():
         if pname in PROVIDERS and isinstance(rules, list):
             allow += [f"{pname}:{a}" for a in rules]
     ext = p.get("extends", [])
     for e in [ext] if isinstance(ext, str) else ext:
-        a, d = persona_rules(e, raw, seen)
+        a, d = role_rules(e, raw, seen)
         allow += a
         deny += d
     return allow, deny
@@ -193,11 +216,12 @@ def fmt_scope(kind, v):
 
 
 class Session:
-    FIELDS = ("id", "profile", "persona", "project", "scope", "grants", "cfg", "identity", "created")
+    FIELDS = ("id", "profile", "role", "project", "scope", "grants", "cfg", "identity", "created")
 
     def __init__(self, d):
         for k in self.FIELDS:
             setattr(self, k, d.get(k))
+        self.role = self.role or d.get("persona") or "reader"  # sessions saved before the rename
         self.scope = {k: list(v) for k, v in {**{k: [] for k in SCOPE_KINDS}, **(self.scope or {})}.items()}
         self.grants = {k: list((self.grants or {}).get(k, [])) for k in ("actions", "unscoped")}
         self.cfg = self.cfg or {}
@@ -257,21 +281,21 @@ class Session:
         return [fmt_scope(k, v) for k in self.scope for v in self.scope[k]]
 
     def summary(self):
-        allow, _ = persona_rules(self.persona)
-        return {"persona": self.persona, "login": self.login, "scope": self.scope_list(),
+        allow, _ = role_rules(self.role)
+        return {"role": self.role, "login": self.login, "scope": self.scope_list(),
                 "allowed": sorted(set(allow)), "identity": self.identity, "grants": self.grants,
                 "name": self.title(), "text": self.describe()}
 
     def describe(self):
         """What this pod may do, for the agent: its system prompt at launch, gh auth status later
         (which also shows what the user approved since)."""
-        allow, _ = persona_rules(self.persona)
+        allow, _ = role_rules(self.role)
         active = self.cfg.get("_providers") or list(PROVIDERS)
         by = collections.defaultdict(list)
         for a in sorted(set(allow)):
             prov, _, act = a.partition(":")
             by[prov].append(act)
-        lines = [f"apod broker: persona {self.persona}" + (f", GitHub user {self.login}" if self.login else "") + ".",
+        lines = [f"apod broker: role {self.role}" + (f", GitHub user {self.login}" if self.login else "") + ".",
                  f"Scope (the repositories, projects, hosts and identities it may touch): "
                  f"{', '.join(self.scope_list()) or 'none'}.",
                  "Allowed without asking, on what's in scope:"]
@@ -333,7 +357,7 @@ class Request:
 
 def new_event(sess, req):
     ev = {"id": next(COUNTER), "ts": now(), "session": sess.id, "name": sess.title(), "profile": sess.profile,
-          "persona": sess.persona, "login": sess.login, "project": sess.project, "kind": req.kind,
+          "role": sess.role, "login": sess.login, "project": sess.project, "kind": req.kind,
           "request": req.display, "actions": req.actions, "targets": [list(t) for t in req.targets],
           "missing": [], "out": [], "decision": "pending", "reason": "", "exit": None}
     with LOCK:
@@ -354,11 +378,11 @@ class Pending:
         self.ev, self.done, self.decision = ev, threading.Event(), None
 
 
-HARD_DENY = []  # extended by providers: never allowed, whatever the persona or grants say
+HARD_DENY = []  # extended by providers: never allowed, whatever the role or grants say
 
 
 def evaluate(sess, req):
-    allow, deny = persona_rules(sess.persona)
+    allow, deny = role_rules(sess.role)
     allow = allow + sess.grants["actions"]
     hard = [a for a in req.actions if matches(a, HARD_DENY + deny)]
     if hard:
@@ -367,7 +391,7 @@ def evaluate(sess, req):
     out = [list(t) for t in req.targets if not sess.in_scope(t)]
     reasons = []
     if missing:
-        reasons.append(f"not allowed for persona {sess.persona}: {', '.join(missing)}")
+        reasons.append(f"not allowed for role {sess.role}: {', '.join(missing)}")
     if out:
         reasons.append(f"out of this session's scope: {', '.join(fmt_target(t) for t in out)}")
     return ("ask" if reasons else "allow"), missing, out, "; ".join(reasons)
@@ -433,14 +457,14 @@ def rejected_msg(req, ev):
 
 def waiting_msg(req, ev):
     return (f"`{req.display}` needs your approval ({ev['reason']}). Waiting up to {ASK_TIMEOUT}s. "
-            f"On the host: apod broker allow {ev['id']} [--session|--persona], apod broker deny {ev['id']}, "
+            f"On the host: apod broker allow {ev['id']} [--session|--role], apod broker deny {ev['id']}, "
             f"or apod broker ui")
 
 
 def decide(eid, how):
-    """Approve (once, for the session, or for the persona) or deny a request. Approving a past
-    request for the session or persona adds its grants so that a retry goes through."""
-    if how not in ("once", "session", "persona", "deny"):
+    """Approve (once, for the session, or for the role) or deny a request. Approving a past
+    request for the session or role adds its grants so that a retry goes through."""
+    if how not in ("once", "session", "role", "deny"):
         raise BrokerError(f"unknown decision {how}")
     with LOCK:
         p = PENDING.get(eid)
@@ -448,12 +472,12 @@ def decide(eid, how):
         if ev is None:
             raise BrokerError(f"no request {eid}")
         if not p and how in ("once", "deny"):
-            raise BrokerError(f"request {eid} is no longer waiting; use --session or --persona to allow a retry")
+            raise BrokerError(f"request {eid} is no longer waiting; use --session or --role to allow a retry")
         sess = SESSIONS.get(ev["session"])
-        if how in ("session", "persona"):
-            if how == "persona":
+        if how in ("session", "role"):
+            if how == "role":
                 g = load_grants()
-                lst = g["personas"].setdefault(ev["persona"], [])
+                lst = g["roles"].setdefault(ev["role"], [])
                 lst += [a for a in ev["missing"] if a not in lst]
                 save_grants(g)
             elif sess:
@@ -654,15 +678,29 @@ def read_toml(f):
 
 def merge_config(base, over):
     """A profile's broker.toml over the global one: tables merge key by key, and any other value
-    (persona, scope, a table's key or hosts) in the profile replaces the global one."""
+    (a table's key or hosts) in the profile replaces the global one."""
     out = dict(base)
     for k, v in over.items():
         out[k] = merge_config(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
     return out
 
 
-def load_config(pdir):
-    return merge_config(read_toml(GLOBAL_CONFIG), read_toml(Path(pdir) / "broker.toml"))
+def load_config(pdir, warnings=None):
+    """The global broker.toml's tables (settings shared by every profile: keys, the Radicle
+    home, ...) under the profile's broker.toml. What a pod may do (role, scope) comes only from
+    the profile and the launch."""
+    glob = read_toml(GLOBAL_CONFIG)
+    for k in [k for k, v in glob.items() if not isinstance(v, dict)]:
+        glob.pop(k)
+        if warnings is not None:
+            warnings.append(f"{GLOBAL_CONFIG}: {k} is ignored there (set it in a profile's broker.toml "
+                            f"or at launch); it holds only settings shared by every profile")
+    cfg = read_toml(Path(pdir) / "broker.toml")
+    if "persona" in cfg and "role" not in cfg:
+        cfg["role"] = cfg.pop("persona")
+        if warnings is not None:
+            warnings.append(f"{Path(pdir) / 'broker.toml'}: persona = is now role = (it still works for now)")
+    return merge_config(glob, cfg)
 
 
 def register(r):
@@ -670,15 +708,14 @@ def register(r):
     if not re.fullmatch(r"[A-Za-z0-9_-]{4,64}", sid):
         raise BrokerError("bad session id")
     pdir = Path(r.get("profile_dir") or ROOT / r.get("profile", ""))
-    cfg = load_config(pdir)
-    persona = r.get("persona") or cfg.get("persona") or ""
-    if not persona:
-        raise BrokerError(f"no persona: set persona in {pdir / 'broker.toml'} (or {GLOBAL_CONFIG}) or pass --persona")
-    persona_rules(persona)  # fails on an unknown persona
+    warnings = []
+    cfg = load_config(pdir, warnings)
+    role = r.get("role") or cfg.get("role") or "reader"
+    role_rules(role)  # fails on an unknown role
     env = read_env_file(pdir / "env")
     identity = {"name": env.get("GIT_COMMITTER_NAME") or env.get("GIT_AUTHOR_NAME", ""),
                 "emails": sorted({e for e in (env.get("GIT_AUTHOR_EMAIL"), env.get("GIT_COMMITTER_EMAIL")) if e})}
-    sess = Session({"id": sid, "profile": r.get("profile", ""), "persona": persona,
+    sess = Session({"id": sid, "profile": r.get("profile", ""), "role": role,
                     "project": r.get("project", ""), "created": now(), "identity": identity,
                     "cfg": {"_home": str(pdir / "home")}})
     for e in list(cfg.get("scope", [])) + list(r.get("scope", [])):
@@ -687,7 +724,7 @@ def register(r):
     for e in identity["emails"]:
         sess.add_scope(("identity", e))
     out = {"env": {"APOD_BROKER_SOCK": f"{POD_DIR}/broker.sock"}, "git_config": [], "mounts": [],
-           "context": [], "need_keys": [], "providers": []}
+           "context": [], "need_keys": [], "providers": [], "warnings": warnings}
     start_agent()
     for p in PROVIDERS.values():
         if p.configure(sess, cfg.get(p.name) or {}, r, out):
@@ -702,7 +739,8 @@ def register(r):
     sess.save()
     head = "The host's apod broker acts for this pod.\n" + sess.describe()
     return {"id": sid, "dir": str(sess.dir), "pod_dir": POD_DIR, "ask_timeout": ASK_TIMEOUT,
-            "agent": str(AGENT), **out, "context": "\n".join([head] + out["context"]), **sess.summary()}
+            "agent": str(AGENT), **out, "context": "\n".join([head] + out["context"]), **sess.summary(),
+            "warnings": out["warnings"]}
 
 
 def unregister(sid):
@@ -722,7 +760,7 @@ def state():
         return {"sessions": [dict(s.data(), scope_list=s.scope_list(), name=s.title()) for s in SESSIONS.values()],
                 "pending": [p.ev for p in PENDING.values()],
                 "events": list(EVENTS)[-200:],
-                "grants": load_grants()["personas"],
+                "grants": load_grants()["roles"],
                 "ask_timeout": ASK_TIMEOUT}
 
 
@@ -787,7 +825,7 @@ def admin_call(path, body):
         return decide(int(body["id"]), body["how"])
     if path == "/grants/remove":
         g = load_grants()
-        lst = g["personas"].get(body["persona"], [])
+        lst = g["roles"].get(body["role"], [])
         if body["action"] in lst:
             lst.remove(body["action"])
         save_grants(g)
@@ -951,9 +989,9 @@ def print_event(e):
 
 
 USAGE = """usage: apod broker [ui]                      approve requests in a terminal UI
-       apod broker log [-f] [-n N] | pending | sessions | personas
-       apod broker allow ID [--session|--persona] | deny ID
-       apod broker grants [rm PERSONA ACTION] | keys | restart | stop"""
+       apod broker log [-f] [-n N] | pending | sessions | roles
+       apod broker allow ID [--session|--role] | deny ID
+       apod broker grants [rm ROLE ACTION] | keys | restart | stop"""
 
 
 def main(argv, script):
@@ -963,7 +1001,7 @@ def main(argv, script):
         return 0
     try:
         if cmd == "register":
-            # register --id ID --profile P --profile-dir DIR --project DIR [--persona P] [--scope S]... [--remote URL]...
+            # register --id ID --profile P --profile-dir DIR --project DIR [--role P] [--scope S]... [--remote URL]...
             r = {"scope": [], "remotes": []}
             it = iter(args)
             for a in it:
@@ -973,7 +1011,10 @@ def main(argv, script):
                 else:
                     r[k] = next(it)
             ensure(script)
-            print(json.dumps(client("/register", r)))
+            out = client("/register", r)
+            for w in out.get("warnings", []):
+                print(f"apod broker: {w}", file=sys.stderr)
+            print(json.dumps(out))
         elif cmd == "unregister":
             client("/unregister", {"id": args[0]}, timeout=10)
         elif cmd == "ensure":
@@ -1001,8 +1042,9 @@ def main(argv, script):
                   file=sys.stderr)
         elif cmd in ("allow", "deny"):
             if not args:
-                sys.exit(f"usage: apod broker {cmd} ID" + (" [--session|--persona]" if cmd == "allow" else ""))
-            how = "deny" if cmd == "deny" else "persona" if "--persona" in args else "session" if "--session" in args else "once"
+                sys.exit(f"usage: apod broker {cmd} ID" + (" [--session|--role]" if cmd == "allow" else ""))
+            how = ("deny" if cmd == "deny" else "role" if {"--role", "--persona"} & set(args) else
+                   "session" if "--session" in args else "once")
             ev = client("/decide", {"id": int(args[0]), "how": how})
             print(f"apod broker: {'denied' if how == 'deny' else 'allowed (' + how + ')'}: {ev['request']}")
         elif cmd == "pending":
@@ -1028,19 +1070,19 @@ def main(argv, script):
         elif cmd == "sessions":
             for s in client("/state", {})["sessions"]:
                 granted = s["grants"]["actions"] + s["grants"]["unscoped"]
-                print(f"{s['id']}  {s['profile']:<14} {s['persona']:<11} {s['project']}\n"
+                print(f"{s['id']}  {s['profile']:<14} {s['role']:<11} {s['project']}\n"
                       f"    scope: {', '.join(s['scope_list']) or '-'}"
                       + (f"\n    granted: {', '.join(granted)}" if granted else ""))
         elif cmd == "grants":
             if args[:1] == ["rm"]:
-                client("/grants/remove", {"persona": args[1], "action": " ".join(args[2:])})
-            for p, lst in load_grants()["personas"].items():
+                client("/grants/remove", {"role": args[1], "action": " ".join(args[2:])})
+            for p, lst in load_grants()["roles"].items():
                 for a in lst:
                     print(f"{p:<12} {a}")
-        elif cmd == "personas":
-            raw = load_personas()
+        elif cmd in ("roles", "personas"):
+            raw = load_roles()
             for name in raw:
-                allow, deny = persona_rules(name, raw)
+                allow, deny = role_rules(name, raw)
                 print(f"{name}: {raw[name].get('description', '')}\n  allow: {', '.join(allow)}"
                       + (f"\n  deny: {', '.join(deny)}" if deny else ""))
         elif cmd == "ui":

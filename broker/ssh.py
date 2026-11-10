@@ -7,7 +7,7 @@ in the host's known_hosts. Optionally (the default), the pod's ssh connects thro
 destination before connecting.
 
 Actions: ssh:connect, ssh:login. Targets: ("host", "USER@NAME"), NAME as in the scope
-("fatso", "root@q", "key:SHA256:..."); "@NAME" for a connection (no user yet)."""
+("devbox", "root@nas", "key:SHA256:..."); "@NAME" for a connection (no user yet)."""
 import base64
 import hashlib
 import os
