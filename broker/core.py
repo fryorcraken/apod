@@ -950,8 +950,14 @@ def ensure(script):
     except (OSError, BrokerError, ValueError):
         pass
     BDIR.mkdir(parents=True, exist_ok=True)
+    cmd = [sys.executable, str(script), "serve"]
+    if (ROOT / "selinux").exists() and shutil.which("runcon") and shutil.which("selinuxenabled") \
+            and subprocess.run(["selinuxenabled"]).returncode == 0:
+        # apod selinux install: pods run as apod_container, which may connect to the broker's
+        # sockets if it runs at s0 (a container can only reach a peer its categories dominate).
+        cmd = ["runcon", "-l", "s0", *cmd]
     with (BDIR / "broker.log").open("a") as log:
-        subprocess.Popen([sys.executable, str(script), "serve"], stdin=subprocess.DEVNULL,
+        subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
                          stdout=log, stderr=log, start_new_session=True, cwd=str(BDIR))
     for _ in range(50):
         time.sleep(0.1)

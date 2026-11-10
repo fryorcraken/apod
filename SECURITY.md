@@ -166,8 +166,11 @@ The broker turns each request into actions and targets, and checks them before a
 - **Reads within the scope.** Roles allow broad reads on targets in scope, such as
   `api GET /repos/{repo}/*`, and `github:fetch public` allows fetching any public repository.
   Private data in scope is readable.
-- **SELinux is off for broker pods.** They run with `label=disable`, which the mounted sockets
-  need; the same goes for pods with an `ssh-key`. Other pods keep SELinux labelling.
+- **SELinux is off for broker pods unless you install apod's module.** By default they run with
+  `label=disable`, because SELinux stops a container from connecting to the broker's socket; the
+  same goes for pods with an `ssh-key`. `apod selinux install` loads a container type that may
+  connect to your own processes' sockets, so these pods keep SELinux labelling. Other pods always
+  keep it.
 - **Denial of service.** There is no rate limit: a pod can flood you with approval requests or
   notifications. Deny them, and stop the pod.
 - **Bugs in the broker.** The broker parses untrusted input from pods: HTTP, git pkt-lines,
@@ -180,6 +183,8 @@ The broker turns each request into actions and targets, and checks them before a
 
 - Use the broker rather than tokens. Where you keep a token, make it fine-grained and limited to
   the repositories and permissions the profile needs.
+- On SELinux hosts, run `apod selinux install` so broker and `ssh-key` pods keep SELinux
+  labelling.
 - Give each profile the narrowest role and scope it needs. Grant extra access per session
   rather than per role when it's a one-off.
 - Give pods their own worktrees, and set `core.hooksPath` on the host for repositories that pods

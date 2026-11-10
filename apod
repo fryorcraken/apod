@@ -11,6 +11,7 @@ usage() {
   echo "usage: apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [--role R] [--scope S]... [--gh-user ACCOUNT] [--no-broker] [project-dir] [-- agent args...]" >&2
   echo "       apod resume [--list|--latest|--claude] [dir] | history | ps | profiles | token <profile> [--rm] | google-auth <profile>" >&2
   echo "       apod broker [ui]|log [-f]|pending|allow ID [--session|--role]|deny ID|sessions|roles|grants|keys|restart|stop" >&2
+  echo "       apod selinux [install|remove|status]" >&2
   exit 2
 }
 
@@ -53,6 +54,34 @@ case ${1:-} in
     # The broker: approvals, log, sessions, keys (see apod-broker).
     shift; [ $# -ge 1 ] || set -- ui
     exec python3 "$apoddir/apod-broker" "$@" ;;
+  selinux)
+    # Let pods that use a socket on the host (broker, ssh-key) keep SELinux labelling: load the
+    # apod_container type (selinux/apod_container.cil), or remove it. Without it, those pods run
+    # with labelling off.
+    sroot=${APOD_ROOT:-$HOME/.agent-pod}; mark=$sroot/selinux
+    case ${2:-status} in
+      install)
+        if ! { command -v selinuxenabled >/dev/null && selinuxenabled; }; then
+          echo "apod: SELinux isn't enabled on this host: nothing to do" >&2; exit 1
+        fi
+        base=/usr/share/udica/templates/base_container.cil
+        [ -f "$base" ] || { echo "apod: this needs udica's container template: sudo dnf install udica" >&2; exit 1; }
+        echo "apod: loading the apod_container SELinux module: sudo semodule -i ..." >&2
+        sudo semodule -i "$apoddir/selinux/apod_container.cil" "$base" || exit 1
+        mkdir -p "$sroot"; echo apod_container.process > "$mark"
+        echo "apod: pods with a host socket now keep SELinux labelling (type apod_container.process)."
+        echo "apod: restart the broker so it runs at level s0: apod broker restart" ;;
+      remove)
+        sudo semodule -r apod_container || true
+        rm -f "$mark"
+        echo "apod: removed: pods with a host socket run without SELinux labelling again. Then: apod broker restart" ;;
+      status)
+        if [ -f "$mark" ]; then echo "apod: pods with a host socket run as $(head -n1 "$mark")"
+        else echo "apod: pods with a host socket run without SELinux labelling (apod selinux install changes that)"; fi
+        if command -v getenforce >/dev/null; then echo "SELinux: $(getenforce)"; fi ;;
+      *) echo "usage: apod selinux [install|remove|status]" >&2; exit 2 ;;
+    esac
+    exit ;;
   google-auth)
     [ $# -ge 2 ] || { echo "usage: apod google-auth <profile>" >&2; exit 2; }
     pdir=${APOD_ROOT:-$HOME/.agent-pod}/$2
@@ -380,9 +409,9 @@ if [ -n "$usebroker" ]; then
     addopts=(-q -t "${APOD_SSH_TTL:-4h}"); [ "$kconfirm" = true ] && addopts+=(-c)
     SSH_AUTH_SOCK=$agentsock ssh-add "${addopts[@]}" "$kpath" || echo "apod: couldn't load $kpath into the broker's agent" >&2
   done < <(jq -r '.need_keys[] | [.path, .confirm] | @tsv' <<< "$binfo")
-  mounts+=(-v "$(jq -r .dir <<< "$binfo"):$(jq -r .pod_dir <<< "$binfo")"
-    -v "$apoddir/broker/pod-shim:/usr/local/bin/apod-git-forward:ro")
-  while IFS=$'\t' read -r src dst mode; do mounts+=(-v "$src:$dst:$mode"); done < <(jq -r '.mounts[] | @tsv' <<< "$binfo")
+  mounts+=(-v "$(jq -r .dir <<< "$binfo"):$(jq -r .pod_dir <<< "$binfo"):z"
+    -v "$apoddir/broker/pod-shim:/usr/local/bin/apod-git-forward:ro,z")
+  while IFS=$'\t' read -r src dst mode; do mounts+=(-v "$src:$dst:$mode,z"); done < <(jq -r '.mounts[] | @tsv' <<< "$binfo")
   if [[ $bproviders == *" ssh "* ]] && [ -n "$sshkey" ]; then
     echo "apod: broker.toml has [ssh], so the profile's ssh-key file is ignored" >&2; sshkey=
   fi
@@ -447,9 +476,13 @@ fi
 # this into the container.
 case $agent in claude|opencode) export HERDR_AGENT=$agent ;; esac
 
-# Pods with a host socket (broker, ssh-key) run without SELinux labelling (below), so relabelling
-# their mounts (:z) does nothing useful, and it fails on files you don't own.
-if [ -n "$bsid" ] || [ -n "$sshkey" ]; then
+# SELinux for pods with a socket on the host (broker, ssh-key): by default it blocks a container
+# from connecting to a host process's socket, so these pods run without labelling, unless
+# apod selinux install has loaded a container type that may (apod_container.process). Without
+# labelling, relabelling their mounts (:z) does nothing useful, and it fails on files you don't own.
+seltype=; [ -f "$root/selinux" ] && seltype=$(head -n1 "$root/selinux" | tr -d '[:space:]')
+if [ -n "$seltype" ]; then sockopts=(--security-opt "label=type:$seltype"); else sockopts=(--security-opt label=disable); fi
+if { [ -n "$bsid" ] || [ -n "$sshkey" ]; } && [ -z "$seltype" ]; then
   for i in "${!mounts[@]}"; do
     m=${mounts[$i]}; [ "$m" = -v ] && continue
     m=${m%:z}; m=${m/%,z/}; mounts[i]=$m
@@ -483,8 +516,7 @@ if [ -n "$bsid" ]; then
 for ((i = 0; i < ${GIT_CONFIG_COUNT:-0}; i++)); do k=GIT_CONFIG_KEY_$i; v=${!k}; [[ $v == *"{forward}"* ]] && export "$k=${v//"{forward}"/$u}"; done
 exec "$@"'
   cmdline=("$image" bash -lc "$wrap" _ "${cmd[@]}" "$@")
-  # SELinux blocks a container from connecting to a host process's socket (as for ssh-agent).
-  run+=(--security-opt label=disable --label apod.broker="$bsid")
+  run+=("${sockopts[@]}" --label apod.broker="$bsid")
 else
   cmdline=("$image" bash -lc 'gh auth setup-git >/dev/null 2>&1 || true; exec "$@"' _ "${cmd[@]}" "$@")
 fi
@@ -500,12 +532,14 @@ if [ -z "$sshkey" ]; then "${run[@]}" "${cmdline[@]}"; exit; fi
 
 # Dedicated ssh-agent for this run: asks for the key's passphrase here, drops the key after
 # $APOD_SSH_TTL (default 4h), confirms each use if the profile has an ssh-confirm file, and is
-# killed when the pod exits. SELinux blocks a container from connecting to a host process's
-# socket, so this pod runs without SELinux labelling (user namespace and mounts still apply).
+# killed when the pod exits. SELinux: see sockopts above; with apod_container, the agent runs at
+# level s0 so that the pod may connect to it.
 adir=$root/$profile/agent; mkdir -p "$adir"; chmod 700 "$adir"
 sock=$adir/ssh-$$.sock
-eval "$(ssh-agent -a "$sock")" >/dev/null
+agentcmd=(ssh-agent); [ -n "$seltype" ] && agentcmd=(runcon -l s0 ssh-agent)
+eval "$("${agentcmd[@]}" -a "$sock")" >/dev/null
 agentpid=$SSH_AGENT_PID
 addopts=(-t "${APOD_SSH_TTL:-4h}"); [ -f "$root/$profile/ssh-confirm" ] && addopts+=(-c)
 SSH_AUTH_SOCK=$sock ssh-add -q "${addopts[@]}" "$sshkey"
-"${run[@]}" -v "$adir:$adir" -e SSH_AUTH_SOCK="$sock" --security-opt label=disable "${cmdline[@]}"
+amount=$adir:$adir; [ -n "$seltype" ] && amount+=:z
+"${run[@]}" -v "$amount" -e SSH_AUTH_SOCK="$sock" "${sockopts[@]}" "${cmdline[@]}"

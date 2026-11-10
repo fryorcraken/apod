@@ -151,6 +151,7 @@ apod google-auth <profile>                     sign a profile in to Google for g
 apod broker [ui]|log [-f]|pending|sessions|roles  the broker: approval TUI, requests, sessions
 apod broker allow ID [--session|--role]     approve a request (once, for the pod, for the role)
 apod broker deny ID | grants [rm ROLE ACTION] | keys | restart | stop
+apod selinux [install|remove|status]           SELinux labelling for broker and ssh-key pods
 ```
 
 ## Profile files
@@ -332,7 +333,7 @@ paths are refused. `gh repo clone` and `gh pr checkout` run locally through git;
 --fill` isn't available (pass `--title` and `--body`). The agent's system prompt lists its
 role, scope and what it may do without asking, per provider; `gh auth status` shows the same,
 plus what you've approved for the session since. Links in titles and bodies aren't targets.
-Pods using the broker run without SELinux labelling, as for `ssh-key`.
+Pods using the broker need SELinux to let them reach its socket: see [SELinux](#selinux).
 
 Real-container check (the broker's own tests, `python3 tests/test_broker.py`, use a fake `gh`, a
 local git server, a stand-in for Radicle storage and real ssh-agents):
@@ -364,8 +365,33 @@ SELinux (`:z`), which can take a while on big trees.
 `ssh-key` names a private key kept outside the profile's home. apod starts a dedicated ssh-agent on
 the host for the run, asks for the passphrase, and passes only the agent socket into the pod; the
 key expires after `APOD_SSH_TTL` (default `4h`) and the agent is killed when the pod exits. Put
-host aliases in `home/.ssh/config`. These pods run without SELinux labelling, which would otherwise
-block the socket.
+host aliases in `home/.ssh/config`. Like broker pods, these need SELinux to let them reach the
+agent's socket: see [SELinux](#selinux).
+
+### SELinux
+
+Pods normally run with SELinux labelling (podman's `container_t`), and their mounts are relabelled
+for it (`:z`). Pods that use a socket on the host, the broker's or a per-run ssh-agent's, are the
+exception: SELinux stops a container from connecting to a socket of one of your own processes, so
+by default these pods run with labelling off (`label=disable`, and their mounts aren't
+relabelled).
+
+`apod selinux install` lets them keep it. It loads a small policy module,
+[`selinux/apod_container.cil`](selinux/apod_container.cil): an ordinary container type built from
+udica's template, plus permission to connect to sockets of your own processes. It needs `udica`
+(`sudo dnf install udica`) and sudo for `semodule`. These pods then run as
+`apod_container.process` with relabelled mounts, and the broker and per-run ssh-agents run at the
+plain `s0` level, which SELinux requires for a container to connect to them:
+
+```sh
+apod selinux install       # sudo semodule -i ...; records it in ~/.agent-pod/selinux
+apod broker restart        # the broker now runs at s0
+apod selinux status        # or remove, to go back to label=disable
+```
+
+If a pod can't reach the broker after this, SELinux has denied something the module doesn't
+allow yet: `sudo ausearch -m avc -ts recent` shows what, and `apod selinux remove` goes back to
+running these pods with labelling off.
 
 ### Network
 

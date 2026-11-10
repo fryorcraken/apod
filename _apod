@@ -16,7 +16,8 @@ _apod_first() {
         'resume:resume a stopped Claude session started in a folder (this pane'"'"'s, or pick)'
         'history:folders and profiles launched, most recent first'
         'ps:running pods with their profile, folder and session'
-        'broker:the broker: approvals, request log, sessions, keys')
+        'broker:the broker: approvals, request log, sessions, keys'
+        'selinux:let broker and ssh-key pods keep SELinux labelling (install, remove, status)')
   _describe -t commands 'command' cmds
   _apod_profiles
 }
@@ -46,6 +47,7 @@ case ${words[2]} in
               '(--list --claude)--latest[resume the newest without asking]' \
               '(--list --latest)--claude[use Claude'"'"'s own session picker]' '2:folder:_directories'; return ;;
   profiles|history|ps) return ;;
+  selinux)  _arguments '1: :(selinux)' '2:action:(install remove status)'; return ;;
   broker|gh)
     if (( CURRENT == 3 )); then
       local -a sub
