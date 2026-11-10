@@ -219,6 +219,11 @@ if [ -f "$root/$profile/volumes" ]; then
   done < "$root/$profile/volumes"
 fi
 
+if [ ! -d "$root/$profile" ]; then
+  known=$(for d in "$root"/*/; do [ -f "$d/env" ] && basename "$d"; done | paste -sd ' ')
+  echo "apod: no profile named $profile${known:+ (profiles: $known)}; to create it, see README, Quick start" >&2
+  exit 2
+fi
 [ -f "$envf" ] || { echo "apod: missing $envf (git identity, see README)" >&2; exit 2; }
 # Broker: when the profile has a broker.toml, or --role, --scope or --gh-user is given; --no-broker
 # turns it off. The role comes from --role, else the profile's broker.toml, else reader.
