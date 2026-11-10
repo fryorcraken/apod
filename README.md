@@ -188,10 +188,10 @@ scope = ["logos-co/*", "project:logos-co/5"]   # plus the project's GitHub and R
 user = "fryorcraken"            # host gh account (gh auth login --hostname github.com); default: the active one
 
 [sign]
-key = "~/.ssh/id_agent_sign"    # its .pub next to it; commit.gpgsign and tag.gpgsign on (auto = false: off)
+key = "~/.ssh/id_apod_broker_sign" # its .pub next to it; commit.gpgsign and tag.gpgsign on (auto = false: off)
 
 [ssh]
-key = "~/.ssh/id_agent"         # or keys = [...]; confirm = true to confirm each use on the host
+key = "~/.ssh/id_apod_broker" # or keys = [...]; confirm = true to confirm each use on the host
 hosts = ["fatso", "root@q"]     # a host's name in the host's ~/.ssh/config, any user or USER@
 proxy = true                    # connect through the broker (the default); false: the pod connects itself
 
