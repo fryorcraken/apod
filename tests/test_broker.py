@@ -9,6 +9,7 @@ import itertools
 import socket
 import struct
 import http.server
+import getpass
 import json
 import os
 import shutil
@@ -420,7 +421,7 @@ class BrokerTest(unittest.TestCase):
         self.assertIn("loaded 1 of 1 key(s)", r.stderr)
         r = self.admin("keys")
         self.assertRegex(r.stdout, rf"loaded +{key} +keyprof \[ssh\]")
-        self.assertIn("nothing to load", r.stderr)
+        self.assertIn("every key is already loaded", r.stderr)
 
     def test_terminal_notifications_drop_control_characters(self):
         sys.path.insert(0, str(HERE / "broker"))
@@ -719,7 +720,12 @@ class BrokerTest(unittest.TestCase):
         self.assertIn(b"rejected", r.stderr)
         known = (Path(sess["dir"]) / "known_hosts").read_text()
         self.assertIn("devbox ssh-ed25519", known)
-        self.assertIn("ProxyCommand", (Path(sess["dir"]) / "ssh_config").read_text())
+        conf = (Path(sess["dir"]) / "ssh_config").read_text()
+        self.assertIn("ProxyCommand", conf)
+        # ssh devbox in the pod logs in as the host's ssh would, not as the pod's user.
+        self.assertIn(f"Host devbox\n    User {getpass.getuser()}\n", conf)
+        sess = self.register("ops", [], toml=f'[ssh]\nkey = "{self.tmp}/userkey"\nhosts = ["deploy@nas"]\n')
+        self.assertIn("Host nas\n    User deploy\n", (Path(sess["dir"]) / "ssh_config").read_text())
 
     # --- rad -------------------------------------------------------------------------------
 

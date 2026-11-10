@@ -1045,7 +1045,7 @@ def main(argv, script):
             sys.stdout.flush()
             todo = [k for k in r["keys"] if not k["loaded"] and not k.get("error")]
             n = add_keys(todo, r["agent"])
-            print("apod broker: nothing to load" if not todo else
+            print("apod broker: every key is already loaded, nothing to do" if not todo else
                   f"apod broker: loaded {n} of {len(todo)} key(s), for {os.environ.get('APOD_SSH_TTL', '4h')}",
                   file=sys.stderr)
         elif cmd in ("allow", "deny"):

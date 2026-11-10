@@ -50,13 +50,19 @@ def sshstr(b):
     return struct.pack(">I", len(b)) + b
 
 
-def resolve(name):
-    """What the host's ssh config makes of NAME: (hostname, port, known_hosts files, alias)."""
+def ssh_conf(name):
+    """The host's ssh config for NAME (ssh -G), as a dict of lowercase keys."""
     r = run_quiet(["ssh", "-G", *(["-F", os.environ["APOD_SSH_CONFIG"]] if os.environ.get("APOD_SSH_CONFIG") else []), name])
     conf = {}
     for line in r.stdout.splitlines():
         k, _, v = line.partition(" ")
         conf.setdefault(k, v)
+    return conf
+
+
+def resolve(name):
+    """What the host's ssh config makes of NAME: (hostname, port, known_hosts files, alias)."""
+    conf = ssh_conf(name)
     files = (conf.get("userknownhostsfile", "~/.ssh/known_hosts") + " " +
              conf.get("globalknownhostsfile", "/etc/ssh/ssh_known_hosts")).split()
     return (conf.get("hostname", name), int(conf.get("port", 22)),
@@ -310,14 +316,22 @@ class SSHProvider:
                     known.append(f"{name} {Reader(b).string().decode()} {base64.b64encode(b).decode()}")
             sess.dir.mkdir(parents=True, exist_ok=True)
             (sess.dir / "known_hosts").write_text("\n".join(known) + "\n")
+            # `ssh NAME` logs in as the host's ssh would (or as the scope entry's USER@): the pod's
+            # own user name means nothing to the remote host.
+            users = {}
+            for entry in sess.scope["host"]:
+                user, _, name = entry.rpartition("@")
+                if not any(c in name for c in "*?[") and not name.startswith("key:"):
+                    users.setdefault(name, user or ssh_conf(name).get("user", ""))
             (sess.dir / "ssh_config").write_text(
                 "# apod broker: connections go through the host, which checks the destination\n"
-                "Host *\n    ProxyCommand /usr/local/bin/apod-ssh-connect %h %p\n"
+                + "".join(f"Host {n}\n    User {u}\n" for n, u in users.items() if u)
+                + "Host *\n    ProxyCommand /usr/local/bin/apod-ssh-connect %h %p\n"
                 f"    GlobalKnownHostsFile {POD_DIR}/known_hosts\n")
             out["mounts"] += [[str(SHIM), "/usr/local/bin/apod-ssh-connect", "ro"],
                               [str(sess.dir / "ssh_config"), "/etc/ssh/ssh_config.d/50-apod-broker.conf", "ro"]]
             out["context"].append(f"ssh: connections go through the host (ProxyCommand), to hosts in scope ({hosts}); "
-                                  "`ssh NAME` uses the host's ssh config for NAME (HostName, Port).")
+                                  "`ssh NAME` uses the host's ssh config for NAME (HostName, Port, User).")
         out["context"].append(f"ssh: SSH_AUTH_SOCK is the broker's agent, which signs logins only to hosts in "
                               f"scope ({hosts}); the keys aren't in the pod. Logging in to another host waits for "
                               f"the user's approval.")

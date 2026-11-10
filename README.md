@@ -327,8 +327,9 @@ the profile.
 - ssh: `login` to the host whose host key the pod's ssh binds to the agent (OpenSSH 8.9's
   `session-bind`, verified by the broker's ssh-agent, matched against the host's `known_hosts`
   for the names in scope), every hop of a forwarded agent included; `connect` for the
-  ProxyCommand, where `ssh NAME` follows the host's ssh config for NAME. The pod gets the host's
-  known keys for the hosts in scope.
+  ProxyCommand, where `ssh NAME` follows the host's ssh config for NAME (`HostName`, `Port`, and
+  `User`, unless the scope entry is `USER@NAME`). The pod gets the host's known keys for the hosts
+  in scope.
 
 **In the pod.** The broker runs `gh` with an empty config and home of its own and no access to the
 pod's files, so the shim sends the current repository and branch and the contents of files a
