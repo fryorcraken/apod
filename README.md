@@ -123,7 +123,7 @@ A launch combines a **profile**, a **role**, a **scope** and a **project** into 
 
 | Term | What it is | What it carries | Where it's set |
 |---|---|---|---|
-| **Profile** | An agent identity: who the agent is and what it can see. One per identity or kind of job, e.g. `bot`, `ops`. | Its git author (`env`). Its home (`home/`): Claude or opencode login, history and settings, Google login; every pod of the profile shares it, at the same time too. Its mounts, image, network, volumes and connectors. How it reaches GitHub and hosts: either a token (`apod token`, `ssh-key`) or a `broker.toml` with its default role and scope, its GitHub account (`[gh] user`) and its keys. | `~/.agent-pod/<profile>/` |
+| **Profile** | An agent identity: who the agent is and what it can see. One per identity or kind of job, e.g. `bot`, `ops`. | Its git author (`env`). Its home (`home/`): Claude or opencode login, history and settings, Google login; every pod of the profile shares it, at the same time too. Its mounts, image, network, volumes and connectors. How it reaches GitHub and hosts: either a token (`apod token`, `ssh-key`) or a `broker.toml` with its default role and scope, its GitHub account (`[gh] user`, or `--gh-user` for one launch) and its keys. | `~/.agent-pod/<profile>/` |
 | **Role** | What a pod may do without asking, by action: the same for every profile that uses it. | One list per broker provider: `gh` commands, git pushes to GitHub and Radicle, commit signing, ssh. No identity, credentials or targets. | Built in (`roles.toml`: `reader`, `dev`, `maintainer`, `pm`, `ops`); `~/.agent-pod/roles.toml` adds to them. A profile's `role =`, or `--role`; default `reader`. |
 | **Scope** | What those actions may touch. | Repositories, owners, project boards, Radicle repositories, ssh hosts, git identities. | The project's GitHub and Radicle remotes and the profile's git identity, automatically; the profile's `scope` and `[ssh] hosts`; `--scope`. |
 | **Project** | The folder the agent works in. | Mounted read-write; its remotes join the scope. | The folder argument. |
@@ -142,7 +142,7 @@ from its profile and its launch.
 
 ```
 apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]...
-     [--role ROLE] [--scope SCOPE]... [--no-broker] [dir] [-- agent args]
+     [--role ROLE] [--scope SCOPE]... [--gh-user ACCOUNT] [--no-broker] [dir] [-- agent args]
 apod resume [--list|--latest|--claude] [dir]   resume a stopped Claude session started in dir
 apod history                                   folders and profiles launched, most recent first
 apod ps                                        running pods: profile, session, status, folder
@@ -191,14 +191,14 @@ HTTPS pushes are unauthenticated.
 
 ### Broker
 
-A pod uses the broker when its profile has a `broker.toml` or the launch passes `--role` or
-`--scope` (`--no-broker` turns it off). It then gets no credentials at all. A broker on the host,
+A pod uses the broker when its profile has a `broker.toml` or the launch passes `--role`,
+`--scope` or `--gh-user` (`--no-broker` turns it off). It then gets no credentials at all. A broker on the host,
 `apod-broker`, acts for the pod instead, through a socket directory mounted at
 `/run/apod-broker`:
 
 - **gh**: the pod's `gh` is a shim; the broker runs the real `gh` as the host `gh` account the
-  profile names (`[gh] user`). A profile that names none gets no `gh` and no GitHub remotes: the
-  broker never falls back to your active login.
+  profile names (`[gh] user`, or `--gh-user ACCOUNT` for one launch). A pod with no account named
+  gets no `gh` and no GitHub remotes: the broker never falls back to your active login.
 - **github**: git's github.com remotes go through the broker, which pushes and fetches with that
   account's token.
 - **rad**: `rad://` remotes go through the broker, which fetches from the host's Radicle storage

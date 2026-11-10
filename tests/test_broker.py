@@ -638,6 +638,14 @@ class BrokerTest(unittest.TestCase):
         self.assertNotIn("github", sess["providers"])
         self.assertIn('add [gh] user = "ACCOUNT"', w[0])
         self.assertIn("names no GitHub account", sess["context"])
+        # --gh-user names it for one launch, over the profile's [gh] user.
+        pdir = self.tmp / "profiles" / "ghuser"
+        pdir.mkdir(parents=True)
+        (pdir / "broker.toml").write_text('[gh]\nuser = "someoneelse"\n')
+        r = subprocess.run([sys.executable, BROKER, "register", "--profile", "test", "--profile-dir", str(pdir),
+                            "--project", "/p", "--gh-user", "octo"], env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["login"], "octo")
         # No GitHub remote: no warning (a profile that doesn't use GitHub isn't nagged).
         w = []
         self.register("ops", [], user="", warnings=w)

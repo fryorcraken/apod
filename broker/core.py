@@ -710,6 +710,8 @@ def register(r):
     pdir = Path(r.get("profile_dir") or ROOT / r.get("profile", ""))
     warnings = []
     cfg = load_config(pdir, warnings)
+    if r.get("gh_user"):  # --gh-user: this launch's GitHub account, over [gh] user
+        cfg["gh"] = dict(cfg.get("gh") or {}, user=r["gh_user"])
     role = r.get("role") or cfg.get("role") or "reader"
     role_rules(role)  # fails on an unknown role
     env = read_env_file(pdir / "env")
@@ -1001,7 +1003,7 @@ def main(argv, script):
         return 0
     try:
         if cmd == "register":
-            # register --id ID --profile P --profile-dir DIR --project DIR [--role P] [--scope S]... [--remote URL]...
+            # register --id ID --profile P --profile-dir DIR --project DIR [--role R] [--gh-user U] [--scope S]... [--remote URL]...
             r = {"scope": [], "remotes": []}
             it = iter(args)
             for a in it:

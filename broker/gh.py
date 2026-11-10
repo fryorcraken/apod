@@ -949,7 +949,8 @@ class GhProvider:
             out["context"].append("gh and git pushes to GitHub are unavailable: this profile names no GitHub account.")
             if any(github_repo(u) for u in reg.get("remotes", [])):
                 out["warnings"].append(f"gh and GitHub remotes are off for this pod: add [gh] user = \"ACCOUNT\" "
-                                       f"to {where} (an account logged in to the host's gh)")
+                                       f"to {where}, or pass --gh-user ACCOUNT (an account logged in to the "
+                                       f"host's gh)")
             return False
         try:
             login = gh_login(user)

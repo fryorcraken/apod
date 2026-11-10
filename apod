@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [--role R] [--scope S]... [--no-broker] [project-dir] [-- agent args...]
+# apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [--role R] [--scope S]... [--gh-user ACCOUNT] [--no-broker] [project-dir] [-- agent args...]
 # Run a coding agent in a podman container as a given GitHub identity.
 # Per profile: ~/.agent-pod/<profile>/home (persistent $HOME), ~/.agent-pod/<profile>/env
 # (git identity), ~/.agent-pod/<profile>/mounts (optional extra mounts), and either the podman
@@ -8,7 +8,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [--role R] [--scope S]... [--no-broker] [project-dir] [-- agent args...]" >&2
+  echo "usage: apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [--role R] [--scope S]... [--gh-user ACCOUNT] [--no-broker] [project-dir] [-- agent args...]" >&2
   echo "       apod resume [--list|--latest|--claude] [dir] | history | ps | profiles | token <profile> [--rm] | google-auth <profile>" >&2
   echo "       apod broker [ui]|log [-f]|pending|allow ID [--session|--role]|deny ID|sessions|roles|grants|keys|restart|stop" >&2
   exit 2
@@ -176,6 +176,7 @@ climounts=()  # "mode path" entries from --ro/--rw, for this run only
 connectors=() # claude.ai connector groups enabled for this run (-c)
 role=      # broker role for this run (--role), else broker.toml's, else reader
 nobroker=  # --no-broker: no broker for this run, even with a broker.toml
+ghuser=    # --gh-user: the host gh account the broker acts as for this run, over [gh] user
 scopes=()     # extra broker scope for this run (--scope)
 recopts=("$profile")  # profile and options of this launch, for the history and apod resume
 while [ $# -gt 0 ]; do
@@ -189,6 +190,7 @@ while [ $# -gt 0 ]; do
     --persona)  [ $# -ge 2 ] || usage; role=$2; recopts+=(--role "$2"); shift 2
                 echo "apod: --persona is now --role" >&2 ;;
     --no-broker) nobroker=1; recopts+=("$1"); shift ;;
+    --gh-user)  [ $# -ge 2 ] || usage; ghuser=$2; recopts+=("$1" "$2"); shift 2 ;;
     --scope)    [ $# -ge 2 ] || usage; scopes+=("$2"); recopts+=("$1" "$2"); shift 2 ;;
     --)         shift; break ;;
     -*)         usage ;;
@@ -218,13 +220,13 @@ if [ -f "$root/$profile/volumes" ]; then
 fi
 
 [ -f "$envf" ] || { echo "apod: missing $envf (git identity, see README)" >&2; exit 2; }
-# Broker: when the profile has a broker.toml, or --role or --scope is given; --no-broker turns it
-# off. The role comes from --role, else the profile's broker.toml, else reader.
+# Broker: when the profile has a broker.toml, or --role, --scope or --gh-user is given; --no-broker
+# turns it off. The role comes from --role, else the profile's broker.toml, else reader.
 usebroker=
 [ "$role" = none ] && { role=; nobroker=1; }  # the old way to say --no-broker
 if [ -n "$nobroker" ]; then
-  [ ${#scopes[@]} -eq 0 ] && [ -z "$role" ] || { echo "apod: --role and --scope need the broker, which --no-broker turns off" >&2; exit 2; }
-elif [ -n "$role" ] || [ ${#scopes[@]} -gt 0 ] || [ -f "$root/$profile/broker.toml" ]; then usebroker=1; fi
+  [ ${#scopes[@]} -eq 0 ] && [ -z "$role" ] && [ -z "$ghuser" ] || { echo "apod: --role, --scope and --gh-user need the broker, which --no-broker turns off" >&2; exit 2; }
+elif [ -n "$role" ] || [ ${#scopes[@]} -gt 0 ] || [ -n "$ghuser" ] || [ -f "$root/$profile/broker.toml" ]; then usebroker=1; fi
 ghsecret=()
 if [ -z "$usebroker" ]; then
   # GitHub token: the podman secret gh-<profile>, or another profile's if the github file names one.
@@ -358,6 +360,7 @@ bsid=; binfo=; bproviders=
 if [ -n "$usebroker" ]; then
   regargs=(--id "$(uuidgen | tr -d - | cut -c1-12)" --profile "$profile" --profile-dir "$root/$profile" --project "$proj")
   [ -z "$role" ] || regargs+=(--role "$role")
+  [ -z "$ghuser" ] || regargs+=(--gh-user "$ghuser")
   for s in "${scopes[@]}"; do regargs+=(--scope "$s"); done
   while read -r _ url; do regargs+=(--remote "$url"); done < <(git -C "$proj" config --get-regexp '^remote\..*\.(url|pushurl)$' 2>/dev/null || true)
   binfo=$(python3 "$apoddir/apod-broker" register "${regargs[@]}") || exit 2
