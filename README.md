@@ -541,17 +541,18 @@ connect to it in either of two ways:
   `register` a session with a `--profile-dir` holding your `broker.toml`, and call the session's
   socket. The example extension's test, `test_extension`, is a template.
 
-## Security notes
+## Security
 
-- The container is the boundary: the agent runs with no permission prompts, and sees only the
-  profile's home, the project folder and the profile's mounts.
-- Pods can write `.git/hooks` and `.claude/settings.json` in a mounted repo, which then run on the
-  host. Give pods their own worktrees, or point `core.hooksPath` at an empty folder on the host.
-- Two pods on one checkout will collide; use one worktree per pod.
-- Tokens should be fine-grained and scoped to what the profile needs. With the broker, pods hold
-  no token or key at all. The broker listens only on unix sockets: a directory per pod, mounted
-  into that pod alone, and an admin socket in `~/.agent-pod/broker/` (mode 0700) for
-  `apod broker`. What a pod does once logged in to a host is up to that host's account.
+[SECURITY.md](SECURITY.md) has the threat model, what apod guarantees and assumes, what it
+doesn't protect against, a hardening checklist, and how to report a vulnerability. In short:
+
+- The container is the boundary. The agent runs with no permission prompts and sees only the
+  project folder, the profile's home and the profile's mounts.
+- With the broker, pods hold no token or key. Every GitHub, Radicle, signing and ssh request is
+  checked against the persona and scope, and anything else waits for your approval.
+- Pods can still damage what's in scope, send what they can read over the network, and write
+  files in the project (`.git/hooks`, `.claude/settings.json`) that run when you use it on the
+  host. Give pods their own worktrees, one per pod.
 
 ## Contributing
 
