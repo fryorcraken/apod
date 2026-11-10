@@ -981,7 +981,7 @@ def _gh_owner_entries(sess):
 
 # gh:OWNER/REPO is a repository (patterns too: gh:OWNER/*); gh:OWNER is the owner itself
 # (owner-level reads, its project list, creating repositories there).
-scope_kind("gh", provider="gh", parse=lambda v: v.strip().lower().removesuffix(".git"),
+scope_kind("gh", provider="gh", parse=lambda v: v.strip().lower().removesuffix(".git"), remote=github_repo,
            help="gh:OWNER/REPO (gh:OWNER/* for every repository of OWNER), gh:OWNER (the owner itself)")
 scope_kind("gh-project", provider="gh", parse=lambda v: v.strip().lower(),
            help="gh-project:OWNER/NUMBER (gh-project:OWNER/* for all of OWNER's projects)")

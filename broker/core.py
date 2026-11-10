@@ -49,11 +49,10 @@ if ASK_TIMEOUT.is_integer():
 
 # Scope kinds, keyed by prefix: an entry is written PREFIX:VALUE in broker.toml's scope list and
 # --scope, a target is (PREFIX, VALUE). Core knows none; extensions declare theirs with
-# scope_kind() (gh:, gh-project:, rad:, ssh:, git-sign: are the shipped extensions'). "unscoped"
+# scope_kind() (gh:, gh-project:, rad:, ssh:, git-local: are the shipped extensions'). "unscoped"
 # targets are core's: they're in scope only once the user approves them for the session.
 SCOPES = {}
-OLD_TARGET_KINDS = {"repo": "gh", "owner": "gh", "project": "gh-project", "host": "ssh", "identity": "git-sign",
-                    "email": "git-sign"}
+OLD_TARGET_KINDS = {"repo": "gh", "owner": "gh", "project": "gh-project", "host": "ssh"}
 GLOBAL_CONFIG = ROOT / "broker.toml"   # defaults for every profile's broker.toml
 EXTENSIONS = ROOT / "broker-extensions"  # the user's own extensions, *.py; a name here replaces a shipped one
 SHIPPED_EXTENSIONS = CHECKOUT / "extensions"
@@ -91,8 +90,9 @@ def provider(p):
 class ScopeKind:
     """A scope kind an extension declares (see scope_kind)."""
 
-    def __init__(self, prefix, provider="", parse=None, match=None, grant=None, label=None, entry=True, help=""):
-        self.prefix, self.provider, self.entry, self.help = prefix, provider, entry, help
+    def __init__(self, prefix, provider="", parse=None, match=None, grant=None, label=None, entry=True, help="",
+                 remote=None):
+        self.prefix, self.provider, self.entry, self.help, self.remote = prefix, provider, entry, help, remote
         self._parse, self._match, self._grant, self._label = parse, match, grant, label
 
     def parse(self, v):
@@ -113,7 +113,8 @@ class ScopeKind:
         return self._label(v) if self._label else f"{self.prefix}:{v}"
 
 
-def scope_kind(prefix, *, parse=None, match=None, grant=None, label=None, entry=True, help="", provider=""):
+def scope_kind(prefix, *, parse=None, match=None, grant=None, label=None, entry=True, help="", provider="",
+               remote=None):
     """Declare a scope kind, written PREFIX:VALUE in broker.toml's scope list and --scope. A
     request's target (PREFIX, value) is in scope when match(sess, value) says so; by default,
     when it matches one of the session's PREFIX entries (shell-style patterns, case-insensitive).
@@ -122,13 +123,25 @@ def scope_kind(prefix, *, parse=None, match=None, grant=None, label=None, entry=
     that approving a target for the session adds (default: the target itself); label(value) is
     how the target is shown (default PREFIX:value); entry=False for a target kind that isn't
     written in the scope (its match looks at other kinds' entries); help is shown in apod
-    broker scopes. A prefix declared twice is an error, like a provider name."""
+    broker scopes; remote(url) -> value or None says which repository a git remote URL names, for
+    kinds that are repositories (see remote_target). A prefix declared twice is an error, like a
+    provider name."""
     if not re.fullmatch(r"[a-z][a-z0-9-]*", prefix) or prefix == "unscoped":
         raise BrokerError(f"bad scope prefix {prefix!r}: lowercase letters, digits and -")
     if prefix in SCOPES:
         raise BrokerError(f"scope kind {prefix}: is already declared (by {SCOPES[prefix].provider or 'another extension'})")
-    SCOPES[prefix] = k = ScopeKind(prefix, provider, parse, match, grant, label, entry, help)
+    SCOPES[prefix] = k = ScopeKind(prefix, provider, parse, match, grant, label, entry, help, remote)
     return k
+
+
+def remote_target(url):
+    """The repository a git remote URL names, as a target (gh:OWNER/REPO, rad:RID, or an
+    extension's kind), else None."""
+    for k in SCOPES.values():
+        v = k.remote(url) if k.remote else None
+        if v:
+            return k.prefix, v
+    return None
 
 
 def extension_files():
@@ -284,10 +297,10 @@ def parse_scope(entry):
 
 
 def old_scope(entry):
-    """An entry written in an older form (OWNER/REPO, OWNER, project:OWNER/N, email:ADDRESS) -> as
-    it's written now (gh:..., gh-project:..., git-sign:...), else None."""
+    """An entry written in an older form (OWNER/REPO, OWNER, project:OWNER/N) -> as it's written
+    now (gh:..., gh-project:...), else None."""
     e = entry.strip()
-    for old, new in (("project:", "gh-project:"), ("email:", "git-sign:")):
+    for old, new in (("project:", "gh-project:"),):
         if e.lower().startswith(old):
             return new + e[len(old):].strip()
     if ":" not in e:

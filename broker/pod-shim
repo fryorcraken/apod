@@ -270,6 +270,22 @@ def forward():
 # ---------------------------------------------------------------------------------------------
 # apod-sign: git's gpg.ssh.program
 
+def sign_where():
+    """Where git is signing: the URL of the remote the current branch pushes to (as configured,
+    before insteadOf), and the repository's top folder. git runs us in the repository."""
+    def git(*a):
+        r = subprocess.run(["git", *a], capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    top = git("rev-parse", "--show-toplevel")
+    remotes = git("remote").split()
+    branch = git("symbolic-ref", "--short", "-q", "HEAD")
+    name = ((branch and (git("config", f"branch.{branch}.pushRemote") or git("config", "remote.pushDefault")
+                         or git("config", f"branch.{branch}.remote")))
+            or ("origin" if "origin" in remotes else remotes[0] if remotes else ""))
+    url = git("config", "--get", f"remote.{name}.pushurl") or git("config", "--get", f"remote.{name}.url") if name else ""
+    return url, top
+
+
 def sign(argv):
     if "-Y" not in argv or argv[argv.index("-Y") + 1:argv.index("-Y") + 2] != ["sign"]:
         os.execv("/usr/bin/ssh-keygen", ["ssh-keygen", *argv])
@@ -281,7 +297,8 @@ def sign(argv):
         data = f.read()
     try:
         c = UnixHTTP()
-        c.request("POST", "/sign", json.dumps({"namespace": ns, "pubkey": pub,
+        remote, toplevel = sign_where()
+        c.request("POST", "/sign", json.dumps({"namespace": ns, "pubkey": pub, "remote": remote, "toplevel": toplevel,
                                                "data": base64.b64encode(data).decode()}),
                   {"Content-Type": "application/json"})
         r = json.loads(c.getresponse().read())

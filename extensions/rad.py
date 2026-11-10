@@ -248,4 +248,4 @@ class RadProvider:
 
 
 provider(RadProvider())
-scope_kind("rad", provider="rad", help="rad:RID (a Radicle repository; the project's rad remotes join the scope)")
+scope_kind("rad", provider="rad", remote=lambda u: (RAD_URL.match(u) or [None, None])[1], help="rad:RID (a Radicle repository; the project's rad remotes join the scope)")

@@ -462,21 +462,30 @@ if [ -f "$HOME/.ssh/config" ]; then
   while read -r alias; do rewrites+=("git@$alias:" "$alias:" "ssh://git@$alias/"); done < <(
     awk 'tolower($1) == "host" { for (i = 2; i <= NF; i++) if ($i ~ /^github-/) print $i }' "$HOME/.ssh/config")
 fi
-gitenv=(-e "GIT_CONFIG_COUNT=${#rewrites[@]}")
-for i in "${!rewrites[@]}"; do
-  gitenv+=(-e "GIT_CONFIG_KEY_$i=url.https://github.com/.insteadOf" -e "GIT_CONFIG_VALUE_$i=${rewrites[$i]}")
-done
+gitkv=()   # git config for the pod: key, value, key, value...
+for r in "${rewrites[@]}"; do gitkv+=(url.https://github.com/.insteadOf "$r"); done
 benv=()
 if [ -n "$binfo" ]; then
   # The broker's git config (its remotes' insteadOf, with {forward} filled in by the pod's wrapper,
   # signing) instead of the rewrites to HTTPS above; and its environment.
-  n=0; gitenv=()
-  while IFS=$'\t' read -r k v; do
-    gitenv+=(-e "GIT_CONFIG_KEY_$n=$k" -e "GIT_CONFIG_VALUE_$n=$v"); n=$((n + 1))
-  done < <(jq -r '.git_config[] | @tsv' <<< "$binfo")
-  gitenv+=(-e "GIT_CONFIG_COUNT=$n")
+  gitkv=()
+  while IFS=$'\t' read -r k v; do gitkv+=("$k" "$v"); done < <(jq -r '.git_config[] | @tsv' <<< "$binfo")
   while IFS=$'\t' read -r k v; do benv+=(-e "$k=$v"); done < <(jq -r '.env | to_entries[] | [.key, .value] | @tsv' <<< "$binfo")
 fi
+# The git identity is the profile's env, and only that: the committer defaults to the author, and
+# user.name and user.email are set to match, over any .gitconfig in the pod's home or the project.
+envval() { sed -n "s/^[[:space:]]*$1=//p" "$envf" | tail -n1 | sed "s/^[\"']//; s/[\"']\$//"; }
+gname=$(envval GIT_AUTHOR_NAME); gemail=$(envval GIT_AUTHOR_EMAIL)
+cname=$(envval GIT_COMMITTER_NAME); cemail=$(envval GIT_COMMITTER_EMAIL)
+idenv=()
+[ -n "$cname" ] || [ -z "$gname" ] || idenv+=(-e "GIT_COMMITTER_NAME=$gname")
+[ -n "$cemail" ] || [ -z "$gemail" ] || idenv+=(-e "GIT_COMMITTER_EMAIL=$gemail")
+[ -z "$gname" ] || gitkv+=(user.name "$gname")
+[ -z "$gemail" ] || gitkv+=(user.email "$gemail")
+gitenv=(-e "GIT_CONFIG_COUNT=$((${#gitkv[@]} / 2))")
+for ((i = 0; i < ${#gitkv[@]}; i += 2)); do
+  gitenv+=(-e "GIT_CONFIG_KEY_$((i / 2))=${gitkv[i]}" -e "GIT_CONFIG_VALUE_$((i / 2))=${gitkv[i + 1]}")
+done
 
 # herdr only sees podman in the pane; tell it which agent's screen to read. Podman doesn't pass
 # this into the container.
@@ -506,7 +515,7 @@ run=(podman run --rm "${tty[@]}" --userns=keep-id
   -e HOME=/home/agent
   -e APOD_PROFILE="$profile"
   -e CLAUDE_CODE_DISABLE_AGENT_VIEW=1
-  "${gitenv[@]}" "${benv[@]}"
+  "${gitenv[@]}" "${idenv[@]}" "${benv[@]}"
   "${mounts[@]}" -w "$proj")
 [ -z "$network" ] || run+=(--network "$network")
 run+=("${volumes[@]}" --label apod.profile="$profile" --label apod.project="$proj" --label apod.session="$session")

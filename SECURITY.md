@@ -93,8 +93,10 @@ The broker turns each request into actions and targets, and checks them before a
   - Links in titles and bodies are not targets.
 - **git pushes are checked ref by ref.** Branch, default branch, tag, delete and patch are
   separate actions. For Radicle, so is a force push.
-- **Signing:** commits and tags are signed only as the profile's git identity, unless you approve
-  another.
+- **Signing:** commits and tags are signed only as the profile's git identity, and only in the
+  repositories in scope, unless you approve otherwise. The broker sees the identity in the object
+  it signs, but it learns the repository from the pod: a hostile agent can name an in-scope
+  repository and use the signed commit elsewhere. Pushing it is still checked against the scope.
 - **ssh:** the agent signs a login only for a host in scope. The broker identifies the host by the
   host key OpenSSH binds to the session (`session-bind@openssh.com`, verified by the real agent),
   matched against your `known_hosts`. Connections go through the broker, which connects only to

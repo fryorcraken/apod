@@ -1,10 +1,15 @@
 # apod: agents in podman
 
 `apod` runs coding agents (Claude Code, opencode, or a plain shell) in rootless podman containers.
-Each pod runs as a **profile** (an agent identity: who it commits as, its logins, what it can
-see). With the host's [broker](#broker), the pod holds no credentials: its **role** says what it
-may do on GitHub, Radicle, commit signing and ssh, its **scope** says what it may touch, and
-anything else waits for your approval (see [Concepts](#concepts)). The agent runs with no
+With the host's [broker](#broker), the pod holds no credentials, and three things decide what
+it can do (see [Concepts](#concepts)):
+
+- its **profile** is *who* acts: the git identity, the GitHub account and the keys;
+- its **role** is *what* it may do: a preset list of actions, such as open a PR, push a branch,
+  sign a commit or log in over ssh;
+- its **scope** is *where*: the repositories, project boards and hosts those actions may touch.
+
+Anything outside them waits for your approval. The agent runs with no
 permission prompts; the container, not the agent, is the security boundary.
 
 ## Why
@@ -79,8 +84,6 @@ mkdir -p ~/.agent-pod/bot
 cat > ~/.agent-pod/bot/env <<'ENV'
 GIT_AUTHOR_NAME=my-bot
 GIT_AUTHOR_EMAIL=12345+my-bot@users.noreply.github.com
-GIT_COMMITTER_NAME=my-bot
-GIT_COMMITTER_EMAIL=12345+my-bot@users.noreply.github.com
 ENV
 cat > ~/.agent-pod/bot/broker.toml <<'TOML'
 role = "dev"                        # PRs, issues, branch pushes; anything else waits for you
@@ -118,13 +121,14 @@ what isn't.
 ## Concepts
 
 A launch combines a **profile**, a **role**, a **scope** and a **project** into a **session**:
-`apod <profile> [--role ROLE] [--scope SCOPE]... <project>`.
+`apod <profile> [--role ROLE] [--scope SCOPE]... <project>`. In short: the profile is *who*, the
+role is *what*, the scope is *where*.
 
 | Term | What it is | What it carries | Where it's set |
 |---|---|---|---|
-| **Profile** | An agent identity: who the agent is and what it can see. One per identity or kind of job, e.g. `bot`, `ops`. | Its git author (`env`). Its home (`home/`): Claude or opencode login, history and settings, Google login; every pod of the profile shares it, at the same time too. Its mounts, image, network, volumes and connectors. How it reaches GitHub and hosts: either a token (`apod token`, `ssh-key`) or a `broker.toml` with its default role and scope, its GitHub account (`[gh] user`, or `--gh-user` for one launch) and its keys. | `~/.agent-pod/<profile>/` |
-| **Role** | What a pod may do without asking, by action: the same for every profile that uses it. | One list per broker provider: `gh` commands, git pushes to GitHub and Radicle, commit signing, ssh. No identity, credentials or targets. | Built in (`roles.toml`: `reader`, `dev`, `maintainer`, `pm`, `ops`); `~/.agent-pod/roles.toml` adds to them. A profile's `role =`, or `--role`; default `reader`. |
-| **Scope** | What those actions may touch, as `KIND:VALUE` entries; each extension declares its kinds. | `gh:OWNER/REPO`, `gh:OWNER`, `gh-project:OWNER/N`, `rad:RID`, `ssh:[USER@]HOST`, `git-sign:ADDRESS`, and your extensions' kinds (`apod broker scopes` lists them). | The project's GitHub and Radicle remotes and the profile's git identity, automatically; the profile's `scope` and `[ssh] hosts`; `--scope`. |
+| **Profile** | *Who* acts: an agent identity, and what it can see. One per identity or kind of job, e.g. `bot`, `ops`. | Its git identity, name and email (`env`; the only place it's set). The keys it acts with (`broker.toml`: `[sign] key`, `[ssh] key`) and its GitHub account (`[gh] user`). Its home (`home/`): Claude or opencode login, history and settings, Google login; every pod of the profile shares it, at the same time too. Its mounts, image, network, volumes and connectors. How it reaches GitHub and hosts: either a token (`apod token`, `ssh-key`) or a `broker.toml` with its default role and scope, its GitHub account (`[gh] user`, or `--gh-user` for one launch) and its keys. | `~/.agent-pod/<profile>/` |
+| **Role** | *What* a pod may do without asking: a preset of actions, since the full list is long. The same for every profile that uses it. | One list per broker provider: `gh` commands, git pushes to GitHub and Radicle, signing commits and tags, ssh logins. No identity, credentials or targets. | Built in (`roles.toml`: `reader`, `dev`, `maintainer`, `pm`, `ops`); `~/.agent-pod/roles.toml` adds to them. A profile's `role =`, or `--role`; default `reader`. |
+| **Scope** | *Where* those actions may happen, as `KIND:VALUE` entries; each extension declares its kinds. | `gh:OWNER/REPO`, `gh:OWNER`, `gh-project:OWNER/N`, `rad:RID`, `ssh:[USER@]HOST`, `git-local:PATH`, and your extensions' kinds (`apod broker scopes` lists them). | The project's GitHub and Radicle remotes and its folder, automatically; the profile's `scope` and `[ssh] hosts`; `--scope`. |
 | **Project** | The folder the agent works in. | Mounted read-write; its remotes join the scope. | The folder argument. |
 | **Session** | One running pod, registered with the broker. | Its profile, role and scope, and what you approve "for the session"; it all ends with the pod. | Each launch. |
 
@@ -160,7 +164,7 @@ Everything lives in `~/.agent-pod/<profile>/` (`APOD_ROOT` overrides the root):
 
 | File | Purpose |
 |---|---|
-| `env` | Required. Git identity (`GIT_AUTHOR_*`, `GIT_COMMITTER_*`) for commits made in the pod. |
+| `env` | Required. The git identity, and the only place it's set: `GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL` (`GIT_COMMITTER_*` default to them). apod also sets `user.name` and `user.email` to match, over any `.gitconfig` in the pod's home or the project. Other variables here go into the pod's environment too. |
 | `home/` | The pod's persistent `$HOME`: Claude/opencode login, settings, history. |
 | `mounts` | Extra mounts, one path per line, read-only unless prefixed `rw`. |
 | `image` | Image for this profile (default `apod`; `-i` overrides per run). |
@@ -222,7 +226,7 @@ scope = ["gh:logos-co/*", "gh-project:logos-co/5"]   # plus the project's GitHub
 user = "fryorcraken"            # host gh account (gh auth login --hostname github.com); required for gh
 
 [sign]
-key = "~/.ssh/id_apod_broker_sign" # its .pub next to it; commit.gpgsign and tag.gpgsign on (auto = false: off)
+key = "~/.ssh/id_apod_broker_sign" # its .pub next to it; roles that sign turn commit.gpgsign on (auto = false: off)
 
 [ssh]
 key = "~/.ssh/id_apod_broker" # or keys = [...]; confirm = true: confirm each use (needs openssh-askpass)
@@ -293,7 +297,7 @@ kind belongs to an extension, and values take shell-style patterns (`*`). The sh
 | `gh-project:OWNER/NUMBER`, `gh-project:OWNER/*` | gh | A project board. |
 | `rad:RID` | rad | A Radicle repository. |
 | `ssh:HOST`, `ssh:USER@HOST` | ssh | A host as named in your host's ssh config, for any user or that user. |
-| `git-sign:ADDRESS` | sign | Signing commits and tags as that address, whatever the role. |
+| `git-local:PATH` | sign | Signing in a repository with no GitHub or Radicle remote, by its folder. The project folder (and the repositories under it) is in scope. |
 
 `apod broker scopes` lists the kinds the loaded extensions provide. An entry of a kind no
 extension provides is ignored, with a warning at launch. The older forms (`OWNER/REPO`, `OWNER`,
@@ -337,12 +341,18 @@ the profile.
   passed on) and `push force` (a branch update that isn't a fast-forward). A Radicle push lands in
   a staging repository the broker owns first, then the broker pushes it on with the host's
   `git-remote-rad`; nothing from the pod's repository runs on the host.
-- sign: `commit` or `tag`, by the author, committer or tagger email. `[sign] key` makes signing
-  available, and it's turned on for a pod in one of two ways. If the role signs (`dev`,
-  `maintainer`, `ops`, or a role you give `sign = ["commit", "tag"]`), the pod signs as the
-  profile's git identity. If the scope has `git-sign:ADDRESS` entries
-  (`--scope git-sign:me@example.com`), it signs as those addresses, whatever the role. Otherwise
-  git in the pod doesn't sign, and the agent is told so.
+- sign: the three parts each have their place.
+  - **Who (profile):** `[sign] key` is the key, and the signature vouches for the profile's git
+    identity. A commit or tag whose author, committer or tagger is anyone else adds the action
+    `sign:as other`, which no built-in role allows.
+  - **What (role):** `sign:commit` and `sign:tag`. `dev`, `maintainer` and `ops` have them, and
+    their pods sign every commit and tag (`commit.gpgsign`, `tag.gpgsign`). Other roles don't
+    sign by default; `git commit -S` waits for your approval.
+  - **Where (scope):** the repository, by the remote the branch pushes to (`gh:OWNER/REPO`,
+    `rad:RID`), so the scope you give for pushes covers signing too. A repository with no such
+    remote counts by its folder (`git-local:PATH`). The pod reports which repository it's
+    signing in, so this keeps an agent to its scope rather than stopping a hostile one; the
+    push is checked separately.
 - ssh: `login` to the host whose host key the pod's ssh binds to the agent (OpenSSH 8.9's
   `session-bind`, verified by the broker's ssh-agent, matched against the host's `known_hosts`
   for the names in scope), every hop of a forwarded agent included; `connect` for the

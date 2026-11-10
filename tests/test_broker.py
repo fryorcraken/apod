@@ -560,9 +560,6 @@ class BrokerTest(unittest.TestCase):
         w = []
         pm = self.register("pm", ["acme/widget", "project:acme/5"], warnings=w)  # the old forms still work
         self.assertIn("acme/widget → gh:acme/widget, project:acme/5 → gh-project:acme/5", w[0])
-        w = []
-        self.assertIn("git-sign:m@example.com", self.register("dev", ["email:m@example.com"], warnings=w)["scope"])
-        self.assertIn("email:m@example.com → git-sign:m@example.com", w[0])
         self.assertEqual(pm["scope"][:2], ["gh:acme/widget", "gh-project:acme/5"])
         self.ran("project", "item-list", "5", "--owner", "acme", sess=pm)
         r = self.gh("project", "item-edit", "--project-id", "PVT_kwDOBBB222", "--id", "PVTI_lADOAAA444", sess=pm, expect=1)
@@ -642,23 +639,27 @@ class BrokerTest(unittest.TestCase):
     # --- sign ------------------------------------------------------------------------------
 
     def test_sign_commits(self):
-        # Signing is available ([sign] key) but on only where the role signs or the scope says so.
+        # The profile holds the key, the role the actions, the scope the repositories.
         toml = f'[sign]\nkey = "{self.tmp}/signkey"\n'
-        reader = self.register("reader", [], toml=toml)
-        self.assertNotIn("sign", reader["providers"])
-        self.assertIn("Commits aren't signed in this pod: role reader doesn't sign", reader["context"])
+        reader = self.register("reader", ["gh:acme/widget"], toml=toml)
+        self.assertIn("sign", reader["providers"])  # git commit -S works, with approval
         self.assertNotIn(["commit.gpgsign", "true"], reader["git_config"])
-        scoped = self.register("reader", ["git-sign:agent@example.com"], toml=toml)
-        self.assertIn("sign", scoped["providers"])
-        self.assertIn("Approved by the user for this session: sign:commit, sign:tag", scoped["context"])
-        sess = self.register("dev", [], toml=toml)
-        self.assertIn("sign", sess["providers"])
-        self.assertIn("git-sign:agent@example.com", sess["scope"])  # the profile's git identity
-        repo = self.tmp / "signed"
+        self.assertIn("Role reader doesn't sign", reader["context"])
+        sess = self.register("dev", ["gh:acme/widget"], toml=toml)
+        self.assertIn(["commit.gpgsign", "true"], sess["git_config"])
         e = self.pod_env(sess)
-        subprocess.run(["git", "init", "-q", repo], check=True, env=e)
-        r = subprocess.run(["git", "-C", repo, "commit", "-q", "--allow-empty", "-m", "signed"], env=e,
-                           capture_output=True, text=True)
+
+        def commit(repo, *extra, remote=None):
+            if not (repo / ".git").exists():
+                subprocess.run(["git", "init", "-q", repo], check=True, env=e)
+                if remote:
+                    subprocess.run(["git", "-C", repo, "remote", "add", "origin", remote], check=True, env=e)
+            return subprocess.run(["git", "-C", repo, "commit", "-q", "--allow-empty", "-m", "c", *extra], env=e,
+                                  capture_output=True, text=True)
+
+        # In a repository in scope (by its push remote), as the profile's identity: signed.
+        repo = self.tmp / "signed"
+        r = commit(repo, remote="git@github.com:acme/widget.git")
         self.assertEqual(r.returncode, 0, r.stderr)
         obj = subprocess.run(["git", "-C", repo, "cat-file", "commit", "HEAD"], env=e, capture_output=True,
                              text=True).stdout
@@ -669,11 +670,19 @@ class BrokerTest(unittest.TestCase):
                            env=e, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("Good", r.stderr)
-        # Signing as someone else: out of scope, waits, fails.
-        r = subprocess.run(["git", "-C", repo, "commit", "-q", "--allow-empty", "-m", "other",
-                            "--author", "Mallory <m@evil.example>"], env=e, capture_output=True, text=True)
+        # As someone else: sign:as other isn't in the role; waits, fails.
+        r = commit(repo, "--author", "Mallory <m@evil.example>")
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("git-sign:m@evil.example", self.admin("log", "-n", "3").stdout)
+        self.assertIn("not allowed for role dev: sign:as other", self.admin("log", "-n", "1").stdout)
+        # In a repository out of scope: waits, fails.
+        r = commit(self.tmp / "elsewhere", remote="https://github.com/evil/repo")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("out of this session's scope: gh:evil/repo", self.admin("log", "-n", "1").stdout)
+        # A repository without a GitHub or Radicle remote: by its path; the project folder's are in scope.
+        r = commit(self.tmp / "local")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(f"git-local:{self.tmp}/local", self.admin("log", "-n", "1").stdout)
+        self.assertIn("git-local:/p/*", sess["scope"])
 
     # --- ssh -------------------------------------------------------------------------------
 

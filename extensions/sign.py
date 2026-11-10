@@ -1,9 +1,15 @@
 """sign provider: git in the pod signs commits and tags with an SSH key it never sees. git calls
-gpg.ssh.program (the pod's apod-sign) with the object to sign; the broker checks it (a commit or a
-tag, by the profile's git identity) and signs it with the key in the broker's agent.
+gpg.ssh.program (the pod's apod-sign) with the object to sign; the broker checks it and signs it
+with the key in the broker's agent.
 
-Actions: sign:commit, sign:tag, sign:other (anything that isn't a commit or tag object).
-Targets: the author, committer or tagger email (scope: the profile's git identity)."""
+The profile holds the key ([sign] key) and the identity (its git author); the role holds the
+actions; the scope says where: the repository the commit is for.
+
+Actions: sign:commit, sign:tag; sign:other (anything that isn't a commit or tag object); sign:as
+other (a commit or tag whose author, committer or tagger isn't the profile's git identity).
+Targets: the repository, by the remote git would push the branch to (gh:OWNER/REPO, rad:RID), or
+git-local:PATH for a repository with no such remote. The pod reports both, so they keep honest
+agents to the scope rather than stop a hostile one: the push itself is checked separately."""
 import base64
 import json
 import os
@@ -13,10 +19,10 @@ import tempfile
 from pathlib import Path
 
 from core import (AGENT, BDIR, SHIM, BrokerError, Request, check, matches, need_key, provider, read_body,
-                  rejected_msg, role_rules, scope_kind)
+                  rejected_msg, remote_target, role_rules, scope_kind)
 
 
-def classify(payload, namespace):
+def classify(payload, namespace, sess=None, remote="", toplevel=""):
     text = payload.decode("utf-8", "replace")
     head, _, msg = text.partition("\n\n")
     subject = msg.strip().splitlines()[0][:72] if msg.strip() else ""
@@ -31,12 +37,26 @@ def classify(payload, namespace):
     req = Request("sign", f"sign {kind}: {subject}" if subject else f"sign {kind}")
     req.actions = [f"sign:{kind}"]
     fields = ("author", "committer") if kind == "commit" else ("tagger",) if kind == "tag" else ()
+    mine = {e.lower() for e in (sess.identity.get("emails", []) if sess else [])}
+    others = []
     for line in head.splitlines():
         k, _, v = line.partition(" ")
         if k in fields:
             m = re.search(r"<([^>]*)>", v)
-            req.targets.append(("git-sign", (m.group(1) if m else v).lower()))
-    req.targets = list(dict.fromkeys(req.targets))
+            email = (m.group(1) if m else v).lower()
+            if email not in mine and email not in others:
+                others.append(email)
+    if others:
+        req.actions.append("sign:as other")
+        req.display += f" (as {', '.join(others)})"
+    # Where: the repository, by its push remote; a repository without one, by its path.
+    t = remote_target(remote) if remote else None
+    if t:
+        req.targets.append(t)
+    elif toplevel:
+        req.targets.append(("git-local", toplevel))
+    else:
+        req.targets.append(("unscoped", "signing outside a git repository"))
     return req
 
 
@@ -46,6 +66,7 @@ def handle(h, sess, method):
         payload = base64.b64decode(r["data"])
         namespace = r.get("namespace", "git")
         pubkey = r.get("pubkey", "").split()
+        remote, toplevel = str(r.get("remote", ""))[:500], str(r.get("toplevel", ""))[:500]
     except (ValueError, KeyError):
         return h.send_json({"error": "bad request"}, 400)
     cfg = sess.cfg.get("sign")
@@ -53,7 +74,7 @@ def handle(h, sess, method):
         return h.send_json({"error": "signing isn't set up for this pod"}, 400)
     if len(pubkey) < 2 or pubkey[1] != cfg["blob"]:
         return h.send_json({"error": "not this pod's signing key (use the user.signingkey apod sets)"}, 400)
-    req = classify(payload, namespace)
+    req = classify(payload, namespace, sess, remote, toplevel)
     ok, ev = check(sess, req)
     if not ok:
         return h.send_json({"error": rejected_msg(req, ev)}, 403)
@@ -82,22 +103,18 @@ class SignProvider:
         return [(cfg["key"], cfg.get("confirm", False))] if cfg.get("key") else []
 
     def configure(self, sess, cfg, reg, out):
-        """[sign] key makes signing available; it's on for a pod when the role signs (its sign
-        list, or a role grant), as the profile's git identity, or when the scope names git-sign:
-        addresses (--scope git-sign:ADDRESS), as those."""
+        """[sign] key: git in the pod can sign. Commits and tags are signed by default
+        (commit.gpgsign, tag.gpgsign) when the role allows sign:commit / sign:tag; otherwise
+        git commit -S still works, and waits for approval."""
         if not cfg.get("key"):
             return False
         allow, deny = role_rules(sess.role)
-        by_role = any(matches(a, allow) and not matches(a, deny) for a in ("sign:commit", "sign:tag"))
-        if not by_role and not sess.entries("git-sign"):
-            out["context"].append(f"Commits aren't signed in this pod: role {sess.role} doesn't sign, and the scope "
-                                  "names no git-sign: address.")
-            return False
-        if by_role:
-            for e in sess.identity.get("emails", []):
-                sess.add_scope(("git-sign", e))
-        else:  # git-sign: in the scope: this session signs (as those addresses) whatever its role
-            sess.grants["actions"] += [a for a in ("sign:commit", "sign:tag") if a not in sess.grants["actions"]]
+        allow = allow + sess.grants["actions"]
+        signs = {a: matches(f"sign:{a}", allow) and not matches(f"sign:{a}", deny) for a in ("commit", "tag")}
+        # The project folder is where a repository without a GitHub or Radicle remote may be signed.
+        if sess.project:
+            sess.add_scope(("git-local", sess.project))
+            sess.add_scope(("git-local", sess.project.rstrip("/") + "/*"))
         try:
             line, blob = need_key(sess, out, cfg["key"], cfg.get("confirm", False))
         except BrokerError as e:
@@ -108,13 +125,17 @@ class SignProvider:
         out["git_config"] += [["gpg.format", "ssh"], ["gpg.ssh.program", "/usr/local/bin/apod-sign"],
                               ["user.signingkey", f"key::{line}"]]
         if cfg.get("auto", True):
-            out["git_config"] += [["commit.gpgsign", "true"], ["tag.gpgsign", "true"]]
-        who = ", ".join(sess.entries("git-sign"))
-        out["context"].append(f"git commits and tags are signed by the broker with an SSH key held on the host "
-                              f"(gpg.format=ssh), as {who}; signing as anyone else needs approval.")
+            out["git_config"] += [[f"{a}.gpgsign", "true"] for a in ("commit", "tag") if signs[a]]
+        on = " and ".join(f"{a}s" for a in ("commit", "tag") if signs[a])
+        out["context"].append(
+            (f"git {on} are signed by the broker" if on else f"Role {sess.role} doesn't sign: git commit -S asks the "
+             f"user, through the broker") +
+            " with an SSH key held on the host (gpg.format=ssh), in the repositories in scope (by the remote the "
+            "branch pushes to) and as the profile's git identity; anything else needs approval.")
         return True
 
 
 provider(SignProvider())
-scope_kind("git-sign", provider="sign", parse=lambda v: v.strip().lower(),
-           help="git-sign:ADDRESS (sign commits and tags as ADDRESS; the profile's git identity is in scope)")
+scope_kind("git-local", provider="sign",
+           help="git-local:PATH (sign in a repository with no GitHub or Radicle remote; the project folder is in "
+                "scope)")
