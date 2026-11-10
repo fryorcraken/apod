@@ -230,7 +230,66 @@ class Session:
     def summary(self):
         allow, _ = persona_rules(self.persona)
         return {"persona": self.persona, "login": self.login, "scope": self.scope_list(),
-                "allowed": sorted(set(allow)), "identity": self.identity}
+                "allowed": sorted(set(allow)), "identity": self.identity, "grants": self.grants,
+                "name": self.title(), "text": self.describe()}
+
+    def describe(self):
+        """What this pod may do, for the agent: its system prompt at launch, gh auth status later
+        (which also shows what the user approved since)."""
+        allow, _ = persona_rules(self.persona)
+        active = self.cfg.get("_providers") or list(PROVIDERS)
+        by = collections.defaultdict(list)
+        for a in sorted(set(allow)):
+            prov, _, act = a.partition(":")
+            by[prov].append(act)
+        lines = [f"apod broker: persona {self.persona}" + (f", GitHub user {self.login}" if self.login else "") + ".",
+                 f"Scope (the repositories, projects, hosts and identities it may touch): "
+                 f"{', '.join(self.scope_list()) or 'none'}.",
+                 "Allowed without asking, on what's in scope:"]
+        lines += [f"  {p}: {', '.join(by[p])}" for p in active if by.get(p)]
+        granted = self.grants["actions"] + [f"unscoped: {u}" for u in self.grants["unscoped"]]
+        if granted:
+            lines.append(f"Approved by the user for this session: {', '.join(granted)}.")
+        lines.append(f"Anything else, or outside the scope, waits up to {ASK_TIMEOUT}s for the user to approve it on "
+                     f"the host, then fails. Before such a step, tell the user what you need and why; if it fails, "
+                     f"ask them to approve it (or widen the scope) and retry once they say it is allowed. "
+                     f"gh auth status shows the current permissions, including approvals made since launch.")
+        return "\n".join(lines)
+
+    def title(self):
+        """The agent session's name (Claude Code's /rename), from the newest transcript for the
+        project in the profile's home that's been written since this pod started."""
+        home, proj = self.cfg.get("_home"), self.project
+        if not home or not proj:
+            return ""
+        d = Path(home) / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", proj)
+        try:
+            files = [(f.stat().st_mtime, f) for f in d.glob("*.jsonl")]
+        except OSError:
+            return ""
+        files = sorted((m, f) for m, f in files if m >= (self.created or 0) - 5)
+        if not files:
+            return ""
+        f = files[-1][1]
+        cache = self.__dict__.setdefault("_titles", {})
+        off, name = cache.get(str(f), (0, ""))
+        try:
+            with f.open("rb") as fh:
+                fh.seek(off)
+                data = fh.read()
+        except OSError:
+            return name
+        end = data.rfind(b"\n") + 1  # only whole lines; the rest is read next time
+        for line in data[:end].splitlines():
+            if b'"custom-title"' in line:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("type") == "custom-title" and r.get("customTitle"):
+                    name = r["customTitle"]
+        cache[str(f)] = (off + end, name)
+        return name
 
 
 class Request:
@@ -244,7 +303,7 @@ class Request:
 
 
 def new_event(sess, req):
-    ev = {"id": next(COUNTER), "ts": now(), "session": sess.id, "profile": sess.profile,
+    ev = {"id": next(COUNTER), "ts": now(), "session": sess.id, "name": sess.title(), "profile": sess.profile,
           "persona": sess.persona, "login": sess.login, "project": sess.project, "kind": req.kind,
           "request": req.display, "actions": req.actions, "targets": [list(t) for t in req.targets],
           "missing": [], "out": [], "decision": "pending", "reason": "", "exit": None}
@@ -289,7 +348,7 @@ def desktop_notify(ev):
     if not shutil.which("notify-send"):
         return
     try:
-        subprocess.Popen(["notify-send", "-a", "apod", f"apod broker: {ev['profile']} asks",
+        subprocess.Popen(["notify-send", "-a", "apod", f"apod broker: {ev.get('name') or ev['profile']} asks",
                           f"{ev['request']}\napod broker allow {ev['id']}"],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
     except OSError:
@@ -574,7 +633,8 @@ def register(r):
     identity = {"name": env.get("GIT_COMMITTER_NAME") or env.get("GIT_AUTHOR_NAME", ""),
                 "emails": sorted({e for e in (env.get("GIT_AUTHOR_EMAIL"), env.get("GIT_COMMITTER_EMAIL")) if e})}
     sess = Session({"id": sid, "profile": r.get("profile", ""), "persona": persona,
-                    "project": r.get("project", ""), "created": now(), "identity": identity})
+                    "project": r.get("project", ""), "created": now(), "identity": identity,
+                    "cfg": {"_home": str(pdir / "home")}})
     for e in list(cfg.get("scope", [])) + list(r.get("scope", [])):
         if e.strip():
             sess.add_scope(parse_scope(e))
@@ -592,14 +652,11 @@ def register(r):
         SESSIONS[sid] = sess
         listen_session(sess)
         sess.save()
-    allow, _ = persona_rules(persona)
-    head = (f"The host's apod broker acts for this pod (persona {persona}; scope: "
-            f"{', '.join(sess.scope_list()) or 'none'}). Allowed without asking: {', '.join(sorted(set(allow)))}. "
-            f"Anything else, or outside that scope, waits up to {ASK_TIMEOUT}s for the user to approve it on the "
-            f"host, then fails: if that happens, tell the user what you need and why, and retry once they say "
-            f"it is allowed.")
+    sess.cfg["_providers"] = out["providers"]
+    sess.save()
+    head = "The host's apod broker acts for this pod.\n" + sess.describe()
     return {"id": sid, "dir": str(sess.dir), "pod_dir": POD_DIR, "ask_timeout": ASK_TIMEOUT,
-            "agent": str(AGENT), **out, "context": " ".join([head] + out["context"]), **sess.summary()}
+            "agent": str(AGENT), **out, "context": "\n".join([head] + out["context"]), **sess.summary()}
 
 
 def unregister(sid):
@@ -616,7 +673,7 @@ def unregister(sid):
 
 def state():
     with LOCK:
-        return {"sessions": [dict(s.data(), scope_list=s.scope_list()) for s in SESSIONS.values()],
+        return {"sessions": [dict(s.data(), scope_list=s.scope_list(), name=s.title()) for s in SESSIONS.values()],
                 "pending": [p.ev for p in PENDING.values()],
                 "events": list(EVENTS)[-200:],
                 "grants": load_grants()["personas"],

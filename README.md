@@ -192,7 +192,9 @@ In the TUI: view 1 lists waiting requests (with the seconds left) above recent o
 selected request's actions, targets and reason below; `a` allows once, `s` for the session, `p`
 for the persona, `d` denies, and it beeps and jumps to a new waiting request. View 2 lists
 sessions with their scope and grants (`x` removes one), view 3 the persona grants (`x` removes
-one). Tab or 1–3 switch views, `q` quits.
+one). Tab or 1–3 switch views, `q` quits. Requests and sessions show the agent session's name
+when it has one (Claude Code's `/rename`, read from the transcript in the profile's home), else
+the profile.
 
 **How requests are classified.**
 
@@ -218,7 +220,9 @@ one). Tab or 1–3 switch views, `q` quits.
 pod's files, so the shim sends the current repository and branch and the contents of files a
 command names (`--body-file`, `-F key=@file`, `--input`, release assets). Arguments that name host
 paths are refused. `gh repo clone` and `gh pr checkout` run locally through git; `pr create
---fill` isn't available (pass `--title` and `--body`); `gh auth status` describes the session.
+--fill` isn't available (pass `--title` and `--body`). The agent's system prompt lists its
+persona, scope and what it may do without asking, per provider; `gh auth status` shows the same,
+plus what you've approved for the session since. Links in titles and bodies aren't targets.
 Pods using the broker run without SELinux labelling, as for `ssh-key`.
 
 Real-container check (the broker's own tests, `python3 tests/test_broker.py`, use a fake `gh`, a

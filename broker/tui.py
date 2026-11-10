@@ -14,23 +14,25 @@ def tui_rows(view, st):
     rows = []
     if st is None:
         return rows
+    names = {x["id"]: x.get("name") for x in st["sessions"]}
+    who = lambda e: (names.get(e["session"]) or e.get("name") or e["profile"])[:24]
     if view == "requests":
         pend = st["pending"]
         rows.append((None, f"Waiting for approval ({len(pend)})", "head", None))
         for e in pend:
             left = max(0, int(e["ts"] + st["ask_timeout"] - now()))
-            rows.append((("ev", e["id"]), f"{e['id']:>5} {left:>3}s  {e['profile']:<14} {e['request']}", "pending", e))
+            rows.append((("ev", e["id"]), f"{e['id']:>5} {left:>3}s  {who(e):<24} {e['request']}", "pending", e))
         if not pend:
             rows.append((None, "      nothing waiting", "dim", None))
         rows.append((None, "", "dim", None))
         rows.append((None, "Recent requests", "head", None))
         for e in reversed([e for e in st["events"] if e["decision"] != "pending"]):
-            rows.append((("ev", e["id"]), f"{e['id']:>5} {fmt_time(e['ts'])[6:]}  {e['profile']:<14} "
+            rows.append((("ev", e["id"]), f"{e['id']:>5} {fmt_time(e['ts'])[6:]}  {who(e):<24} "
                          f"{e['decision']:<17} {e['request']}", tui_style(e["decision"]), e))
     elif view == "sessions":
         for s in st["sessions"]:
             login = (s["cfg"].get("gh") or {}).get("login")
-            rows.append((("s", s["id"]), f"{s['profile']}  ·  {s['persona']}" + (f" as {login}" if login else "")
+            rows.append((("s", s["id"]), (f"{s['name']}  ·  " if s.get("name") else "") + f"{s['profile']}  ·  {s['persona']}" + (f" as {login}" if login else "")
                          + f"  ·  {s['project']}  ·  {s['id']}", "head", s))
             entries = [(k, fmt_scope(k, v), v) for k, vs in s["scope"].items() for v in vs] + \
                 [("granted", v, v) for v in s["grants"]["actions"] + s["grants"]["unscoped"]]
@@ -63,8 +65,9 @@ def tui_detail(e, st, width):
     import textwrap
     if e is None:
         return []
+    name = next((x.get("name") for x in st["sessions"] if x["id"] == e["session"]), None) or e.get("name")
     lines = [f"#{e['id']}  {e['request']}",
-             f"{e['profile']} · persona {e['persona']}" + (f" as {e['login']}" if e.get("login") else "") + f" · {e['project']}",
+             (f"{name} · " if name else "") + f"{e['profile']} · persona {e['persona']}" + (f" as {e['login']}" if e.get("login") else "") + f" · {e['project']}",
              f"actions: {', '.join(e['actions']) or '-'}",
              f"targets: {', '.join(fmt_target(tuple(t)) for t in e['targets']) or '-'}"]
     if e.get("reason"):
@@ -186,7 +189,7 @@ def run(scr):
                         curses.KEY_NPAGE: list_h, curses.KEY_PPAGE: -list_h}.get(k)
                 i = 0 if k in (curses.KEY_HOME, ord("g")) else len(keys) - 1 if k in (curses.KEY_END, ord("G")) else i + step
                 sel = keys[max(0, min(len(keys) - 1, i))]
-            elif view == "requests" and item and ch in "aspd":
+            elif view == "requests" and item and ch and ch in "aspd":
                 how = {"a": "once", "s": "session", "p": "persona", "d": "deny"}[ch]
                 ev = client("/decide", {"id": item["id"], "how": how})
                 msg = f"{'denied' if how == 'deny' else 'allowed ' + how}: {ev['request']}"

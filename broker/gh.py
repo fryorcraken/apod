@@ -956,7 +956,8 @@ class GhProvider:
         out["context"].append(
             f"gh is a shim: commands run on the host as GitHub user {login}. gh auth token and "
             f"pr create --fill (pass --title and --body) are unavailable; gh repo clone and gh pr checkout "
-            f"run locally through git.")
+            f"run locally through git. Searches and lists across an owner (--owner X) need X itself in "
+            f"scope: narrow them with --repo OWNER/REPO.")
         return True
 
 

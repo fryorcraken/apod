@@ -285,6 +285,7 @@ class BrokerTest(unittest.TestCase):
         r = subprocess.run([sys.executable, BROKER, *args], env=cls.env, capture_output=True, text=True)
         assert r.returncode == 0, r.stderr
         sess = json.loads(r.stdout)
+        sess["_pdir"] = pdir
         for k in sess["need_keys"]:  # what apod does with ssh-add
             subprocess.run(["ssh-add", "-q", k["path"]], env=dict(cls.env, SSH_AUTH_SOCK=sess["agent"]), check=True)
         return sess
@@ -353,6 +354,31 @@ class BrokerTest(unittest.TestCase):
         r = self.gh("pr", "list", "-R", "evil/repo", expect=1)
         self.assertIn("needs your approval", r.stderr)
         self.assertIn("timed out", r.stderr)
+
+    def test_agent_sees_permissions_and_session_name(self):
+        sess = self.register("pm", ["acme/widget", "project:acme/11"])
+        self.assertIn("project item-edit", sess["context"])
+        self.assertIn("project:acme/11", sess["context"])
+        self.assertIn("gh auth status", sess["context"])
+        r = self.gh("auth", "status", sess=sess)
+        self.assertIn("persona pm", r.stdout)
+        self.assertIn("  gh: ", r.stdout)
+        # Claude Code's /rename lands in the transcript, in the profile's home; the TUI shows it.
+        d = sess["_pdir"] / "home/.claude/projects/-p"
+        d.mkdir(parents=True)
+        (d / "s1.jsonl").write_text('{"type":"user"}\n{"type":"custom-title","customTitle":"[eco] boards","sessionId":"s1"}\n')
+        names = {s["id"]: s.get("name") for s in self.state()["sessions"]}
+        self.assertEqual(names[sess["id"]], "[eco] boards")
+        with (d / "s1.jsonl").open("a") as f:
+            f.write('{"type":"custom-title","customTitle":"renamed","sessionId":"s1"}\n')
+        self.assertEqual({s["id"]: s.get("name") for s in self.state()["sessions"]}[sess["id"]], "renamed")
+
+    def state(self):
+        with socket.socket(socket.AF_UNIX) as s:
+            s.connect(str(self.root / "broker/admin.sock"))
+            s.sendall(b"POST /state HTTP/1.0\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}")
+            data = b"".join(iter(lambda: s.recv(65536), b""))
+        return json.loads(data.split(b"\r\n\r\n", 1)[1])
 
     def test_links_in_text_are_not_targets(self):
         body = "see https://github.com/other/research and https://github.com/orgs/other/projects/3"

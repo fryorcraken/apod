@@ -363,7 +363,8 @@ if [ -n "$binfo" ]; then
   gh_note=$(jq -r .context <<< "$binfo")
 elif [ ${#ghsecret[@]} -gt 0 ]; then gh_note="gh and git push over HTTPS use this profile's GitHub token."
 else gh_note="This profile has no GitHub token: gh and HTTPS pushes are unauthenticated."; fi
-context+=$'\n'"Nothing else from the host is available. $gh_note There are no permission prompts: the container is the isolation boundary."
+context+=$'\n'"Nothing else from the host is available. There are no permission prompts: the container is the isolation boundary."
+context+=$'\n'"$gh_note"
 if [ ${#volpaths[@]} -gt 0 ]; then
   context+=$'\n'"Persistent volumes (kept between runs, not on the host filesystem): ${volpaths[*]}."
 fi

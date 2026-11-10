@@ -142,9 +142,9 @@ def local_auth(argv):
             w = whoami()
         except OSError as e:
             sys.exit(f"gh (apod): can't reach the apod broker at {SOCK}: {e}")
-        print(f"github.com\n  ✓ Using the apod broker as {w['login']} (persona {w['persona']})\n"
-              f"  - Scope: {', '.join(w['scope']) or 'none'}\n  - Allowed: {', '.join(w['allowed'])}\n"
-              f"  - Anything else waits for the user's approval on the host. No token is available in this pod.")
+        print(f"github.com\n  ✓ Using the apod broker as {w['login'] or 'the host gh account'} "
+              f"(no token is available in this pod)\n")
+        print(w.get("text") or f"persona {w['persona']}; scope: {', '.join(w['scope'])}; allowed: {', '.join(w['allowed'])}")
         return 0
     if sub == "setup-git":
         return 0  # git's github.com remotes already go through the broker
