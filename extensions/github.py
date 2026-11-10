@@ -56,8 +56,8 @@ def relay_response(h, resp, started=False):
 
 def handle(h, sess, method):
     u = urllib.parse.urlparse(h.path)
-    m = re.match(r"^/git/github/([^/]+)/([^/]+?)(?:\.git)?/(info/refs|git-upload-pack|git-receive-pack)$", u.path)
-    if not m:
+    m = re.match(r"^/git/github/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/(info/refs|git-upload-pack|git-receive-pack)$", u.path)
+    if not m or m.group(1).strip(".") == "" or m.group(2).strip(".") == "":
         return send_text(h, f"not a git request the broker handles: {u.path}", 404)
     repo = f"{m.group(1)}/{m.group(2)}".lower()
     endpoint = m.group(3)

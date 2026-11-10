@@ -13,8 +13,9 @@
 #           the scope), "push branch", "push default-branch", "push tag", "push delete"
 #   rad     git to rad:// remotes: "fetch", "push branch", "push default-branch", "push patch"
 #           (HEAD:refs/patches), "push tag", "push delete", "push force" (not a fast-forward)
-#   sign    "commit", "tag" (signed as the profile's git identity; anyone else is out of scope)
-#   ssh     "connect" (through the broker, ProxyCommand), "login" (the agent signs a login);
+#   sign    "commit", "tag", "as other" (a commit or tag by anyone but the profile's git identity)
+#   ssh     "connect" (through the broker, ProxyCommand; "connect port" for a port other than ssh's),
+#           "login" (the agent signs a login);
 #           which hosts is the scope's business (broker.toml [ssh] hosts, --scope ssh:HOST)
 
 [roles.reader]

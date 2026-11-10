@@ -311,7 +311,10 @@ def write_file(work, files, key, n):
 def classify_gh(sess, argv, ctx, files, stdin, work):
     req = Request("gh", shlex.join(["gh", *argv]))
     head = argv[:argv.index("--")] if "--" in argv else argv
-    if not argv or argv[0] in ("help", "--version", "version") or "--help" in head or "-h" in head:
+    # Help only when the command line is nothing but words and -h/--help: gh would take a -h that
+    # follows a flag as that flag's value (--title -h) and run the command.
+    if not argv or argv[0] in ("help", "--version", "version") or (
+            {"--help", "-h"} & set(head) and all(a in ("-h", "--help") or not a.startswith("-") for a in head)):
         req.help, req.argv = True, argv
         return req
     path, s, flags, pos = parse_gh(argv)
@@ -514,15 +517,22 @@ def classify_api(sess, req, flags, pos, ctx, files, stdin, work, n):
             raise BrokerError(f"only api.github.com is supported, not {u.hostname}")
         path = u.path
     path = path.split("?")[0].lstrip("/")
+    if path.rstrip("/").lower() == "graphql":
+        # Only "gh api graphql" gets the query checked: /graphql as a REST path would skip that.
+        raise BrokerError("use gh api graphql for GraphQL")
     path = path.replace("{owner}", owner).replace("{repo}", rname).replace("{branch}", ctx.get("branch") or "{branch}")
     if "{" in path and ("{owner}" in endpoint or "{repo}" in endpoint) and not ctx.get("repo"):
         raise BrokerError("{owner}/{repo} need a current repository: run in a clone or use the full path")
     m = re.match(r"repos/([^/]+)/([^/]+)(/.*)?$", path)
+    if m and "%" in m.group(1) + m.group(2):
+        raise BrokerError("an encoded owner or repository name in an API path isn't supported")
     if m:
         req.targets.append(("gh", f"{m.group(1)}/{m.group(2)}".lower()))
         req.actions = [f"api {method} /repos/{{repo}}{m.group(3) or ''}"]
         return req
     m = re.match(r"(orgs|users)/([^/]+)(/.*)?$", path)
+    if m and "%" in m.group(2):
+        raise BrokerError("an encoded owner name in an API path isn't supported")
     if m:
         req.targets.append(("gh", m.group(2).lower()))
         req.actions = [f"api {method} /{m.group(1)}/{{owner}}{m.group(3) or ''}"]
@@ -836,7 +846,8 @@ class Framer:
 
 
 def run_gh(sess, req, tty, out, work):
-    env = gh_env(token_for(gh_user(sess)), tty, req.repo)
+    # Help needs no account: without a token, whatever gh does with the arguments can't act on GitHub.
+    env = gh_env(None if req.help else token_for(gh_user(sess)), tty, req.repo)
     p = subprocess.Popen([gh_bin(), *req.argv], cwd=work, env=env,
                          stdin=subprocess.PIPE if req.stdin is not None else subprocess.DEVNULL,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)

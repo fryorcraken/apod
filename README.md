@@ -286,7 +286,7 @@ it (and its `description` replaces the built-in one). A pod with no role is a `r
   editing, creating and commenting on issues.
 - `ops`: ssh to the hosts in scope and sign commits; fetch only.
 
-**Scope.** The project folder's GitHub and Radicle remotes, the profile's git identity, then
+**Scope.** The project folder's GitHub and Radicle remotes (and the folder itself, for signing), then
 `broker.toml`'s `scope` (and `[ssh] hosts`) and `--scope`. Each entry is `KIND:VALUE`, where the
 kind belongs to an extension, and values take shell-style patterns (`*`). The shipped kinds:
 
@@ -301,7 +301,7 @@ kind belongs to an extension, and values take shell-style patterns (`*`). The sh
 
 `apod broker scopes` lists the kinds the loaded extensions provide. An entry of a kind no
 extension provides is ignored, with a warning at launch. The older forms (`OWNER/REPO`, `OWNER`,
-`project:OWNER/N`, `email:ADDRESS`) still work, with a warning naming the new form. Forks and
+`project:OWNER/N`) still work, with a warning naming the new form. Forks and
 repositories the session creates join its scope. The TUI and the log show targets the same way,
 so what you see out of scope is what you'd add.
 

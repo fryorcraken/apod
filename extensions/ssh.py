@@ -248,6 +248,9 @@ def handle_connect(h, sess, method):
     name, addr, cport = connect_target(sess, host)
     req = Request("ssh", f"ssh connect {host}:{port}")
     req.actions = ["ssh:connect"]
+    if port != "22" and (name is None or int(port) != cport):
+        # Scope names a host for ssh; another port on it is a tunnel to something else.
+        req.actions.append("ssh:connect port")
     req.targets = [("ssh", f"@{name or host}")]
     ok, ev = check(sess, req)
     if not ok:

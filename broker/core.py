@@ -69,7 +69,7 @@ PENDING = {}    # event id -> Pending
 EVENTS = collections.deque(maxlen=500)
 COUNTER = itertools.count(1)
 PROVIDERS = {}  # name -> provider
-ROUTES = []     # (method, path prefix, handler(h, sess, method))
+ROUTES = []     # (method, path prefix, handler(h, sess, method), provider name)
 
 
 def now():
@@ -83,7 +83,7 @@ def provider(p):
     if p.name in PROVIDERS:
         raise BrokerError(f"a provider named {p.name} is already registered")
     PROVIDERS[p.name] = p
-    ROUTES.extend(getattr(p, "routes", []))
+    ROUTES.extend((m, prefix, fn, p.name) for m, prefix, fn in getattr(p, "routes", []))
     return p
 
 
@@ -342,14 +342,22 @@ class Session:
 
     @property
     def dir(self):
+        """The pod's folder, mounted read-write at POD_DIR: nothing in it can be trusted."""
         return SDIR / self.id
+
+    @property
+    def state(self):
+        """The session's saved state, outside the pod's folder."""
+        return SDIR / f"{self.id}.json"
 
     @property
     def login(self):
         return (self.cfg.get("gh") or {}).get("login", "")
 
     def save(self):
-        (self.dir / "session.json").write_text(json.dumps(self.data(), indent=2) + "\n")
+        tmp = self.state.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.data(), indent=2) + "\n")
+        tmp.replace(self.state)
 
     def in_scope(self, t):
         kind, v = t[0], t[1]
@@ -389,7 +397,7 @@ class Session:
         """What this pod may do, for the agent: its system prompt at launch, gh auth status later
         (which also shows what the user approved since)."""
         allow, _ = role_rules(self.role)
-        active = self.cfg.get("_providers") or list(PROVIDERS)
+        active = self.cfg.get("_providers") or []
         by = collections.defaultdict(list)
         for a in sorted(set(allow)):
             prov, _, act = a.partition(":")
@@ -657,8 +665,12 @@ class SessionHandler(Handler):
             return self.send_json({"error": "session closed"}, 410)
         if method == "GET" and self.path == "/whoami":
             return self.send_json(sess.summary())
-        for m, prefix, fn in ROUTES:
+        for m, prefix, fn, pname in ROUTES:
             if m == method and self.path.startswith(prefix):
+                if pname not in (sess.cfg.get("_providers") or []):
+                    # Only the providers set up for this pod answer it: one the profile doesn't
+                    # configure (no [gh] user, no [ssh]...) must not act with the host's defaults.
+                    return send_text(self, f"{pname} isn't set up for this pod", 403)
                 try:
                     return fn(self, sess, method)
                 except (BrokenPipeError, ConnectionResetError):
@@ -838,16 +850,21 @@ def register(r):
            "context": [], "need_keys": [], "providers": [], "warnings": warnings}
     start_agent()
     for p in PROVIDERS.values():
-        if p.configure(sess, cfg.get(p.name) or {}, r, out):
-            out["providers"].append(p.name)
+        try:
+            if p.configure(sess, cfg.get(p.name) or {}, r, out):
+                out["providers"].append(p.name)
+        except BrokerError:
+            raise
+        except Exception as e:  # one broken extension doesn't stop every pod
+            print(f"apod-broker: {p.name}.configure: {e!r}", file=sys.stderr, flush=True)
+            out["warnings"].append(f"broker extension {p.name} failed ({e}); it's off for this pod")
+    sess.cfg["_providers"] = out["providers"]
     with LOCK:
         if sid in SESSIONS:
             unregister(sid)
         SESSIONS[sid] = sess
         listen_session(sess)
         sess.save()
-    sess.cfg["_providers"] = out["providers"]
-    sess.save()
     head = "The host's apod broker acts for this pod.\n" + sess.describe()
     return {"id": sid, "dir": str(sess.dir), "pod_dir": POD_DIR, "ask_timeout": ASK_TIMEOUT,
             "agent": str(AGENT), **out, "context": "\n".join([head] + out["context"]), **sess.summary(),
@@ -861,6 +878,7 @@ def unregister(sid):
             srv.shutdown()
             srv.server_close()
         shutil.rmtree(SDIR / sid, ignore_errors=True)
+        (SDIR / f"{sid}.json").unlink(missing_ok=True)
         for p in PROVIDERS.values():
             if hasattr(p, "close"):
                 p.close(sid)
@@ -1004,10 +1022,16 @@ def serve():
             ADMIN.unlink()
     start_agent()
     for d in SDIR.iterdir():
-        try:
-            sess = Session(json.loads((d / "session.json").read_text()))
-        except (OSError, ValueError):
+        if d.is_dir() and not (SDIR / f"{d.name}.json").is_file():
+            # A pod's folder without saved state, or from before the state moved out of it (a pod could
+            # have edited that one): the session is gone.
             shutil.rmtree(d, ignore_errors=True)
+    for f in SDIR.glob("*.json"):
+        try:
+            sess = Session(json.loads(f.read_text()))
+        except (OSError, ValueError):
+            f.unlink(missing_ok=True)
+            shutil.rmtree(SDIR / f.stem, ignore_errors=True)
             continue
         try:
             SESSIONS[sess.id] = sess
@@ -1015,7 +1039,8 @@ def serve():
         except (OSError, BrokerError) as e:
             SESSIONS.pop(sess.id, None)
             print(f"apod-broker: dropping session {sess.id}: {e}", file=sys.stderr)
-            shutil.rmtree(d, ignore_errors=True)
+            f.unlink(missing_ok=True)
+            shutil.rmtree(SDIR / f.stem, ignore_errors=True)
 
     def term(*_):
         p = AGENT_PROC.get("p")

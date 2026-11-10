@@ -406,6 +406,9 @@ class BrokerTest(unittest.TestCase):
         r = self.gh("pr", "list", "-R", "evil/repo", expect=1)
         self.assertIn("needs your approval", r.stderr)
         self.assertIn("timed out", r.stderr)
+        # -h as a flag's value isn't a help request: gh would run the command.
+        r = self.gh("issue", "create", "-R", "evil/repo", "--title", "-h", "--body", "x", expect=1)
+        self.assertIn("needs your approval", r.stderr)
 
     def test_agent_sees_permissions_and_session_name(self):
         sess = self.register("pm", ["gh:acme/widget", "gh-project:acme/11"])
@@ -555,6 +558,12 @@ class BrokerTest(unittest.TestCase):
         self.assertIn("graphql mutation deleteRepository", r.stderr)
         (self.work / "q.graphql").write_text('{ repository(owner:"acme", name:"widget"){ id } }')
         self.ran("api", "graphql", "-F", "query=@q.graphql")
+        # GraphQL only through "api graphql", where the query is checked.
+        for ep in ("/graphql", "https://api.github.com/graphql"):
+            r = self.gh("api", ep, "-f", "query={ viewer { login } }", expect=1)
+            self.assertIn("use gh api graphql", r.stderr)
+        r = self.gh("api", "repos/acme/widget%2F..%2F..%2Fevil%2Fx", expect=1)
+        self.assertIn("encoded", r.stderr)
 
     def test_projects_pm(self):
         w = []
@@ -637,6 +646,13 @@ class BrokerTest(unittest.TestCase):
         self.assertIn("waiting", err.lower())
 
     # --- sign ------------------------------------------------------------------------------
+
+    def test_session_state_is_outside_the_pods_folder(self):
+        # The pod's folder is mounted read-write: the broker must not keep its role and scope there.
+        d = Path(self.sess["dir"])
+        self.assertFalse((d / "session.json").exists())
+        state = json.loads((d.parent / f"{self.sess['id']}.json").read_text())
+        self.assertEqual(state["role"], "dev")
 
     def test_sign_commits(self):
         # The profile holds the key, the role the actions, the scope the repositories.
@@ -734,6 +750,9 @@ class BrokerTest(unittest.TestCase):
         sess = self.register("dev", [], user="", remotes=["git@github.com:acme/widget.git"], warnings=w)
         self.assertNotIn("gh", sess["providers"])
         self.assertNotIn("github", sess["providers"])
+        # Called directly, the broker still doesn't act for it with the host's active login.
+        r = self.gh("api", "rate_limit", sess=sess, expect=1)
+        self.assertIn("gh isn't set up for this pod", r.stderr)
         self.assertIn('add [gh] user = "ACCOUNT"', w[0])
         self.assertIn("names no GitHub account", sess["context"])
         # --gh-user names it for one launch, over the profile's [gh] user.
@@ -807,6 +826,11 @@ class BrokerTest(unittest.TestCase):
                            capture_output=True, timeout=20)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn(b"rejected", r.stderr)
+        # A host in scope, but another port: a tunnel, not ssh.
+        r = subprocess.run([str(self.shim_bin / "apod-ssh-connect"), "devbox", "8080"], input=b"x", env=e,
+                           capture_output=True, timeout=20)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(b"ssh:connect port", r.stderr)
         known = (Path(sess["dir"]) / "known_hosts").read_text()
         self.assertIn("devbox ssh-ed25519", known)
         conf = (Path(sess["dir"]) / "ssh_config").read_text()

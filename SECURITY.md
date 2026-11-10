@@ -64,6 +64,9 @@ With a `broker.toml`, a pod holds no GitHub token and no ssh, signing or Radicle
   requests, never arbitrary data, and pods can't add, remove or lock its keys.
 - **The broker listens only on unix sockets.** There's a directory per pod, mounted into that pod
   alone, and an admin socket in `~/.agent-pod/broker/` (mode 0700). There is no TCP listener.
+- **The pod's directory is the pod's.** It's mounted read-write, so the broker keeps nothing it
+  trusts there: a session's role, scope and approvals are saved next to it, out of the pod's reach,
+  and what the broker writes into it (ssh `known_hosts`, signers) only informs tools in the pod.
 
 Without the broker, a profile's GitHub token is in the pod's environment (`GH_TOKEN`). An agent
 can read it and use it for anything the token allows.
@@ -100,7 +103,10 @@ The broker turns each request into actions and targets, and checks them before a
 - **ssh:** the agent signs a login only for a host in scope. The broker identifies the host by the
   host key OpenSSH binds to the session (`session-bind@openssh.com`, verified by the real agent),
   matched against your `known_hosts`. Connections go through the broker, which connects only to
-  hosts in scope, or to ones you approve.
+  hosts in scope, on their ssh port, or to ones you approve.
+- **A provider answers only the pods it's set up for.** A pod whose profile names no GitHub
+  account, or has no `[ssh]`, gets nothing from those providers even if it calls the broker
+  directly.
 
 ### Nothing from the pod runs on the host
 
