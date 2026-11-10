@@ -192,7 +192,9 @@ In the TUI: view 1 lists waiting requests (with the seconds left) above recent o
 selected request's actions, targets and reason below; `a` allows once, `s` for the session, `p`
 for the persona, `d` denies, and it beeps and jumps to a new waiting request. View 2 lists
 sessions with their scope and grants (`x` removes one), view 3 the persona grants (`x` removes
-one). Tab or 1–3 switch views, `q` quits. Requests and sessions show the agent session's name
+one). Tab or 1–3 switch views, `q` quits. The mouse works too: click a tab, a row, or a button in
+the footer (each shows its key); the wheel scrolls. While the TUI has the mouse, hold Shift to
+select text. Requests and sessions show the agent session's name
 when it has one (Claude Code's `/rename`, read from the transcript in the profile's home), else
 the profile.
 

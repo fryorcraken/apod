@@ -1,11 +1,6 @@
 """apod broker ui: a terminal UI over the broker's admin socket."""
 from core import BrokerError, client, fmt_scope, fmt_target, fmt_time, now
 
-TUI_HELP = {
-    "requests": "↑↓ select  a allow once  s for session  p for persona  d deny  Tab view  q quit",
-    "sessions": "↑↓ select  x remove scope entry or grant  Tab view  q quit",
-    "grants": "↑↓ select  x remove grant  Tab view  q quit",
-}
 TUI_VIEWS = ["requests", "sessions", "grants"]
 
 
@@ -74,11 +69,11 @@ def tui_detail(e, st, width):
         lines.append(f"why: {e['reason']}")
     if e["decision"] == "pending":
         left = max(0, int(e["ts"] + st["ask_timeout"] - now()))
-        lines.append(f"waiting, {left}s left: a allow once · s allow for this session · p allow for persona {e['persona']} · d deny")
+        lines.append(f"waiting, {left}s left")
     else:
         d = e["decision"] + (f", exit {e['exit']}" if e.get("exit") not in (None, 0) else "")
         if d.startswith(("rejected", "timed out", "denied by")) and (e["missing"] or e["out"]):
-            d += " · s grant for this session · p grant for the persona (the agent can then retry)"
+            d += " · granting it lets the agent retry"
         lines.append(d)
     out = []
     for line in lines:
@@ -86,11 +81,34 @@ def tui_detail(e, st, width):
     return out
 
 
+def can_grant(e):
+    return e["decision"].startswith(("rejected", "timed out", "denied by")) and bool(e["missing"] or e["out"])
+
+
+def tui_buttons(view, item):
+    """The footer's buttons for a view and its selected row: [(key, label)]; each is clickable and
+    does what pressing its key does."""
+    b = []
+    if view == "requests" and item:
+        if item["decision"] == "pending":
+            b = [("a", "Allow once"), ("s", "For session"), ("p", f"For persona {item['persona']}"), ("d", "Deny")]
+        elif can_grant(item):
+            b = [("s", "Grant for session"), ("p", f"Grant for persona {item['persona']}")]
+    elif view == "sessions" and item and "value" in item:
+        b = [("x", "Remove")]
+    elif view == "grants" and item:
+        b = [("x", "Remove")]
+    return b + [("\t", "Next view"), ("q", "Quit")]
+
+
 def run(scr):
     import curses
     curses.curs_set(0)
     scr.timeout(1000)
-    styles = {"": curses.A_NORMAL, "dim": curses.A_DIM, "head": curses.A_BOLD,
+    scr.keypad(True)
+    curses.mousemask(curses.ALL_MOUSE_EVENTS)
+    curses.mouseinterval(0)  # a press acts at once, no waiting to tell clicks from double clicks
+    styles = {"": curses.A_NORMAL, "dim": curses.A_DIM, "head": curses.A_BOLD, "button": curses.A_REVERSE,
               "ok": curses.A_NORMAL, "bad": curses.A_NORMAL, "pending": curses.A_BOLD, "grant": curses.A_NORMAL}
     if curses.has_colors():
         curses.start_color()
@@ -105,6 +123,9 @@ def run(scr):
                       pending=curses.color_pair(3) | curses.A_BOLD, grant=curses.color_pair(4),
                       head=curses.color_pair(4) | curses.A_BOLD)
     view, sel, top, msg, msg_t, seen, st, err = "requests", None, 0, "", 0, None, None, None
+    press = curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED
+    wheel_up = getattr(curses, "BUTTON4_PRESSED", 0)
+    wheel_down = getattr(curses, "BUTTON5_PRESSED", 0)
 
     def put(y, x, text, attr=0):
         h, w = scr.getmaxyx()
@@ -132,6 +153,7 @@ def run(scr):
         idx = next((i for i, r in enumerate(rows) if r[0] == sel), 0)
         item = rows[idx][3] if rows and rows[idx][0] is not None else None
 
+        hits = []  # (y, x0, x1, what): what's under the mouse
         scr.erase()
         h, w = scr.getmaxyx()
         title = " apod broker "
@@ -142,7 +164,12 @@ def run(scr):
         for i, v in enumerate(TUI_VIEWS):
             label = f" {i + 1} {v.capitalize()} "
             put(1, x, label, curses.A_REVERSE if v == view else curses.A_DIM)
+            hits.append((1, x, x + len(label), ("view", v)))
             x += len(label) + 1
+        if err:
+            put(2, 1, err, styles["bad"])
+        elif msg and now() - msg_t < 6:
+            put(2, 1, msg, styles["grant"])
         detail = tui_detail(item, st, w) if view == "requests" and item else []
         list_h = max(3, h - 4 - (len(detail) + 1 if detail else 0))
         if idx < top:
@@ -156,23 +183,48 @@ def run(scr):
                 attr |= curses.A_REVERSE
                 text = text.ljust(w - 2)
             put(3 + i, 1, text, attr)
+            if key is not None:
+                hits.append((3 + i, 0, w, ("row", key)))
         if detail:
             y = h - 2 - len(detail)
             put(y - 1, 0, "─" * w, curses.A_DIM)
             for i, line in enumerate(detail):
                 put(y + i, 1, line, curses.A_BOLD if i == 0 else 0)
-        if err:
-            foot, fattr = err, styles["bad"]
-        elif msg and now() - msg_t < 6:
-            foot, fattr = msg, styles["grant"]
-        else:
-            foot, fattr = TUI_HELP[view], curses.A_DIM
-        put(h - 1, 0, " " + foot, fattr)
+        x = 1
+        for key, label in tui_buttons(view, item):
+            text = f" {'Tab' if key == chr(9) else key} {label} "
+            if x + len(text) >= w:
+                break
+            put(h - 1, x, text, styles["button"] if key not in (chr(9), "q") else curses.A_DIM | curses.A_REVERSE)
+            hits.append((h - 1, x, x + len(text), ("key", key)))
+            x += len(text) + 1
         scr.refresh()
 
         k = scr.getch()
         if k == -1:
             continue
+        if k == curses.KEY_MOUSE:
+            try:
+                _, mx, my, _, bstate = curses.getmouse()
+            except curses.error:
+                continue
+            if bstate & wheel_up:
+                k = curses.KEY_UP
+            elif bstate & wheel_down:
+                k = curses.KEY_DOWN
+            elif bstate & press:
+                what = next((t for y, x0, x1, t in hits if y == my and x0 <= mx < x1), None)
+                if what is None:
+                    continue
+                if what[0] == "view":
+                    view, sel, top = what[1], None, 0
+                    continue
+                if what[0] == "row":
+                    sel = what[1]
+                    continue
+                k = ord(what[1])
+            else:
+                continue
         ch = chr(k) if 0 < k < 256 else ""
         try:
             if ch in ("q", "\x1b"):
@@ -202,5 +254,3 @@ def run(scr):
                 msg, msg_t = f"removed {item['action']} from persona {item['persona']}", now()
         except (OSError, BrokerError, ValueError) as e:
             msg, msg_t = str(e), now()
-
-

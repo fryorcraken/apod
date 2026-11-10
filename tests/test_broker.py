@@ -679,12 +679,21 @@ class BrokerTest(unittest.TestCase):
             return False
 
         self.assertTrue(read_until(b"release delete"), screen[-2000:])
-        self.assertTrue(read_until(b"allow once"))
-        os.write(master, b"a")
+        self.assertTrue(read_until(b"Allow once"))
+        os.write(master, b"a")  # the key
         o, e = p.communicate(timeout=10)
         self.assertEqual(p.returncode, 0, e)
         self.assertTrue(read_until(b"allowed once"))
-        os.write(master, b"2")
+        # The mouse: a click on the "a Allow once" button (bottom row, from column 1) approves too.
+        p = subprocess.Popen([sys.executable, SHIM, "release", "delete", "v8", "--yes"], cwd=self.work,
+                             env=dict(self.env, APOD_BROKER_SOCK=str(Path(self.sess["dir"]) / "broker.sock")),
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.assertTrue(read_until(b"release delete v8"))
+        time.sleep(0.5)
+        os.write(master, b"\x1b[<0;3;30M\x1b[<0;3;30m")
+        o, e = p.communicate(timeout=10)
+        self.assertEqual(p.returncode, 0, e)
+        os.write(master, b"\x1b[<0;16;2M\x1b[<0;16;2m")  # the Sessions tab
         self.assertTrue(read_until(b"acme/widget"))
         os.write(master, b"q")
         ui.wait(timeout=5)
