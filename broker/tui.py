@@ -1,7 +1,49 @@
 """apod broker ui: a terminal UI over the broker's admin socket."""
+import os
+import re
+
 from core import BrokerError, client, fmt_scope, fmt_target, fmt_time, now
 
 TUI_VIEWS = ["requests", "sessions", "grants"]
+
+
+def notify_style():
+    """How to ask the terminal for a desktop notification: APOD_BROKER_NOTIFY (osc9, osc99,
+    osc777, bell, none), else from the terminal's environment; the bell is the fallback."""
+    v = os.environ.get("APOD_BROKER_NOTIFY", "").strip().lower()
+    if v:
+        return v
+    tp, term = os.environ.get("TERM_PROGRAM", "").lower(), os.environ.get("TERM", "")
+    if os.environ.get("KITTY_WINDOW_ID") or "kitty" in term:
+        return "osc99"
+    if tp in ("ghostty", "iterm.app", "wezterm") or "ghostty" in term:
+        return "osc9"
+    if term.startswith(("foot", "rxvt")) or os.environ.get("VTE_VERSION"):
+        return "osc777"
+    return "bell"
+
+
+def notify_seq(style, title, body):
+    """The escape sequence for a notification. The text is partly the agent's (the request), so
+    control characters (ESC, BEL, ...) are dropped: they'd let it write to your terminal."""
+    clean = lambda t: re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", t)[:200]
+    title, body = clean(title), clean(body)
+    if style == "osc9":
+        return f"\x1b]9;{title}: {body}\x1b\\"
+    if style == "osc99":
+        return f"\x1b]99;;{title}: {body}\x1b\\"
+    if style == "osc777":
+        return f"\x1b]777;notify;{title.replace(';', ',')};{body.replace(';', ',')}\x1b\\"
+    return ""
+
+
+def notify_terminal(style, title, body):
+    seq = notify_seq(style, title, body)
+    if seq:
+        try:
+            os.write(1, seq.encode())
+        except OSError:
+            pass
 
 
 def tui_rows(view, st):
@@ -123,6 +165,7 @@ def run(scr):
                       pending=curses.color_pair(3) | curses.A_BOLD, grant=curses.color_pair(4),
                       head=curses.color_pair(4) | curses.A_BOLD)
     view, sel, top, msg, msg_t, seen, st, err = "requests", None, 0, "", 0, None, None, None
+    notify = None if notify_style() == "none" else notify_style()
     press = curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED
     wheel_up = getattr(curses, "BUTTON4_PRESSED", 0)
     wheel_down = getattr(curses, "BUTTON5_PRESSED", 0)
@@ -142,7 +185,10 @@ def run(scr):
             err = f"broker not reachable: {e}"
         pend_ids = {e["id"] for e in st["pending"]} if st else set()
         if seen is not None and pend_ids - seen:
-            curses.beep()
+            if notify:
+                curses.beep()
+                e = next(e for e in st["pending"] if e["id"] == min(pend_ids - seen))
+                notify_terminal(notify, f"apod broker: {e.get('name') or e['profile']} asks", e["request"])
             if view == "requests":
                 sel = ("ev", min(pend_ids - seen))
         seen = pend_ids

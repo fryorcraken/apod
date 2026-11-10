@@ -422,6 +422,14 @@ class BrokerTest(unittest.TestCase):
         self.assertRegex(r.stdout, rf"loaded +{key} +keyprof \[ssh\]")
         self.assertIn("nothing to load", r.stderr)
 
+    def test_terminal_notifications_drop_control_characters(self):
+        sys.path.insert(0, str(HERE / "broker"))
+        os.environ.setdefault("APOD_ROOT", str(self.root))
+        import tui
+        seq = tui.notify_seq("osc777", "a;b", "evil\x1b]0;pwned\x07 x")
+        self.assertEqual(seq, "\x1b]777;notify;a,b;evil ]0,pwned  x\x1b\\")
+        self.assertEqual(tui.notify_seq("bell", "t", "b"), "")
+
     def test_links_in_text_are_not_targets(self):
         body = "see https://github.com/other/research and https://github.com/orgs/other/projects/3"
         out = self.ran("issue", "create", "--title", "https://github.com/other/x", "--body", body)
@@ -766,7 +774,7 @@ class BrokerTest(unittest.TestCase):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 120, 0, 0))
         ui = subprocess.Popen([sys.executable, BROKER, "ui"], stdin=slave, stdout=slave, stderr=slave,
-                              env=dict(self.env, TERM="xterm-256color"), start_new_session=True)
+                              env=dict(self.env, TERM="xterm-256color", APOD_BROKER_NOTIFY="osc9"), start_new_session=True)
         os.close(slave)
         screen = b""
 
@@ -791,6 +799,8 @@ class BrokerTest(unittest.TestCase):
                              env=dict(self.env, APOD_BROKER_SOCK=str(Path(self.sess["dir"]) / "broker.sock")),
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.assertTrue(read_until(b"release delete v8"))
+        # A request arriving while the TUI runs: a desktop notification through the terminal.
+        self.assertTrue(read_until(b"\x1b]9;apod broker: test asks: gh release delete v8"), screen[-500:])
         time.sleep(0.5)
         os.write(master, b"\x1b[<0;3;30M\x1b[<0;3;30m")
         o, e = p.communicate(timeout=10)

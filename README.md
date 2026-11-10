@@ -298,7 +298,11 @@ follows every request with its decision. Some gh commands are never allowed: `au
 
 In the TUI: view 1 lists waiting requests (with the seconds left) above recent ones, with the
 selected request's actions, targets and reason below; `a` allows once, `s` for the session, `r`
-for the role, `d` denies, and it beeps and jumps to a new waiting request. View 2 lists
+for the role, `d` denies. On a new waiting request it jumps to it, rings the bell and asks the
+terminal for a desktop notification: `OSC 9` for Ghostty, iTerm2 and WezTerm, `OSC 99` for
+kitty, `OSC 777` for foot, rxvt and VTE terminals (GNOME Terminal, Ptyxis), else just the bell.
+`APOD_BROKER_NOTIFY` (`osc9`, `osc99`, `osc777`, `bell`, `none`) overrides the guess, e.g.
+inside a multiplexer. The broker also calls `notify-send` itself when it's installed. View 2 lists
 sessions with their scope and grants (`x` removes one), view 3 the role grants (`x` removes
 one). Tab or 1–3 switch views, `q` quits. The mouse works too: click a tab, a row, or a button in
 the footer (each shows its key); the wheel scrolls. While the TUI has the mouse, hold Shift to
