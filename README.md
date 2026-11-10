@@ -432,6 +432,7 @@ The provider object:
 | `routes` | `[(method, path prefix, handler)]`, matched in registration order. `/whoami` is the core's. |
 | `listen(sess)` | Optional. Start extra servers in `sess.dir` (mounted in the pod), e.g. a socket that isn't HTTP; return them so the core stops them with the session. `ssh` uses this for its agent. |
 | `close(session_id)` | Optional. Clean up when a pod's session ends. |
+| `keys(cfg)` | Optional. The keys a `broker.toml` table names, `[(path, confirm)]`, for `apod broker keys` to list and load before any pod starts. |
 
 What `configure` can add to `out`. `apod` applies each of these to the pod:
 
