@@ -55,28 +55,29 @@ case ${1:-} in
     shift; [ $# -ge 1 ] || set -- ui
     exec python3 "$apoddir/apod-broker" "$@" ;;
   selinux)
-    # Let pods that use a socket on the host (broker, ssh-key) keep SELinux labelling: load the
-    # apod_container type (selinux/apod_container.cil), or remove it. Without it, those pods run
-    # with labelling off.
+    # Let pods that use a socket on the host (broker, ssh-key) keep SELinux labelling: load
+    # selinux/apod.cil, which lets containers connect to those sockets, or remove it. Without it,
+    # those pods run with labelling off.
     sroot=${APOD_ROOT:-$HOME/.agent-pod}; mark=$sroot/selinux
     case ${2:-status} in
       install)
         if ! { command -v selinuxenabled >/dev/null && selinuxenabled; }; then
           echo "apod: SELinux isn't enabled on this host: nothing to do" >&2; exit 1
         fi
-        base=/usr/share/udica/templates/base_container.cil
-        [ -f "$base" ] || { echo "apod: this needs udica's container template: sudo dnf install udica" >&2; exit 1; }
-        echo "apod: loading the apod_container SELinux module: sudo semodule -i ..." >&2
-        sudo semodule -i "$apoddir/selinux/apod_container.cil" "$base" || exit 1
-        mkdir -p "$sroot"; echo apod_container.process > "$mark"
-        echo "apod: pods with a host socket now keep SELinux labelling (type apod_container.process)."
+        echo "apod: loading the apod SELinux module: sudo semodule -i $apoddir/selinux/apod.cil" >&2
+        sudo semodule -i "$apoddir/selinux/apod.cil" || exit 1
+        sudo semodule -r apod_container >/dev/null 2>&1 || true  # the first version's module
+        mkdir -p "$sroot"; echo apod > "$mark"
+        echo "apod: pods with a host socket now keep SELinux labelling (as container_t)."
         echo "apod: restart the broker so it runs at level s0: apod broker restart" ;;
       remove)
-        sudo semodule -r apod_container || true
+        sudo semodule -r apod || true
+        sudo semodule -r apod_container >/dev/null 2>&1 || true
         rm -f "$mark"
         echo "apod: removed: pods with a host socket run without SELinux labelling again. Then: apod broker restart" ;;
       status)
-        if [ -f "$mark" ]; then echo "apod: pods with a host socket run as $(head -n1 "$mark")"
+        if [ "$(head -n1 "$mark" 2>/dev/null)" = apod ]; then echo "apod: pods with a host socket keep SELinux labelling (module apod)"
+        elif [ -f "$mark" ]; then echo "apod: an old version of the module is installed: apod selinux install replaces it"
         else echo "apod: pods with a host socket run without SELinux labelling (apod selinux install changes that)"; fi
         if command -v getenforce >/dev/null; then echo "SELinux: $(getenforce)"; fi ;;
       *) echo "usage: apod selinux [install|remove|status]" >&2; exit 2 ;;
@@ -404,10 +405,15 @@ if [ -n "$usebroker" ]; then
   bproviders=" $(jq -r '.providers | join(" ")' <<< "$binfo") "
   # Keys the broker's agent doesn't hold yet: ssh-add asks for their passphrases here.
   agentsock=$(jq -r .agent <<< "$binfo")
+  ttyin=/dev/tty; { : < /dev/tty; } 2>/dev/null || ttyin=/dev/null
   while IFS=$'\t' read -r kpath kconfirm; do
     [ -n "$kpath" ] || continue
     addopts=(-q -t "${APOD_SSH_TTL:-4h}"); [ "$kconfirm" = true ] && addopts+=(-c)
-    SSH_AUTH_SOCK=$agentsock ssh-add "${addopts[@]}" "$kpath" || echo "apod: couldn't load $kpath into the broker's agent" >&2
+    if [ "$kconfirm" = true ] && [ -z "${SSH_ASKPASS:-}" ] && [ ! -x /usr/libexec/openssh/ssh-askpass ]; then
+      echo "apod: $kpath has confirm = true, which needs ssh-askpass to ask you on each use: sudo dnf install openssh-askpass" >&2
+    fi
+    # stdin: the terminal, for the passphrase (the loop's stdin is the list of keys).
+    SSH_AUTH_SOCK=$agentsock ssh-add "${addopts[@]}" "$kpath" < "$ttyin" || echo "apod: couldn't load $kpath into the broker's agent" >&2
   done < <(jq -r '.need_keys[] | [.path, .confirm] | @tsv' <<< "$binfo")
   mounts+=(-v "$(jq -r .dir <<< "$binfo"):$(jq -r .pod_dir <<< "$binfo"):z"
     -v "$apoddir/broker/pod-shim:/usr/local/bin/apod-git-forward:ro,z")
@@ -478,10 +484,14 @@ case $agent in claude|opencode) export HERDR_AGENT=$agent ;; esac
 
 # SELinux for pods with a socket on the host (broker, ssh-key): by default it blocks a container
 # from connecting to a host process's socket, so these pods run without labelling, unless
-# apod selinux install has loaded a container type that may (apod_container.process). Without
-# labelling, relabelling their mounts (:z) does nothing useful, and it fails on files you don't own.
-seltype=; [ -f "$root/selinux" ] && seltype=$(head -n1 "$root/selinux" | tr -d '[:space:]')
-if [ -n "$seltype" ]; then sockopts=(--security-opt "label=type:$seltype"); else sockopts=(--security-opt label=disable); fi
+# apod selinux install has loaded the module that allows it (selinux/apod.cil): they then run as
+# ordinary containers. Without labelling, relabelling their mounts (:z) does nothing useful, and
+# it fails on files you don't own.
+seltype=; [ "$(head -n1 "$root/selinux" 2>/dev/null)" = apod ] && seltype=apod
+if [ -f "$root/selinux" ] && [ -z "$seltype" ] && { [ -n "$bsid" ] || [ -n "$sshkey" ]; }; then
+  echo "apod: the SELinux module is an old version, which breaks these pods: run apod selinux install again (running this pod without labelling)" >&2
+fi
+if [ -n "$seltype" ]; then sockopts=(); else sockopts=(--security-opt label=disable); fi
 if { [ -n "$bsid" ] || [ -n "$sshkey" ]; } && [ -z "$seltype" ]; then
   for i in "${!mounts[@]}"; do
     m=${mounts[$i]}; [ "$m" = -v ] && continue
@@ -532,7 +542,7 @@ if [ -z "$sshkey" ]; then "${run[@]}" "${cmdline[@]}"; exit; fi
 
 # Dedicated ssh-agent for this run: asks for the key's passphrase here, drops the key after
 # $APOD_SSH_TTL (default 4h), confirms each use if the profile has an ssh-confirm file, and is
-# killed when the pod exits. SELinux: see sockopts above; with apod_container, the agent runs at
+# killed when the pod exits. SELinux: see sockopts above; with the module, the agent runs at
 # level s0 so that the pod may connect to it.
 adir=$root/$profile/agent; mkdir -p "$adir"; chmod 700 "$adir"
 sock=$adir/ssh-$$.sock

@@ -1,0 +1,12 @@
+; apod: lets containers connect to the apod broker's sockets (and a per-run ssh-agent's), so pods
+; that use them keep SELinux labelling as ordinary containers (container_t).
+;
+; One rule: container_t may connect to unix sockets served by unconfined processes. What a pod
+; can reach is still limited twice over: the socket file has to be mounted into it and relabelled
+; (:z, which apod does for its own sockets only), and MCS only lets a container connect to a
+; process at a level its categories dominate. apod runs the broker and per-run ssh-agents at plain
+; s0; your login session's processes run at s0-s0:c0.c1023, out of a container's reach.
+;
+; Install: apod selinux install (sudo semodule -i this file). Remove: apod selinux remove.
+(allow container_t unconfined_t (unix_stream_socket (connectto)))
+(allow container_t container_file_t (sock_file (getattr write)))

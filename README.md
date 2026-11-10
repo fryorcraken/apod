@@ -225,7 +225,7 @@ user = "fryorcraken"            # host gh account (gh auth login --hostname gith
 key = "~/.ssh/id_apod_broker_sign" # its .pub next to it; commit.gpgsign and tag.gpgsign on (auto = false: off)
 
 [ssh]
-key = "~/.ssh/id_apod_broker" # or keys = [...]; confirm = true to confirm each use on the host
+key = "~/.ssh/id_apod_broker" # or keys = [...]; confirm = true: confirm each use (needs openssh-askpass)
 hosts = ["devbox", "root@nas"]     # a host's name in the host's ~/.ssh/config, any user or USER@
 proxy = true                    # connect through the broker (the default); false: the pod connects itself
 
@@ -380,12 +380,13 @@ exception: SELinux stops a container from connecting to a socket of one of your 
 by default these pods run with labelling off (`label=disable`, and their mounts aren't
 relabelled).
 
-`apod selinux install` lets them keep it. It loads a small policy module,
-[`selinux/apod_container.cil`](selinux/apod_container.cil): an ordinary container type built from
-udica's template, plus permission to connect to sockets of your own processes. It needs `udica`
-(`sudo dnf install udica`) and sudo for `semodule`. These pods then run as
-`apod_container.process` with relabelled mounts, and the broker and per-run ssh-agents run at the
-plain `s0` level, which SELinux requires for a container to connect to them:
+`apod selinux install` lets them keep it. It loads a one-rule policy module,
+[`selinux/apod.cil`](selinux/apod.cil), with sudo: containers (`container_t`) may connect to unix
+sockets of unconfined processes. These pods then run as ordinary containers with relabelled
+mounts, and the broker and per-run ssh-agents run at the plain `s0` level. That's what limits the
+rule to apod's sockets: a container can only reach a socket file mounted into it and relabelled
+(apod does that for its own sockets only), served by a process at a level its categories
+dominate, which `s0` is and your login session's processes (`s0-s0:c0.c1023`) aren't.
 
 ```sh
 apod selinux install       # sudo semodule -i ...; records it in ~/.agent-pod/selinux

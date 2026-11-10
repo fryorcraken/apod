@@ -953,8 +953,8 @@ def ensure(script):
     cmd = [sys.executable, str(script), "serve"]
     if (ROOT / "selinux").exists() and shutil.which("runcon") and shutil.which("selinuxenabled") \
             and subprocess.run(["selinuxenabled"]).returncode == 0:
-        # apod selinux install: pods run as apod_container, which may connect to the broker's
-        # sockets if it runs at s0 (a container can only reach a peer its categories dominate).
+        # apod selinux install: pods may connect to the broker's sockets if it runs at s0 (MCS:
+        # a container can only reach a peer its categories dominate).
         cmd = ["runcon", "-l", "s0", *cmd]
     with (BDIR / "broker.log").open("a") as log:
         subprocess.Popen(cmd, stdin=subprocess.DEVNULL,

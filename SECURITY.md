@@ -168,8 +168,10 @@ The broker turns each request into actions and targets, and checks them before a
   Private data in scope is readable.
 - **SELinux is off for broker pods unless you install apod's module.** By default they run with
   `label=disable`, because SELinux stops a container from connecting to the broker's socket; the
-  same goes for pods with an `ssh-key`. `apod selinux install` loads a container type that may
-  connect to your own processes' sockets, so these pods keep SELinux labelling. Other pods always
+  same goes for pods with an `ssh-key`. `apod selinux install` loads a one-rule module that lets
+  containers connect to sockets of unconfined processes, limited in practice to sockets mounted
+  into a pod and served at level `s0` (the broker, per-run ssh-agents), so these pods keep SELinux
+  labelling as ordinary containers. Other pods always
   keep it.
 - **Denial of service.** There is no rate limit: a pod can flood you with approval requests or
   notifications. Deny them, and stop the pod.
