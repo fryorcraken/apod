@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from core import (AGENT, BDIR, SHIM, BrokerError, Request, check, matches, need_key, provider, read_body,
+from core import (AGENT, BDIR, POD_DIR, SHIM, BrokerError, Request, check, matches, need_key, provider, read_body,
                   rejected_msg, remote_target, role_rules, scope_kind)
 
 
@@ -124,6 +124,11 @@ class SignProvider:
         out["mounts"].append([str(SHIM), "/usr/local/bin/apod-sign", "ro"])
         out["git_config"] += [["gpg.format", "ssh"], ["gpg.ssh.program", "/usr/local/bin/apod-sign"],
                               ["user.signingkey", f"key::{line}"]]
+        # So git log --show-signature and verify-commit in the pod accept the profile's own signatures.
+        emails = sess.identity.get("emails") or ["*"]
+        sess.dir.mkdir(parents=True, exist_ok=True)
+        (sess.dir / "allowed_signers").write_text("".join(f'{e} namespaces="git" {line}\n' for e in emails))
+        out["git_config"].append(["gpg.ssh.allowedSignersFile", f"{POD_DIR}/allowed_signers"])
         if cfg.get("auto", True):
             out["git_config"] += [[f"{a}.gpgsign", "true"] for a in ("commit", "tag") if signs[a]]
         on = " and ".join(f"{a}s" for a in ("commit", "tag") if signs[a])

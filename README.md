@@ -381,6 +381,64 @@ git push rad HEAD:refs/patches -o patch.message="broker test"
 gh pr merge 1                                      # waits: approve or deny in apod broker
 ```
 
+### Signing commits
+
+Pods sign commits and tags with an SSH key that stays on the host (the `sign` extension).
+Setting it up for a profile:
+
+1. **A key** for pods' signatures. Use a separate one from yours if a "Verified" badge should
+   tell your commits apart from a pod's:
+
+   ```sh
+   ssh-keygen -t ed25519 -f ~/.ssh/id_apod_broker_sign -C "apod pods"
+   ```
+
+2. **The identity** the signatures vouch for, in the profile's `env`. For GitHub to show
+   "Verified", the email has to be a verified email of the GitHub account in step 5:
+
+   ```sh
+   # ~/.agent-pod/work/env
+   GIT_AUTHOR_NAME=Work Bot
+   GIT_AUTHOR_EMAIL=bot@example.com
+   ```
+
+3. **The key in `broker.toml`**, in the profile's file or in `~/.agent-pod/broker.toml` for every
+   profile:
+
+   ```toml
+   [sign]
+   key = "~/.ssh/id_apod_broker_sign"   # its .pub next to it
+   confirm = true                       # optional: confirm each signature on the host (needs openssh-askpass)
+   auto = false                         # optional: don't turn on commit.gpgsign, even for roles that sign
+   ```
+
+4. **A role that signs, and a scope that covers the repository.**
+   - Role: `dev`, `maintainer` and `ops` sign every commit and tag. With `reader` or `pm`,
+     `git commit -S` waits for your approval. Your own roles get it with `sign:commit` and
+     `sign:tag`.
+   - Scope: the repository's push remote (`gh:OWNER/REPO` or `rad:RID`). The project folder is
+     always in scope, as `git-local:PATH`, for repositories without a GitHub or Radicle remote.
+   - Anything else waits for approval: another repository, or a commit by someone other than the
+     profile's identity (`sign:as other`).
+
+5. **The public key on GitHub, as a signing key** (not an authentication key). Add it on the host
+   to the account whose email is in `env`:
+
+   ```sh
+   gh ssh-key add ~/.ssh/id_apod_broker_sign.pub --type signing --title "apod pods"
+   ```
+
+The first launch after that loads the key into the broker's agent and asks for its passphrase.
+After a broker restart, run `apod broker keys`. Then, in a pod:
+
+```sh
+git commit --allow-empty -m "signing test" && git log --show-signature -1   # Good "git" signature for bot@example.com
+```
+
+`git log --show-signature` and `git verify-commit` work in the pod because the broker gives it an
+allowed-signers file with the profile's key and emails (`gpg.ssh.allowedSignersFile`). On the
+host, verify with your own allowed-signers file, or on GitHub.
+
 ### Mounts
 
 ```

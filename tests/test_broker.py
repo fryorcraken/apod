@@ -647,6 +647,8 @@ class BrokerTest(unittest.TestCase):
         self.assertIn("Role reader doesn't sign", reader["context"])
         sess = self.register("dev", ["gh:acme/widget"], toml=toml)
         self.assertIn(["commit.gpgsign", "true"], sess["git_config"])
+        self.assertIn(["gpg.ssh.allowedSignersFile", "/run/apod-broker/allowed_signers"], sess["git_config"])
+        self.assertIn("namespaces=\"git\" ssh-", (Path(sess["dir"]) / "allowed_signers").read_text())
         e = self.pod_env(sess)
 
         def commit(repo, *extra, remote=None):
