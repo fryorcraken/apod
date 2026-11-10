@@ -205,6 +205,26 @@ apod work --persona maintainer --scope fryorcraken/* ~/src/org/repo
 apod broker                                        # approve requests in a terminal UI
 ```
 
+**Settings for every profile.** `~/.agent-pod/broker.toml` has the same format, and its values
+apply to every profile that uses the broker. A profile's `broker.toml` overrides it key by key
+within each table, so you can set one ssh key for all pods and choose hosts per profile or per
+launch:
+
+```toml
+# ~/.agent-pod/broker.toml
+[ssh]
+key = "~/.ssh/id_apod_broker"
+[sign]
+key = "~/.ssh/id_apod_broker"
+```
+
+```sh
+apod ops --persona ops --scope ssh:fatso --scope ssh:root@q ~/src/infra   # these two hosts only
+```
+
+A pod uses the broker when its profile has a `broker.toml` or the launch passes `--persona`. The
+global file alone doesn't switch token profiles to the broker.
+
 **Keys** (ssh, signing, and the Radicle key in `home/keys/radicle`) live in the broker's own
 ssh-agent, never in the pod. At launch, apod loads the ones it doesn't hold yet with `ssh-add`,
 which asks for their passphrases (they expire after `APOD_SSH_TTL`, default `4h`). After a broker

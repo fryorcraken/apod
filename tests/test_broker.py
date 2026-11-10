@@ -283,7 +283,7 @@ class BrokerTest(unittest.TestCase):
         (pdir / "env").write_text("GIT_AUTHOR_NAME=Agent\nGIT_AUTHOR_EMAIL=agent@example.com\n"
                                   "GIT_COMMITTER_NAME=Agent\nGIT_COMMITTER_EMAIL=agent@example.com\n")
         (pdir / "broker.toml").write_text((f'[gh]\nuser = "{user}"\n' if user else "") + toml)
-        args = ["register", "--profile", "test", "--profile-dir", str(pdir), "--persona", persona, "--project", "/p"]
+        args = ["register", "--profile", "test", "--profile-dir", str(pdir), "--project", "/p"] + (["--persona", persona] if persona else [])
         for s in scope:
             args += ["--scope", s]
         for u in remotes:
@@ -607,6 +607,23 @@ class BrokerTest(unittest.TestCase):
     def login_data(self, sid, user, key):
         return sshstr(sid) + bytes([50]) + sshstr(user.encode()) + sshstr(b"ssh-connection") + \
             sshstr(b"publickey") + b"\1" + sshstr(b"ssh-ed25519") + sshstr(key)
+
+    def test_global_config_and_hosts_per_launch(self):
+        (self.root / "broker.toml").write_text(f'persona = "ops"\n[ssh]\nkey = "{self.tmp}/userkey"\n')
+        self.addCleanup((self.root / "broker.toml").unlink)
+        # The global key, hosts from the launch (--scope ssh:...), persona from the global file.
+        sess = self.register("", ["ssh:fatso", "ssh:root@q"])
+        self.assertEqual(sess["persona"], "ops")
+        self.assertIn("ssh", sess["providers"])
+        self.assertEqual([s for s in sess["scope"] if s.startswith("ssh:")], ["ssh:fatso", "ssh:root@q"])
+        self.assertEqual(sess["env"]["SSH_AUTH_SOCK"], f"{sess['pod_dir']}/agent.sock")
+        # A profile's table merges over the global one: its hosts, the global key.
+        sess = self.register("dev", [], toml='[ssh]\nhosts = ["fatso"]\n')
+        self.assertEqual(sess["persona"], "dev")
+        self.assertIn("ssh:fatso", sess["scope"])
+        self.assertEqual(Agent(Path(sess["dir"]) / "agent.sock").identities(), [blob_of(self.tmp / "userkey.pub")])
+        r = self.admin("keys")
+        self.assertRegex(r.stdout, rf"{self.tmp}/userkey +all profiles \[ssh\]\n")
 
     def test_ssh_agent_signs_only_for_hosts_in_scope(self):
         sess = self.register("ops", [], toml=f'[ssh]\nkey = "{self.tmp}/userkey"\nhosts = ["fatso"]\n')

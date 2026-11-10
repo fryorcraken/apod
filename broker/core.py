@@ -48,6 +48,7 @@ if ASK_TIMEOUT.is_integer():
 # GitHub kinds: OWNER/REPO and OWNER). Providers add their own with scope_kind().
 SCOPE_KINDS = ["repo", "owner", "project", "rad", "host", "identity"]
 SCOPE_PREFIX = {"project": "project:", "rad": "rad:", "host": "ssh:", "identity": "email:"}
+GLOBAL_CONFIG = ROOT / "broker.toml"   # defaults for every profile's broker.toml
 EXTENSIONS = ROOT / "broker-extensions"  # the user's own providers, *.py, loaded after the built-in ones
 
 
@@ -644,18 +645,35 @@ def read_env_file(path):
     return env
 
 
+def read_toml(f):
+    try:
+        return tomllib.loads(f.read_text()) if f.exists() else {}
+    except tomllib.TOMLDecodeError as e:
+        raise BrokerError(f"{f}: {e}")
+
+
+def merge_config(base, over):
+    """A profile's broker.toml over the global one: tables merge key by key, and any other value
+    (persona, scope, a table's key or hosts) in the profile replaces the global one."""
+    out = dict(base)
+    for k, v in over.items():
+        out[k] = merge_config(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+    return out
+
+
+def load_config(pdir):
+    return merge_config(read_toml(GLOBAL_CONFIG), read_toml(Path(pdir) / "broker.toml"))
+
+
 def register(r):
     sid = r.get("id") or secrets.token_hex(6)
     if not re.fullmatch(r"[A-Za-z0-9_-]{4,64}", sid):
         raise BrokerError("bad session id")
     pdir = Path(r.get("profile_dir") or ROOT / r.get("profile", ""))
-    try:
-        cfg = tomllib.loads((pdir / "broker.toml").read_text()) if (pdir / "broker.toml").exists() else {}
-    except tomllib.TOMLDecodeError as e:
-        raise BrokerError(f"{pdir / 'broker.toml'}: {e}")
+    cfg = load_config(pdir)
     persona = r.get("persona") or cfg.get("persona") or ""
     if not persona:
-        raise BrokerError(f"no persona: set persona in {pdir / 'broker.toml'} or pass --persona")
+        raise BrokerError(f"no persona: set persona in {pdir / 'broker.toml'} (or {GLOBAL_CONFIG}) or pass --persona")
     persona_rules(persona)  # fails on an unknown persona
     env = read_env_file(pdir / "env")
     identity = {"name": env.get("GIT_COMMITTER_NAME") or env.get("GIT_AUTHOR_NAME", ""),
@@ -732,19 +750,24 @@ def key_report():
         k["confirm"] = k["confirm"] or bool(confirm)
         if user not in k["users"]:
             k["users"].append(user)
-    for f in sorted(ROOT.glob("*/broker.toml")):
+    for f in [GLOBAL_CONFIG] + sorted(ROOT.glob("*/broker.toml")):
         try:
-            cfg = tomllib.loads(f.read_text())
-        except (OSError, tomllib.TOMLDecodeError):
+            cfg = read_toml(f) if f == GLOBAL_CONFIG else load_config(f.parent)
+        except (OSError, BrokerError):
             continue
+        who = "all profiles" if f == GLOBAL_CONFIG else f.parent.name
         for p in PROVIDERS.values():
             if hasattr(p, "keys") and isinstance(cfg.get(p.name), dict):
                 for path, confirm in p.keys(cfg[p.name]):
-                    note(path, confirm, f"{f.parent.name} [{p.name}]")
+                    path = str(expand(path))
+                    if f != GLOBAL_CONFIG and any(u.startswith("all profiles [")
+                                                  for u in keys.get(path, {}).get("users", [])):
+                        continue  # inherited from the global file
+                    note(path, confirm, f"{who} [{p.name}]")
     for s in SESSIONS.values():
         for k in s.cfg.get("_keys", []):
             listed = keys.get(k["path"], {}).get("users", [])
-            if not any(u.startswith(f"{s.profile} [") for u in listed):
+            if not any(u.startswith((f"{s.profile} [", "all profiles [")) for u in listed):
                 note(k["path"], k["confirm"], f"{s.profile} (running pod)")
     for k in keys.values():
         try:
@@ -959,8 +982,8 @@ def main(argv, script):
             ensure(script)
             r = client("/keys", {})
             if not r["keys"]:
-                print("apod broker: no keys to load: no profile's broker.toml names one ([ssh] key or keys, "
-                      "[sign] key, [rad] key) and no running pod uses one", file=sys.stderr)
+                print(f"apod broker: no keys to load: neither {GLOBAL_CONFIG} nor a profile's broker.toml names one "
+                      "([ssh] key or keys, [sign] key, [rad] key), and no running pod uses one", file=sys.stderr)
                 return 0
             home = os.path.expanduser("~")
             short = lambda p: "~" + p[len(home):] if p.startswith(home + "/") else p
