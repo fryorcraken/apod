@@ -8,10 +8,12 @@ not the agent, is the security boundary.
 
 ## Why
 
-I run Claude Code with `blockReadsOutsideWorkingDirectories` on, so it can't read outside the
-folders I've allowed. That works well until the work involves scripting: every command that isn't on the allowlist
-stops for a permission prompt, and a session turns into death by a thousand approvals. Approving
-them without reading defeats the point, and loosening the rule gives away the scope.
+I run Claude Code with `permissions.blockReadsOutsideWorkingDirectories` on, so it can't read
+outside the folders I've allowed. That works well until the work involves scripting. Simple
+commands go through, but Claude Code's permission analysis can't fully parse complex ones: pipes
+into loops, command substitutions, variables, inline scripts. It can't tell whether they stay
+within the working directories, so it asks. A session turns into death by a thousand approvals.
+Approving them without reading defeats the point, and loosening the rule gives away the scope.
 
 apod moves the boundary instead. The agent runs in a rootless container that only has the
 project folder and what the profile mounts, so it can run anything without asking, and what it
