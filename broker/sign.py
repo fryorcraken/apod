@@ -77,6 +77,9 @@ class SignProvider:
     name = "sign"
     routes = [("POST", "/sign", handle)]
 
+    def keys(self, cfg):
+        return [(cfg["key"], cfg.get("confirm", False))] if cfg.get("key") else []
+
     def configure(self, sess, cfg, reg, out):
         if not cfg.get("key"):
             return False

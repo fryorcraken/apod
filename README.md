@@ -208,7 +208,9 @@ apod broker                                        # approve requests in a termi
 **Keys** (ssh, signing, and the Radicle key in `home/keys/radicle`) live in the broker's own
 ssh-agent, never in the pod. At launch, apod loads the ones it doesn't hold yet with `ssh-add`,
 which asks for their passphrases (they expire after `APOD_SSH_TTL`, default `4h`). After a broker
-restart, `apod broker keys` loads them again. One key can serve several hosts: the destination is
+restart, `apod broker keys` loads them again; it lists every key the profiles' `broker.toml`
+files and running pods use, and loads the missing ones, so you can also load them before
+launching. One key can serve several hosts: the destination is
 checked per login, so there's no need for a key per host.
 
 **Personas** (`personas.toml` in this checkout; override or add your own in

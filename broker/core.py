@@ -721,6 +721,39 @@ def needed_keys():
     return need
 
 
+def key_report():
+    """Every key the broker's agent should hold: those named in a profile's broker.toml (by each
+    provider's keys(cfg)) and those running pods use. [{path, confirm, users, loaded, error}]."""
+    have, keys = agent_keys(), {}
+
+    def note(path, confirm, user):
+        p = str(expand(path))
+        k = keys.setdefault(p, {"path": p, "confirm": False, "users": []})
+        k["confirm"] = k["confirm"] or bool(confirm)
+        if user not in k["users"]:
+            k["users"].append(user)
+    for f in sorted(ROOT.glob("*/broker.toml")):
+        try:
+            cfg = tomllib.loads(f.read_text())
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        for p in PROVIDERS.values():
+            if hasattr(p, "keys") and isinstance(cfg.get(p.name), dict):
+                for path, confirm in p.keys(cfg[p.name]):
+                    note(path, confirm, f"{f.parent.name} [{p.name}]")
+    for s in SESSIONS.values():
+        for k in s.cfg.get("_keys", []):
+            listed = keys.get(k["path"], {}).get("users", [])
+            if not any(u.startswith(f"{s.profile} [") for u in listed):
+                note(k["path"], k["confirm"], f"{s.profile} (running pod)")
+    for k in keys.values():
+        try:
+            k["loaded"] = pubkey_of(k["path"])[1] in have
+        except BrokerError as e:
+            k["loaded"], k["error"] = False, str(e)
+    return list(keys.values())
+
+
 def admin_call(path, body):
     if path == "/register":
         return register(body)
@@ -749,7 +782,7 @@ def admin_call(path, body):
     if path == "/state":
         return state()
     if path == "/keys":
-        return {"need_keys": needed_keys(), "agent": str(AGENT)}
+        return {"keys": key_report(), "need_keys": needed_keys(), "agent": str(AGENT)}
     if path == "/stop":
         def stop():
             time.sleep(0.2)
@@ -868,11 +901,16 @@ def ensure(script):
 
 
 def add_keys(keys, agent, ttl=None):
-    """Load keys into the broker's agent; ssh-add asks for passphrases on this terminal."""
+    """Load keys into the broker's agent; ssh-add asks for passphrases on this terminal. Returns
+    how many loaded."""
+    n = 0
     for k in keys:
         cmd = ["ssh-add", "-q", "-t", ttl or os.environ.get("APOD_SSH_TTL", "4h")] + (["-c"] if k.get("confirm") else []) + [k["path"]]
         if subprocess.call(cmd, env=dict(os.environ, SSH_AUTH_SOCK=agent)):
             print(f"apod broker: couldn't load {k['path']}", file=sys.stderr)
+        else:
+            n += 1
+    return n
 
 
 def fmt_time(ts):
@@ -920,9 +958,24 @@ def main(argv, script):
         elif cmd == "keys":
             ensure(script)
             r = client("/keys", {})
-            add_keys(r["need_keys"], r["agent"])
-            if not r["need_keys"]:
-                print("apod broker: the broker's agent has every key the sessions use", file=sys.stderr)
+            if not r["keys"]:
+                print("apod broker: no keys to load: no profile's broker.toml names one ([ssh] key or keys, "
+                      "[sign] key, [rad] key) and no running pod uses one", file=sys.stderr)
+                return 0
+            home = os.path.expanduser("~")
+            short = lambda p: "~" + p[len(home):] if p.startswith(home + "/") else p
+            width = max(len(short(k["path"])) for k in r["keys"])
+            print(f"apod broker: keys for the broker's agent ({short(r['agent'])})")
+            for k in r["keys"]:
+                status = "loaded" if k["loaded"] else "error" if k.get("error") else "to load"
+                print(f"  {status:<8} {short(k['path']):<{width}}  {', '.join(k['users'])}"
+                      + (f"\n           {k['error']}" if k.get("error") else ""))
+            sys.stdout.flush()
+            todo = [k for k in r["keys"] if not k["loaded"] and not k.get("error")]
+            n = add_keys(todo, r["agent"])
+            print("apod broker: nothing to load" if not todo else
+                  f"apod broker: loaded {n} of {len(todo)} key(s), for {os.environ.get('APOD_SSH_TTL', '4h')}",
+                  file=sys.stderr)
         elif cmd in ("allow", "deny"):
             if not args:
                 sys.exit(f"usage: apod broker {cmd} ID" + (" [--session|--persona]" if cmd == "allow" else ""))

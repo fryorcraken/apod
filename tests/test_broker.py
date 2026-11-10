@@ -406,6 +406,20 @@ class BrokerTest(unittest.TestCase):
         # The broken extension was skipped, with a warning in the broker's log.
         self.assertIn("broken.py not loaded", (self.tmp / "broker.log").read_text())
 
+    def test_keys_lists_and_loads_profile_keys(self):
+        key = self.tmp / "profilekey"
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "pk", "-f", key], check=True)
+        (self.root / "keyprof").mkdir()
+        self.addCleanup(shutil.rmtree, self.root / "keyprof")
+        (self.root / "keyprof/broker.toml").write_text(f'[ssh]\nkey = "{key}"\nhosts = ["fatso"]\n')
+        r = self.admin("keys")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertRegex(r.stdout, rf"to load +{key} +keyprof \[ssh\]")
+        self.assertIn("loaded 1 of 1 key(s)", r.stderr)
+        r = self.admin("keys")
+        self.assertRegex(r.stdout, rf"loaded +{key} +keyprof \[ssh\]")
+        self.assertIn("nothing to load", r.stderr)
+
     def test_links_in_text_are_not_targets(self):
         body = "see https://github.com/other/research and https://github.com/orgs/other/projects/3"
         out = self.ran("issue", "create", "--title", "https://github.com/other/x", "--body", body)

@@ -281,6 +281,9 @@ class SSHProvider:
     name = "ssh"
     routes = [("CONNECT", "", handle_connect)]
 
+    def keys(self, cfg):
+        return [(k, cfg.get("confirm", False)) for k in cfg.get("keys") or ([cfg["key"]] if cfg.get("key") else [])]
+
     def configure(self, sess, cfg, reg, out):
         keys = cfg.get("keys") or ([cfg["key"]] if cfg.get("key") else [])
         if not keys:

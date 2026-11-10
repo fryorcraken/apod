@@ -211,6 +211,12 @@ class RadProvider:
     name = "rad"
     routes = [("GET", "/git/rad/", handle), ("POST", "/git/rad/", handle)]
 
+    def keys(self, cfg):
+        """The key pushes are signed with: [rad] key, else the identity's key in RAD_HOME."""
+        home = expand(cfg.get("home") or os.environ.get("RAD_HOME") or "~/.radicle")
+        key = cfg.get("key") or (str(home / "keys/radicle") if (home / "keys/radicle.pub").exists() else None)
+        return [(key, cfg.get("confirm", False))] if key else []
+
     def configure(self, sess, cfg, reg, out):
         rids = [m.group(1) for m in (RAD_URL.match(u) for u in reg.get("remotes", [])) if m]
         if not rids and not cfg:
