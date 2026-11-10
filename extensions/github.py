@@ -68,7 +68,7 @@ def handle(h, sess, method):
     upath = f"/{m.group(1)}/{m.group(2)}.git/{endpoint}" + (f"?{u.query}" if u.query else "")
     push = service == "git-receive-pack"
     req = Request("github", f"git {'push' if push else 'fetch'} github.com/{repo}")
-    req.targets = [("repo", repo)]
+    req.targets = [("gh", repo)]
 
     def forward():
         conn, resp = upstream_request(sess, method, upath, body, h, gzip_ok=not push)
@@ -76,7 +76,7 @@ def handle(h, sess, method):
 
     if not push:
         req.actions = ["github:fetch"]
-        if not sess.in_scope(("repo", repo)) and repo_info(sess, repo).get("private") is False:
+        if not sess.in_scope(("gh", repo)) and repo_info(sess, repo).get("private") is False:
             req.actions, req.targets = ["github:fetch public"], []
         if method == "POST":
             # Checked (and logged) at the ref advertisement; the negotiation rounds follow it.
@@ -88,7 +88,7 @@ def handle(h, sess, method):
     elif method == "GET":
         # The ref advertisement before a push: only the repository's scope matters here; the ref
         # updates themselves are checked when they come (POST).
-        if sess.in_scope(("repo", repo)):
+        if sess.in_scope(("gh", repo)):
             return forward()
         req.display += " (before a push)"
     else:

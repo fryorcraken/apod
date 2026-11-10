@@ -189,6 +189,42 @@ def blob_of(pubfile):
     return base64.b64decode(Path(pubfile).read_text().split()[1])
 
 
+TAGGER_EXT = textwrap.dedent('''
+    import json
+    from core import Request, check, provider, read_body, rejected_msg, scope_kind
+
+    scope_kind("tag", provider="tagger", help="tag:NAME (a test kind)")
+
+    def handle(h, sess, method):
+        req = Request("tagger", "tag")
+        req.actions, req.targets = ["tagger:tag"], [("tag", json.loads(read_body(h))["name"])]
+        ok, ev = check(sess, req)
+        return h.send_json({"ok": True} if ok else {"error": rejected_msg(req, ev)}, 200 if ok else 403)
+
+    class Tagger:
+        name = "tagger"
+        routes = [("POST", "/tag", handle)]
+
+        def configure(self, sess, cfg, reg, out):
+            return True
+
+    provider(Tagger())
+''')
+
+
+def unix_post(sock, path, body):
+    import http.client
+
+    class C(http.client.HTTPConnection):
+        def connect(self):
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.sock.connect(sock)
+    c = C("localhost", timeout=30)
+    c.request("POST", path, json.dumps(body), {"Content-Type": "application/json"})
+    r = c.getresponse()
+    return r.status, json.loads(r.read() or b"{}")
+
+
 class BrokerTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -204,10 +240,17 @@ class BrokerTest(unittest.TestCase):
         (bin_ / "git-remote-rad").chmod(0o755)
         for name in ("apod-git-forward", "apod-sign", "apod-ssh-connect"):
             os.symlink(SHIM, bin_ / name)
-        # The example extension, installed as a user would, and a notify-send that records its args.
-        (cls.root / "broker-extensions").mkdir()
-        os.symlink(HERE / "extensions/notify.py", cls.root / "broker-extensions/notify.py")
-        (cls.root / "broker-extensions/broken.py").write_text("raise RuntimeError('broken on purpose')\n")
+        # The user's extensions: one with a scope kind of its own, one that replaces the shipped
+        # notify (same name), one that's broken, one that takes a Python module's name; and a
+        # notify-send that records its args.
+        ext = cls.root / "broker-extensions"
+        ext.mkdir()
+        (ext / "tagger.py").write_text(TAGGER_EXT)
+        (ext / "notify.py").write_text((HERE / "extensions/notify.py").read_text()
+                                       .replace('Path(__file__).resolve().parent / "apod-notify"', f'Path("{HERE}/extensions/apod-notify")')
+                                       .replace("sends the user a desktop notification", "(the user's own) notifies the user"))
+        (ext / "broken.py").write_text("raise RuntimeError('broken on purpose')\n")
+        (ext / "json.py").write_text("raise RuntimeError('should never load')\n")
         (bin_ / "fake-notify").write_text(f"#!/bin/sh\nprintf '%s|' \"$@\" >> {cls.tmp}/notified\n")
         (bin_ / "fake-notify").chmod(0o755)
         cls.n = itertools.count()
@@ -262,7 +305,7 @@ class BrokerTest(unittest.TestCase):
                 break
             time.sleep(0.05)
         cls.addClassCleanup(cls.broker.kill)
-        cls.sess = cls.register("dev", ["acme/widget"])
+        cls.sess = cls.register("dev", ["gh:acme/widget"])
         # A clone of acme/widget, as in the pod.
         cls.work = cls.tmp / "work"
         subprocess.run(["git", "init", "-q", "-b", "feature", cls.work], check=True)
@@ -365,9 +408,9 @@ class BrokerTest(unittest.TestCase):
         self.assertIn("timed out", r.stderr)
 
     def test_agent_sees_permissions_and_session_name(self):
-        sess = self.register("pm", ["acme/widget", "project:acme/11"])
+        sess = self.register("pm", ["gh:acme/widget", "gh-project:acme/11"])
         self.assertIn("project item-edit", sess["context"])
-        self.assertIn("project:acme/11", sess["context"])
+        self.assertIn("gh-project:acme/11", sess["context"])
         self.assertIn("gh auth status", sess["context"])
         r = self.gh("auth", "status", sess=sess)
         self.assertIn("role pm", r.stdout)
@@ -392,11 +435,12 @@ class BrokerTest(unittest.TestCase):
     def test_extension(self):
         (self.root / "roles.toml").write_text('[roles.dev-notify]\nextends = ["dev"]\nnotify = ["send"]\n')
         self.addCleanup((self.root / "roles.toml").unlink)
-        sess = self.register("dev-notify", ["acme/widget"], toml=f'[notify]\nenabled = true\n'
+        sess = self.register("dev-notify", ["gh:acme/widget"], toml=f'[notify]\nenabled = true\n'
                              f'command = ["{self.tmp}/bin/fake-notify"]\n')
         self.assertIn("notify", sess["providers"])
         self.assertIn(["%s" % (HERE / "extensions/apod-notify"), "/usr/local/bin/apod-notify", "ro"], sess["mounts"])
         self.assertIn("  notify: send", sess["context"])
+        self.assertIn("(the user's own) notifies the user", sess["context"])  # the user's notify.py won
         e = dict(self.env, APOD_BROKER_SOCK=str(Path(sess["dir"]) / "broker.sock"))
         client = [sys.executable, HERE / "extensions/apod-notify"]
         r = subprocess.run([*client, "build", "done"], env=e, capture_output=True, text=True)
@@ -406,8 +450,26 @@ class BrokerTest(unittest.TestCase):
         r = subprocess.run([*client, "--urgent", "help"], env=e, capture_output=True, text=True)
         self.assertEqual(r.returncode, 1)
         self.assertIn("not allowed for role dev-notify: notify:urgent", r.stderr)
-        # The broken extension was skipped, with a warning in the broker's log.
-        self.assertIn("broken.py not loaded", (self.tmp / "broker.log").read_text())
+        # The broken extension was skipped, with a warning in the broker's log; so was json.py.
+        log = (self.tmp / "broker.log").read_text()
+        self.assertIn("broken.py not loaded", log)
+        self.assertIn("json.py not loaded: json is the name of a Python or broker module", log)
+
+    def test_extension_scope_kind(self):
+        """A user extension declares its own scope kind (tag:); the broker checks its targets
+        against the session's tag: entries, and an unknown kind is ignored with a warning."""
+        (self.root / "roles.toml").write_text('[roles.tagger]\nextends = ["reader"]\ntagger = ["tag"]\n')
+        self.addCleanup((self.root / "roles.toml").unlink)
+        w = []
+        sess = self.register("tagger", ["tag:alpha", "nope:x"], warnings=w)
+        self.assertIn("tag:alpha", sess["scope"])
+        self.assertIn("no extension provides nope:", w[0])
+        self.assertIn("tag:", self.admin("scopes").stdout)
+        sock = str(Path(sess["dir"]) / "broker.sock")
+        self.assertEqual(unix_post(sock, "/tag", {"name": "alpha"})[0], 200)
+        status, body = unix_post(sock, "/tag", {"name": "beta"})  # out of scope: waits, then times out
+        self.assertEqual(status, 403)
+        self.assertIn("out of this session's scope: tag:beta", body["error"])
 
     def test_keys_lists_and_loads_profile_keys(self):
         key = self.tmp / "profilekey"
@@ -474,7 +536,7 @@ class BrokerTest(unittest.TestCase):
         r = self.gh("api", "-X", "DELETE", "repos/acme/widget/git/refs/heads/x", expect=1)
         self.assertIn("api DELETE /repos/{repo}/git/refs/heads/x", r.stderr)
         r = self.gh("api", "repos/evil/repo/pulls", expect=1)
-        self.assertIn("out of this session's scope: evil/repo", r.stderr)
+        self.assertIn("out of this session's scope: gh:evil/repo", r.stderr)
         r = self.gh("api", "--hostname", "ghe.example.com", "user", expect=1)
         self.assertIn("only github.com", r.stderr)
 
@@ -495,20 +557,23 @@ class BrokerTest(unittest.TestCase):
         self.ran("api", "graphql", "-F", "query=@q.graphql")
 
     def test_projects_pm(self):
-        pm = self.register("pm", ["acme/widget", "project:acme/5"])
+        w = []
+        pm = self.register("pm", ["acme/widget", "project:acme/5"], warnings=w)  # the old forms still work
+        self.assertIn("acme/widget → gh:acme/widget, project:acme/5 → gh-project:acme/5", w[0])
+        self.assertEqual(pm["scope"][:2], ["gh:acme/widget", "gh-project:acme/5"])
         self.ran("project", "item-list", "5", "--owner", "acme", sess=pm)
         r = self.gh("project", "item-edit", "--project-id", "PVT_kwDOBBB222", "--id", "PVTI_lADOAAA444", sess=pm, expect=1)
-        self.assertIn("project evil/9", r.stderr)
+        self.assertIn("gh-project:evil/9", r.stderr)
         self.ran("project", "item-edit", "--project-id", "PVT_kwDOAAA111", "--id", "PVTI_lADOAAA444", "--text", "t", sess=pm)
         r = self.gh("project", "item-edit", "--project-id", "PVT_kwDOAAA111", "--id", "junk", sess=pm, expect=1)
         self.assertIn("unscoped: node junk", r.stderr)
         r = self.gh("project", "item-list", "6", "--owner", "acme", sess=pm, expect=1)
-        self.assertIn("project acme/6", r.stderr)
+        self.assertIn("gh-project:acme/6", r.stderr)
         r = self.gh("pr", "create", "--title", "x", "--body", "y", sess=pm, expect=1)
         self.assertIn("not allowed for role pm", r.stderr)
 
     def test_fork_adds_scope(self):
-        m = self.register("maintainer", ["acme/widget"], user="octo")
+        m = self.register("maintainer", ["gh:acme/widget"], user="octo")
         out = self.ran("repo", "fork", sess=m)
         self.assertEqual(out["argv"], ["repo", "fork", "--clone=false", "--remote=false", "acme/widget"])
         self.assertEqual(out["GH_TOKEN"], "tok-octo")
@@ -595,7 +660,7 @@ class BrokerTest(unittest.TestCase):
         r = subprocess.run(["git", "-C", repo, "commit", "-q", "--allow-empty", "-m", "other",
                             "--author", "Mallory <m@evil.example>"], env=e, capture_output=True, text=True)
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("as m@evil.example", self.admin("log", "-n", "3").stdout)
+        self.assertIn("email:m@evil.example", self.admin("log", "-n", "3").stdout)
 
     # --- ssh -------------------------------------------------------------------------------
 

@@ -124,15 +124,16 @@ The broker turns each request into actions and targets, and checks them before a
 
 - **The host is trusted and up to date,** especially the kernel and podman: container isolation
   is only as strong as they are.
-- **The apod checkout is trusted.** The broker runs from it, and so do
-  `~/.agent-pod/broker-extensions/*.py`. Pods can't write to either, as long as you don't mount
-  them into a pod.
+- **The apod checkout and your extensions are trusted.** The broker runs from the checkout, with
+  its shipped extensions (`extensions/`), and runs yours from `~/.agent-pod/broker-extensions/`,
+  where a file can replace a shipped extension. Pods can't write to any of them, as long as you
+  don't mount them into a pod.
 - **You read what you approve.** Approve by the actions and targets the broker lists, not by the
   one-line summary, which the agent's arguments partly shape.
 - **The host's `gh` logins are the accounts you mean pods to act as.** A role limits what a
   pod can do with an account. It doesn't limit the account itself.
-- **Scope entries are as narrow as you write them.** `logos-co/*` covers every repository of the
-  org, and `ssh:nas` allows any user on nas.
+- **Scope entries are as narrow as you write them.** `gh:logos-co/*` covers every repository of
+  the org, and `ssh:nas` allows any user on nas.
 
 ## What apod does not protect against
 

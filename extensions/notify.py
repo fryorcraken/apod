@@ -4,13 +4,9 @@ In the pod: apod-notify [--urgent] TEXT. The broker checks the request (action n
 notify:urgent; no target, so the scope doesn't come into it) against the role, then runs
 notify-send on the host, titled with the agent session's name.
 
-To use it:
+It's shipped, so it's always loaded; it's active for profiles that turn it on:
 
-    mkdir -p ~/.agent-pod/broker-extensions
-    ln -s ~/src/rad/apod/extensions/notify.py ~/.agent-pod/broker-extensions/
-    apod broker restart
-
-    # ~/.agent-pod/<profile>/broker.toml
+    # ~/.agent-pod/<profile>/broker.toml (or ~/.agent-pod/broker.toml for every profile)
     [notify]
     enabled = true
     # command = ["notify-send", "-a", "apod"]    # the default; called with TITLE TEXT

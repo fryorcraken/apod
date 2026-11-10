@@ -124,7 +124,7 @@ A launch combines a **profile**, a **role**, a **scope** and a **project** into 
 |---|---|---|---|
 | **Profile** | An agent identity: who the agent is and what it can see. One per identity or kind of job, e.g. `bot`, `ops`. | Its git author (`env`). Its home (`home/`): Claude or opencode login, history and settings, Google login; every pod of the profile shares it, at the same time too. Its mounts, image, network, volumes and connectors. How it reaches GitHub and hosts: either a token (`apod token`, `ssh-key`) or a `broker.toml` with its default role and scope, its GitHub account (`[gh] user`, or `--gh-user` for one launch) and its keys. | `~/.agent-pod/<profile>/` |
 | **Role** | What a pod may do without asking, by action: the same for every profile that uses it. | One list per broker provider: `gh` commands, git pushes to GitHub and Radicle, commit signing, ssh. No identity, credentials or targets. | Built in (`roles.toml`: `reader`, `dev`, `maintainer`, `pm`, `ops`); `~/.agent-pod/roles.toml` adds to them. A profile's `role =`, or `--role`; default `reader`. |
-| **Scope** | What those actions may touch. | Repositories, owners, project boards, Radicle repositories, ssh hosts, git identities. | The project's GitHub and Radicle remotes and the profile's git identity, automatically; the profile's `scope` and `[ssh] hosts`; `--scope`. |
+| **Scope** | What those actions may touch, as `KIND:VALUE` entries; each extension declares its kinds. | `gh:OWNER/REPO`, `gh:OWNER`, `gh-project:OWNER/N`, `rad:RID`, `ssh:[USER@]HOST`, `email:ADDRESS`, and your extensions' kinds (`apod broker scopes` lists them). | The project's GitHub and Radicle remotes and the profile's git identity, automatically; the profile's `scope` and `[ssh] hosts`; `--scope`. |
 | **Project** | The folder the agent works in. | Mounted read-write; its remotes join the scope. | The folder argument. |
 | **Session** | One running pod, registered with the broker. | Its profile, role and scope, and what you approve "for the session"; it all ends with the pod. | Each launch. |
 
@@ -216,7 +216,7 @@ extension of a small core, and you can add your own: see
 ```toml
 # ~/.agent-pod/work/broker.toml
 role = "dev"
-scope = ["logos-co/*", "project:logos-co/5"]   # plus the project's GitHub and Radicle remotes
+scope = ["gh:logos-co/*", "gh-project:logos-co/5"]   # plus the project's GitHub and Radicle remotes
 
 [gh]
 user = "fryorcraken"            # host gh account (gh auth login --hostname github.com); required for gh
@@ -235,7 +235,7 @@ home = "~/.radicle"             # RAD_HOME of the identity pushes land as (defau
 
 ```sh
 apod work ~/src/org/repo                           # as broker.toml says
-apod work --role maintainer --scope fryorcraken/* ~/src/org/repo
+apod work --role maintainer --scope 'gh:fryorcraken/*' ~/src/org/repo
 apod broker                                        # approve requests in a terminal UI
 ```
 
@@ -283,10 +283,23 @@ it (and its `description` replaces the built-in one). A pod with no role is a `r
 - `ops`: ssh to the hosts in scope and sign commits; fetch only.
 
 **Scope.** The project folder's GitHub and Radicle remotes, the profile's git identity, then
-`broker.toml`'s `scope` (and `[ssh] hosts`) and `--scope`. Entries: `OWNER/REPO`, `OWNER/*`,
-`OWNER` (owner-level reads, creating repositories there), `project:OWNER/NUMBER` (or
-`project:OWNER/*`), `rad:RID`, `ssh:HOST` or `ssh:USER@HOST`, `email:ADDRESS` (signing as another
-identity). Forks and repositories the session creates join its scope.
+`broker.toml`'s `scope` (and `[ssh] hosts`) and `--scope`. Each entry is `KIND:VALUE`, where the
+kind belongs to an extension, and values take shell-style patterns (`*`). The shipped kinds:
+
+| Entry | Extension | Covers |
+|---|---|---|
+| `gh:OWNER/REPO`, `gh:OWNER/*` | gh, github | A repository: gh commands, API calls and git pushes and fetches. |
+| `gh:OWNER` | gh | The owner itself: owner-level reads, its project list, creating repositories there. |
+| `gh-project:OWNER/NUMBER`, `gh-project:OWNER/*` | gh | A project board. |
+| `rad:RID` | rad | A Radicle repository. |
+| `ssh:HOST`, `ssh:USER@HOST` | ssh | A host as named in your host's ssh config, for any user or that user. |
+| `email:ADDRESS` | sign | Signing commits and tags as that address. |
+
+`apod broker scopes` lists the kinds the loaded extensions provide. An entry of a kind no
+extension provides is ignored, with a warning at launch. The older forms (`OWNER/REPO`, `OWNER`,
+`project:OWNER/N`) still work, with a warning naming the new form. Forks and repositories the
+session creates join its scope. The TUI and the log show targets the same way, so what you see
+out of scope is what you'd add.
 
 **Approvals.** A request outside the role or the scope waits (`APOD_BROKER_ASK_TIMEOUT`,
 default 90 seconds; 0 rejects at once) and shows up in `apod broker` (a terminal UI),
@@ -458,12 +471,22 @@ rebuilding `apod`.
 
 ## Writing a broker extension
 
-Every broker feature is a **provider**: `gh`, `github`, `rad`, `sign` and `ssh` in `broker/`, and
-your own in `~/.agent-pod/broker-extensions/*.py`. The broker loads its own providers first,
-then yours in name order. If one of yours fails to load, the broker skips it and writes the error
-to `~/.agent-pod/broker/broker.log`. Run `apod broker restart` after adding or changing one.
-[`extensions/notify.py`](extensions/notify.py) is a complete, tested example: `apod-notify TEXT`
-in the pod sends you a desktop notification. It's about 90 lines with comments.
+The broker's core (`broker/`) handles sessions, roles, approvals and the log, and nothing else.
+Every feature is an **extension**, a Python file that registers providers and scope kinds:
+
+- **Shipped:** [`extensions/`](extensions/) in this checkout: `gh`, `github`, `rad`, `sign`,
+  `ssh` and `notify`. They're defaults, loaded like any other extension.
+- **Yours:** `~/.agent-pod/broker-extensions/*.py`. A file with a shipped extension's name
+  (`ssh.py`) replaces it, and an empty one turns it off. Extensions import each other by name
+  (`github` uses `from gh import ...`), so a replacement gets used by the others too. A name can't
+  be one of Python's own modules (`json.py`) or the core's (`core`, `gitwire`, `tui`).
+
+The shipped ones load first (gh, github, rad, sign, ssh), then the rest in name order. One that
+fails to load is skipped, with the error in `~/.agent-pod/broker/broker.log`; `apod broker
+scopes` lists which file each name loaded from. Run `apod broker restart` after adding or
+changing one. [`extensions/notify.py`](extensions/notify.py) is the smallest complete example:
+`apod-notify TEXT` in the pod sends you a desktop notification (turn it on with `[notify]
+enabled = true`). It's about 90 lines with comments.
 
 ### How a request flows
 
@@ -473,7 +496,7 @@ pod: a client (a shim, git config, ssh, your own script)
   ▼
 broker: the route (method, path prefix) → your handler(h, sess, method)
   1. validate what the pod sent (it's untrusted)
-  2. classify it: a Request with actions ("notify:send") and targets (("repo", "acme/widget"))
+  2. classify it: a Request with actions ("notify:send") and targets (("gh", "acme/widget"))
   3. check(sess, req): role allows every action and every target is in scope → go ahead;
      otherwise it waits for approval (TUI, apod broker allow), up to APOD_BROKER_ASK_TIMEOUT
   4. act on the host, reply to the pod
@@ -486,13 +509,13 @@ the pod registers, and `apod` applies that generically.
 
 ```python
 # ~/.agent-pod/broker-extensions/hello.py
-from core import Request, check, provider, read_body, rejected_msg
+from core import Request, check, provider, read_body, rejected_msg, scope_kind
 
 def handle(h, sess, method):                  # h: a BaseHTTPRequestHandler; reply with h.send_json
     name = read_body(h).decode()[:100]
     req = Request("hello", f"hello {name}")   # kind, and how the TUI and log show the request
     req.actions = ["hello:greet"]             # "<provider>:<action>", what role lists match
-    req.targets = [("identity", name)]        # what it touches; checked against the scope
+    req.targets = [("hello", name)]           # what it touches; checked against the scope
     ok, ev = check(sess, req)                 # blocks while it waits for approval
     if not ok:
         return h.send_json({"error": rejected_msg(req, ev)}, 403)
@@ -509,6 +532,7 @@ class Hello:
         return True
 
 provider(Hello())
+scope_kind("hello", provider="hello", help="hello:NAME (who the pod may greet)")
 ```
 
 The provider object:
@@ -546,14 +570,12 @@ All from `core`:
   acted, so the TUI shows a failure.
 - **`rejected_msg(req, ev)`** and **`waiting_msg(req, ev)`** produce the messages the pod should
   see. They tell the agent how the user can approve the request.
-- **Scope kinds** are `repo` (`OWNER/REPO`), `owner`, `project` (`project:OWNER/N`), `rad`
-  (`rad:RID`), `host` (`ssh:[USER@]HOST`) and `identity` (`email:ADDRESS`). Add your own with
-  **`scope_kind("url", "url:")`**: users then write `url:https://docs.example.com/*` in `scope`
-  or `--scope`, and a target `("url", …)` is in scope when it matches an entry, case-insensitively,
-  with shell-style patterns. A target `("unscoped", "what")` is never in scope; approving it for
-  the session remembers it.
+- **`scope_kind(prefix, ...)`** declares a scope kind; see [Scope kinds](#scope-kinds). A target
+  `("unscoped", "what")` is the core's: never in scope, and approving it for the session
+  remembers it.
 - **`HARD_DENY`** is a list of action patterns that are never allowed, whatever the role says.
-- **The session (`sess`)** has `.profile`, `.role`, `.project`, `.scope`, `.identity` (the
+- **The session (`sess`)** has `.profile`, `.role`, `.project`, `.entries(prefix)` (its scope
+  entries of one kind), `.in_scope(target)`, `.identity` (the
   profile's git name and emails), `.login` (the `gh` account, if any), `.title()` (the agent
   session's name) and `.dir` (the session's directory, `/run/apod-broker` in the pod).
   `.cfg[name]` is yours for per-session state, saved with the session so it survives a broker
@@ -561,6 +583,32 @@ All from `core`:
 - **Helpers**: `read_body(h)`, `h.send_json(obj, status)`, `send_text(h, text, status)`,
   `BrokerError`, `AGENT` (the broker's ssh-agent socket, for `SSH_AUTH_SOCK`), `BDIR` (the
   broker's state directory; use `BDIR / "tmp"` for scratch files).
+
+### Scope kinds
+
+Scope kinds belong to extensions, not to the core: `gh:` and `gh-project:` are the gh
+extension's, `ssh:` the ssh one's. Declare yours next to your provider:
+
+```python
+from core import scope_kind
+
+scope_kind("url", provider="fetch", help="url:PATTERN (pages the pod may fetch through the broker)")
+```
+
+Users then write `url:https://docs.example.com/*` in `scope` or `--scope`, and a target
+`("url", "https://docs.example.com/a")` is in scope when it matches one of the session's `url:`
+entries (shell-style patterns, case-insensitive). The optional arguments change that:
+
+| Argument | |
+|---|---|
+| `parse(value)` | Normalizes an entry as written (the gh kinds lowercase it and drop `.git`). |
+| `match(sess, value)` | Decides whether a target is in scope, e.g. from `sess.entries(prefix)` or other kinds' entries. `ssh:` uses it so that `ssh:nas` allows any user and `ssh:root@nas` only root. |
+| `grant(value)` | The entry `(prefix, value)` that approving a target "for the session" adds. Default: the target itself. |
+| `label(value)` | How the TUI and log show a target. Default `prefix:value`. |
+| `entry=False` | A target kind that users don't write: its `match` looks at other kinds' entries. gh's `gh-projects-of` (an owner's project list) is in scope with `gh:OWNER` or any `gh-project:OWNER/…`. |
+| `help` | The line `apod broker scopes` shows. |
+
+A prefix can be declared once: a second declaration fails that extension's load.
 
 ### Roles
 
@@ -585,12 +633,12 @@ connect to it in either of two ways:
 - **Mount a client.** [`extensions/apod-notify`](extensions/apod-notify) is about 30 lines of
   Python. The default image has Python, and the `gh` shim needs it anyway. `curl --unix-socket` works too,
   if your image has curl.
-- **Point an existing tool at the broker.** The built-in providers do this:
+- **Point an existing tool at the broker.** The shipped extensions do this:
   - `sign` sets `gpg.ssh.program`;
   - `github` and `rad` set `url.<forwarder>.insteadOf`;
   - `ssh` sets `SSH_AUTH_SOCK` and a `ProxyCommand`.
 
-  The pod-side programs are all one script, `broker/pod-shim`, which dispatches on the name it's
+  Their pod-side programs are all one script, `broker/pod-shim`, which dispatches on the name it's
   run as.
 
 ### Rules of thumb

@@ -11,6 +11,8 @@ action and every target is in the session's scope; anything else waits for the u
 import collections
 import fnmatch
 import http.client
+import importlib
+import importlib.util
 import itertools
 import json
 import os
@@ -45,12 +47,15 @@ ASK_TIMEOUT = float(os.environ.get("APOD_BROKER_ASK_TIMEOUT", "90"))
 if ASK_TIMEOUT.is_integer():
     ASK_TIMEOUT = int(ASK_TIMEOUT)
 
-# Scope kinds and how they're written in broker.toml's scope list and --scope ("" for the two
-# GitHub kinds: OWNER/REPO and OWNER). Providers add their own with scope_kind().
-SCOPE_KINDS = ["repo", "owner", "project", "rad", "host", "identity"]
-SCOPE_PREFIX = {"project": "project:", "rad": "rad:", "host": "ssh:", "identity": "email:"}
+# Scope kinds, keyed by prefix: an entry is written PREFIX:VALUE in broker.toml's scope list and
+# --scope, a target is (PREFIX, VALUE). Core knows none; extensions declare theirs with
+# scope_kind() (gh:, gh-project:, rad:, ssh:, email: are the shipped extensions'). "unscoped"
+# targets are core's: they're in scope only once the user approves them for the session.
+SCOPES = {}
+OLD_TARGET_KINDS = {"repo": "gh", "owner": "gh", "project": "gh-project", "host": "ssh", "identity": "email"}
 GLOBAL_CONFIG = ROOT / "broker.toml"   # defaults for every profile's broker.toml
-EXTENSIONS = ROOT / "broker-extensions"  # the user's own providers, *.py, loaded after the built-in ones
+EXTENSIONS = ROOT / "broker-extensions"  # the user's own extensions, *.py; a name here replaces a shipped one
+SHIPPED_EXTENSIONS = CHECKOUT / "extensions"
 
 
 class BrokerError(Exception):
@@ -82,29 +87,100 @@ def provider(p):
     return p
 
 
-def scope_kind(kind, prefix):
-    """Add a scope kind, written PREFIXvalue in broker.toml and --scope (e.g. "url", "url:"). A
-    target (kind, value) is in scope when it matches one of the session's entries of that kind
-    (shell-style patterns, case-insensitive)."""
-    if not re.fullmatch(r"[a-z][a-z0-9-]*", kind) or not prefix.endswith(":"):
-        raise BrokerError(f"bad scope kind {kind!r} or prefix {prefix!r}")
-    if kind not in SCOPE_KINDS:
-        SCOPE_KINDS.append(kind)
-    SCOPE_PREFIX[kind] = prefix
+class ScopeKind:
+    """A scope kind an extension declares (see scope_kind)."""
+
+    def __init__(self, prefix, provider="", parse=None, match=None, grant=None, label=None, entry=True, help=""):
+        self.prefix, self.provider, self.entry, self.help = prefix, provider, entry, help
+        self._parse, self._match, self._grant, self._label = parse, match, grant, label
+
+    def parse(self, v):
+        """An entry's value as the user wrote it -> as stored."""
+        return self._parse(v) if self._parse else v.strip()
+
+    def match(self, sess, v):
+        """Is the target value V in the session's scope?"""
+        if self._match:
+            return bool(self._match(sess, v))
+        return any(fnmatch.fnmatchcase(v.lower(), p.lower()) for p in sess.scope.get(self.prefix, []))
+
+    def grant(self, v):
+        """The entry (prefix, value) that approving target value V for the session adds."""
+        return self._grant(v) if self._grant else (self.prefix, v)
+
+    def label(self, v):
+        return self._label(v) if self._label else f"{self.prefix}:{v}"
 
 
-def load_extensions():
-    """Import ~/.agent-pod/broker-extensions/*.py, in name order; each registers its providers.
-    One that fails is skipped, with the error on stderr (the broker's log)."""
-    import importlib.util
-    for f in sorted(EXTENSIONS.glob("*.py")) if EXTENSIONS.is_dir() else []:
+def scope_kind(prefix, *, parse=None, match=None, grant=None, label=None, entry=True, help="", provider=""):
+    """Declare a scope kind, written PREFIX:VALUE in broker.toml's scope list and --scope. A
+    request's target (PREFIX, value) is in scope when match(sess, value) says so; by default,
+    when it matches one of the session's PREFIX entries (shell-style patterns, case-insensitive).
+
+    parse(value) normalizes an entry as written; grant(value) -> (prefix, value) is the entry
+    that approving a target for the session adds (default: the target itself); label(value) is
+    how the target is shown (default PREFIX:value); entry=False for a target kind that isn't
+    written in the scope (its match looks at other kinds' entries); help is shown in apod
+    broker scopes. A prefix declared twice is an error, like a provider name."""
+    if not re.fullmatch(r"[a-z][a-z0-9-]*", prefix) or prefix == "unscoped":
+        raise BrokerError(f"bad scope prefix {prefix!r}: lowercase letters, digits and -")
+    if prefix in SCOPES:
+        raise BrokerError(f"scope kind {prefix}: is already declared (by {SCOPES[prefix].provider or 'another extension'})")
+    SCOPES[prefix] = k = ScopeKind(prefix, provider, parse, match, grant, label, entry, help)
+    return k
+
+
+def extension_files():
+    """name -> file of every extension to load: the shipped ones (extensions/ in the checkout),
+    then yours (~/.agent-pod/broker-extensions), which replace a shipped one of the same name. An
+    empty file of that name turns a shipped extension off."""
+    files = {}
+    for d in (SHIPPED_EXTENSIONS, EXTENSIONS):
+        for f in sorted(d.glob("*.py")) if d.is_dir() else []:
+            # Extensions are imported by name, so one can't take the name of a module the broker
+            # or Python uses (json.py would replace json for everything).
+            if f.stem in sys.stdlib_module_names or f.stem in ("core", "gitwire", "tui") or not f.stem.isidentifier():
+                print(f"apod-broker: extension {f} not loaded: {f.stem} is the name of a Python or broker module",
+                      file=sys.stderr, flush=True)
+                continue
+            files[f.stem] = f
+    return files
+
+
+class _ExtensionFinder:
+    """`import gh` in one extension gets the gh extension that's loaded (shipped or yours)."""
+
+    def __init__(self, files):
+        self.files = files
+
+    def find_spec(self, name, path=None, target=None):
+        if name in self.files:
+            return importlib.util.spec_from_file_location(name, self.files[name])
+        return None
+
+
+def load_extensions(only=None):
+    """Import the extensions (extension_files), each under its own name: the shipped ones in the
+    order they depend on each other (gh before github), then the rest in name order. Each
+    registers its providers and scope kinds. One that fails is skipped, with the error on
+    stderr (the broker's log)."""
+    files = extension_files()
+    if only is not None:
+        files = {k: v for k, v in files.items() if k in only}
+    finder = _ExtensionFinder(files)
+    sys.meta_path.insert(0, finder)
+    loaded = []
+    for name in sorted(files, key=lambda n: (SHIPPED_ORDER.index(n) if n in SHIPPED_ORDER else len(SHIPPED_ORDER), n)):
         try:
-            spec = importlib.util.spec_from_file_location(f"apod_ext_{f.stem}", f)
-            mod = importlib.util.module_from_spec(spec)
-            sys.modules[spec.name] = mod
-            spec.loader.exec_module(mod)
+            importlib.import_module(name)
+            loaded.append(name)
         except Exception as e:  # noqa: BLE001 (a broken extension mustn't stop the broker)
-            print(f"apod-broker: extension {f} not loaded: {e!r}", file=sys.stderr, flush=True)
+            sys.modules.pop(name, None)
+            print(f"apod-broker: extension {files[name]} not loaded: {e!r}", file=sys.stderr, flush=True)
+    return loaded
+
+
+SHIPPED_ORDER = ["gh", "github", "rad", "sign", "ssh"]  # the order providers were always registered in
 
 
 def expand(path):
@@ -194,25 +270,40 @@ def matches(action, patterns):
 
 
 def parse_scope(entry):
-    """A scope entry as written by the user -> (kind, value)."""
+    """A scope entry as the user wrote it -> (prefix, value). Raises BrokerError for a prefix
+    no extension declares."""
+    e = old_scope(entry) or entry.strip()
+    prefix, colon, v = e.partition(":")
+    k = SCOPES.get(prefix.lower()) if colon else None
+    if not k or not k.entry:
+        known = ", ".join(f"{p}:" for p, x in SCOPES.items() if x.entry)
+        raise BrokerError(f"scope entry {entry.strip()!r}: no extension provides {prefix + ':' if colon else 'a kind'} "
+                          f"(known: {known})")
+    return k.prefix, k.parse(v)
+
+
+def old_scope(entry):
+    """An entry written in an older form (OWNER/REPO, OWNER, project:OWNER/N) -> as it's written
+    now (gh:..., gh-project:...), else None."""
     e = entry.strip()
-    for kind, prefix in SCOPE_PREFIX.items():
-        if e.lower().startswith(prefix):
-            return kind, e[len(prefix):].strip()
-    if "/" in e:
-        return "repo", e.lower().removesuffix(".git")
-    return "owner", e.lower()
+    if e.lower().startswith("project:"):
+        return "gh-project:" + e[len("project:"):].strip()
+    if ":" not in e:
+        return "gh:" + e
+    return None
 
 
 def fmt_target(t):
-    kind, v = t
-    return {"repo": v, "owner": f"owner {v}", "project": f"project {v}", "projects-of": f"projects of {v}",
-            "forkdest": f"fork into {v}", "rad": f"rad:{v}", "host": f"ssh {v}", "identity": f"as {v}",
-            "unscoped": f"unscoped: {v}"}.get(kind, f"{kind} {v}")
+    """A target as it's written in the scope, so what you see is what you'd add."""
+    kind, v = t[0], t[1]
+    if kind == "unscoped":
+        return f"unscoped: {v}"
+    kind = OLD_TARGET_KINDS.get(kind, kind)  # in log entries from before scope kinds were prefixes
+    return SCOPES[kind].label(v) if kind in SCOPES else f"{kind}:{v}"
 
 
 def fmt_scope(kind, v):
-    return v if kind in ("repo", "owner") else f"{SCOPE_PREFIX.get(kind, kind + ':')}{v}"
+    return f"{kind}:{v}"
 
 
 class Session:
@@ -222,7 +313,10 @@ class Session:
         for k in self.FIELDS:
             setattr(self, k, d.get(k))
         self.role = self.role or d.get("persona") or "reader"  # sessions saved before the rename
-        self.scope = {k: list(v) for k, v in {**{k: [] for k in SCOPE_KINDS}, **(self.scope or {})}.items()}
+        self.scope = {}
+        for k, vs in (self.scope or {}).items():  # sessions saved before kinds were prefixes: repo, host, ...
+            lst = self.scope.setdefault(OLD_TARGET_KINDS.get(k, k), [])
+            lst += [v for v in vs if v not in lst]
         self.grants = {k: list((self.grants or {}).get(k, [])) for k in ("actions", "unscoped")}
         self.cfg = self.cfg or {}
         self.identity = self.identity or {}
@@ -246,36 +340,26 @@ class Session:
         kind, v = t[0], t[1]
         if self.temp.get((kind, v), 0) > now():
             return True
-        lv = v.lower()
-        pats = lambda k: [p.lower() for p in self.scope.get(k, [])]
-        if kind == "forkdest":
-            return lv == self.login.lower() or lv in pats("owner")
-        if kind == "projects-of":
-            return lv in pats("owner") or any(p.split("/")[0] == lv for p in pats("project"))
         if kind == "unscoped":
             return v in self.grants["unscoped"]
-        if kind == "host":
-            # v is USER@NAME; an entry NAME allows any user, USER@NAME that user only.
-            user, _, name = lv.rpartition("@")
-            if not user:  # a connection: any entry for that host
-                return any(fnmatch.fnmatchcase(name, p.rpartition("@")[2]) for p in pats("host"))
-            return any(fnmatch.fnmatchcase(lv if "@" in p else name, p) for p in pats("host"))
-        return any(fnmatch.fnmatchcase(lv, p) for p in pats(kind))
+        k = SCOPES.get(kind)
+        return bool(k and k.match(self, v))
 
     def add_scope(self, t):
+        """Add a scope entry (prefix, value), or what approving target t for the session adds."""
         kind, v = t[0], t[1]
         if kind == "unscoped":
-            lst, v = self.grants["unscoped"], v
-        elif kind == "projects-of":
-            lst, v = self.scope["project"], f"{v}/*"
-        elif kind == "forkdest":
-            lst = self.scope["owner"]
-        elif kind == "host":  # "@NAME" (a connection) allows NAME for any user; USER@NAME stays that user's
-            lst, v = self.scope["host"], v[1:] if v.startswith("@") else v
+            lst = self.grants["unscoped"]
         else:
+            if kind in SCOPES:
+                kind, v = SCOPES[kind].grant(v)
             lst = self.scope.setdefault(kind, [])
         if v not in lst:
             lst.append(v)
+
+    def entries(self, prefix):
+        """The session's scope entries of one kind."""
+        return self.scope.get(prefix, [])
 
     def scope_list(self):
         return [fmt_scope(k, v) for k in self.scope for v in self.scope[k]]
@@ -720,11 +804,21 @@ def register(r):
     sess = Session({"id": sid, "profile": r.get("profile", ""), "role": role,
                     "project": r.get("project", ""), "created": now(), "identity": identity,
                     "cfg": {"_home": str(pdir / "home")}})
+    old = []
     for e in list(cfg.get("scope", [])) + list(r.get("scope", [])):
         if e.strip():
-            sess.add_scope(parse_scope(e))
+            try:
+                sess.add_scope(parse_scope(e))
+            except BrokerError as ex:
+                warnings.append(f"{ex}; ignored")
+                continue
+            if old_scope(e):
+                old.append(f"{e.strip()} → {old_scope(e)}")
+    if old:
+        warnings.append(f"scope entries in the old form; write them as {', '.join(old)}")
     for e in identity["emails"]:
-        sess.add_scope(("identity", e))
+        if "email" in SCOPES:
+            sess.add_scope(("email", e))
     out = {"env": {"APOD_BROKER_SOCK": f"{POD_DIR}/broker.sock"}, "git_config": [], "mounts": [],
            "context": [], "need_keys": [], "providers": [], "warnings": warnings}
     start_agent()
@@ -997,7 +1091,7 @@ def print_event(e):
 
 
 USAGE = """usage: apod broker [ui]                      approve requests in a terminal UI
-       apod broker log [-f] [-n N] | pending | sessions | roles
+       apod broker log [-f] [-n N] | pending | sessions | roles | scopes
        apod broker allow ID [--session|--role] | deny ID
        apod broker grants [rm ROLE ACTION] | keys | restart | stop"""
 
@@ -1093,6 +1187,13 @@ def main(argv, script):
                 allow, deny = role_rules(name, raw)
                 print(f"{name}: {raw[name].get('description', '')}\n  allow: {', '.join(allow)}"
                       + (f"\n  deny: {', '.join(deny)}" if deny else ""))
+        elif cmd == "scopes":
+            # The scope kinds the extensions declare (this process loads the same ones as the broker).
+            for p, k in SCOPES.items():
+                if k.entry:
+                    print(f"{p + ':':<12} {k.help or '(no description)'}  [{k.provider or '?'}]")
+            for name, f in extension_files().items():
+                print(f"extension {name}: {f}", file=sys.stderr)
         elif cmd == "ui":
             import curses
             import tui

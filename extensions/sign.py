@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from core import AGENT, BDIR, SHIM, BrokerError, Request, check, need_key, provider, read_body, rejected_msg
+from core import AGENT, BDIR, SHIM, BrokerError, Request, check, need_key, provider, read_body, rejected_msg, scope_kind
 
 
 def classify(payload, namespace):
@@ -34,7 +34,7 @@ def classify(payload, namespace):
         k, _, v = line.partition(" ")
         if k in fields:
             m = re.search(r"<([^>]*)>", v)
-            req.targets.append(("identity", (m.group(1) if m else v).lower()))
+            req.targets.append(("email", (m.group(1) if m else v).lower()))
     req.targets = list(dict.fromkeys(req.targets))
     return req
 
@@ -100,3 +100,5 @@ class SignProvider:
 
 
 provider(SignProvider())
+scope_kind("email", provider="sign", parse=lambda v: v.strip().lower(),
+           help="email:ADDRESS (sign commits and tags as ADDRESS; the profile's git identity is in scope)")

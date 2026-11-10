@@ -16,7 +16,7 @@ import urllib.parse
 from pathlib import Path
 
 import gitwire
-from core import (AGENT, BDIR, EVENTS, BrokerError, Request, check, evaluate, expand, need_key, now, provider,
+from core import (AGENT, BDIR, EVENTS, BrokerError, Request, check, evaluate, expand, need_key, now, provider, scope_kind,
                   read_body, rejected_msg, run_quiet, send_text)
 
 RAD_URL = re.compile(r"^rad://(z[1-9A-HJ-NP-Za-km-z]+)(?:/(z[1-9A-HJ-NP-Za-km-z]+))?/?$")
@@ -248,3 +248,4 @@ class RadProvider:
 
 
 provider(RadProvider())
+scope_kind("rad", provider="rad", help="rad:RID (a Radicle repository; the project's rad remotes join the scope)")

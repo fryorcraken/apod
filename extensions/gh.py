@@ -15,7 +15,7 @@ import threading
 import urllib.parse
 from pathlib import Path
 
-from core import (BDIR, HARD_DENY, LOCK, SHIM, BrokerError, Request, check, now, provider, read_body,
+from core import (BDIR, HARD_DENY, LOCK, SHIM, BrokerError, Request, check, now, provider, read_body, scope_kind,
                   rejected_msg, waiting_msg)
 
 # Never allowed, whatever the role or grants say: these would hand out credentials, change the
@@ -289,9 +289,9 @@ def url_targets(values):
         for m in GH_URL.finditer(v or ""):
             a, b, c, d = m.groups()
             if a in ("orgs", "users") and b and c == "projects" and d and d.isdigit():
-                out.append(("project", f"{b}/{d}".lower()))
+                out.append(("gh-project", f"{b}/{d}".lower()))
             elif a.lower() not in NOT_OWNERS and b:
-                out.append(("repo", f"{a}/{b.removesuffix('.git')}".lower()))
+                out.append(("gh", f"{a}/{b.removesuffix('.git')}".lower()))
     return out
 
 
@@ -345,7 +345,7 @@ def classify_gh(sess, argv, ctx, files, stdin, work):
     if group in REPO_GROUPS:
         if not base:
             raise BrokerError("no repository: run gh in a clone with a GitHub remote, or pass -R OWNER/REPO")
-        req.targets.append(("repo", base))
+        req.targets.append(("gh", base))
     if cmd in SELECTOR_CMDS and not pos and ctx.get("branch"):
         pos = [ctx.get("head") or ctx["branch"]]
     if cmd == "pr create":
@@ -355,24 +355,24 @@ def classify_gh(sess, argv, ctx, files, stdin, work):
         if opt(flags, "head") is None and ctx.get("branch"):
             flags.append(("head", ctx.get("head") or ctx["branch"]))
     if cmd == "issue transfer" and len(pos) > 1:
-        req.targets.append(("repo", norm_repo(pos[1])))
+        req.targets.append(("gh", norm_repo(pos[1])))
     if group == "repo":
         if sub == "create":
             if not pos:
                 raise BrokerError("gh repo create needs a name (OWNER/NAME or NAME) here")
             owner, _, name = pos[0].rpartition("/")
             owner = (owner or login).lower()
-            req.targets.append(("owner", owner))
+            req.targets.append(("gh", owner))
             req.created = f"{owner}/{name}".lower()
             flags = [(k, v) for k, v in flags if k not in ("clone", "remote", "source", "push")]
         elif sub == "list":
-            req.targets.append(("owner", (pos[0] if pos else login).lower()))
+            req.targets.append(("gh", (pos[0] if pos else login).lower()))
         elif sub == "fork":
             src = norm_repo(pos[0]) if pos else base
             if not src:
                 raise BrokerError("no repository to fork: pass OWNER/REPO")
             dest = (opt(flags, "org") or login).lower()
-            req.targets += [("repo", src), ("forkdest", dest)]
+            req.targets += [("gh", src), ("gh-fork-into", dest)]
             req.created = f"{dest}/{(opt(flags, 'fork-name') or src.split('/')[1]).lower()}"
             flags = [(k, v) for k, v in flags if k not in ("clone", "remote", "remote-name")]
             flags += [("clone", "false"), ("remote", "false")]
@@ -381,17 +381,17 @@ def classify_gh(sess, argv, ctx, files, stdin, work):
         elif sub in ("gitignore", "license"):
             pass
         elif sub == "sync":
-            req.targets.append(("repo", norm_repo(pos[0]) if pos else base))
+            req.targets.append(("gh", norm_repo(pos[0]) if pos else base))
             if opt(flags, "source"):
-                req.targets.append(("repo", norm_repo(opt(flags, "source"))))
+                req.targets.append(("gh", norm_repo(opt(flags, "source"))))
         else:
             r = norm_repo(pos[0]) if pos and sub in ("view", "edit", "delete", "archive", "unarchive") else base
             if not r:
                 raise BrokerError("no repository: pass OWNER/REPO or -R OWNER/REPO")
-            req.targets.append(("repo", r))
+            req.targets.append(("gh", r))
     elif group == "search":
         rs, os_ = optall(flags, "repo"), optall(flags, "owner")
-        req.targets += [("repo", norm_repo(r)) for r in rs] + [("owner", o.lower()) for o in os_]
+        req.targets += [("gh", norm_repo(r)) for r in rs] + [("gh", o.lower()) for o in os_]
         if not rs and not os_:
             req.targets.append(("unscoped", f"{cmd} across GitHub"))
     elif group == "project":
@@ -399,17 +399,17 @@ def classify_gh(sess, argv, ctx, files, stdin, work):
         owner = (login if owner in (None, "@me") else owner).lower()
         number = pos[0] if pos and pos[0].isdigit() else None
         if sub in ("list", "create"):
-            req.targets.append(("projects-of", owner))
+            req.targets.append(("gh-projects-of", owner))
         elif sub == "copy":
             src = opt(flags, "source-owner")
             src = (login if src in (None, "@me") else src).lower()
-            req.targets.append(("project", f"{src}/{number}"))
+            req.targets.append(("gh-project", f"{src}/{number}"))
             tgt = opt(flags, "target-owner")
-            req.targets.append(("projects-of", (login if tgt in (None, "@me") else tgt).lower()))
+            req.targets.append(("gh-projects-of", (login if tgt in (None, "@me") else tgt).lower()))
         elif number:
-            req.targets.append(("project", f"{owner}/{number}"))
+            req.targets.append(("gh-project", f"{owner}/{number}"))
         if sub in ("link", "unlink") and repo_flag:
-            req.targets.append(("repo", norm_repo(repo_flag if "/" in repo_flag else f"{owner}/{repo_flag}")))
+            req.targets.append(("gh", norm_repo(repo_flag if "/" in repo_flag else f"{owner}/{repo_flag}")))
         ids = [v for k in ("id", "project-id", "field-id") for v in optall(flags, k)]
         req.targets += resolve_nodes(sess, ids)
         if not req.targets:
@@ -519,12 +519,12 @@ def classify_api(sess, req, flags, pos, ctx, files, stdin, work, n):
         raise BrokerError("{owner}/{repo} need a current repository: run in a clone or use the full path")
     m = re.match(r"repos/([^/]+)/([^/]+)(/.*)?$", path)
     if m:
-        req.targets.append(("repo", f"{m.group(1)}/{m.group(2)}".lower()))
+        req.targets.append(("gh", f"{m.group(1)}/{m.group(2)}".lower()))
         req.actions = [f"api {method} /repos/{{repo}}{m.group(3) or ''}"]
         return req
     m = re.match(r"(orgs|users)/([^/]+)(/.*)?$", path)
     if m:
-        req.targets.append(("owner", m.group(2).lower()))
+        req.targets.append(("gh", m.group(2).lower()))
         req.actions = [f"api {method} /{m.group(1)}/{{owner}}{m.group(3) or ''}"]
         return req
     req.actions = [f"api {method} /{path}"]
@@ -733,12 +733,12 @@ def classify_graphql(sess, req, query, variables):
             elif optype == "query" and name == "repository":
                 o, r = args.get("owner"), args.get("name")
                 if isinstance(o, str) and isinstance(r, str):
-                    req.targets.append(("repo", f"{o}/{r}".lower()))
+                    req.targets.append(("gh", f"{o}/{r}".lower()))
                 else:
                     req.targets.append(("unscoped", "graphql repository without a literal owner and name"))
             elif optype == "query" and name in ("organization", "user", "repositoryOwner"):
                 lg = args.get("login")
-                req.targets.append(("owner", lg.lower()) if isinstance(lg, str) else
+                req.targets.append(("gh", lg.lower()) if isinstance(lg, str) else
                                    ("unscoped", f"graphql {name} without a literal login"))
             elif optype == "query" and name in ("node", "nodes"):
                 ids = node_ids(args)
@@ -774,12 +774,12 @@ def node_target(n):
     t = n.get("__typename")
     repo = n.get("nameWithOwner") or (n.get("repository") or {}).get("nameWithOwner")
     if repo:
-        return ("repo", repo.lower())
+        return ("gh", repo.lower())
     proj = n if t == "ProjectV2" else n.get("project")
     if proj and proj.get("number") is not None:
-        return ("project", f"{(proj.get('owner') or {}).get('login', '?')}/{proj['number']}".lower())
+        return ("gh-project", f"{(proj.get('owner') or {}).get('login', '?')}/{proj['number']}".lower())
     if t == "Organization":
-        return ("owner", n["login"].lower())
+        return ("gh", n["login"].lower())
     if t in ("User", "Bot"):
         return ("people", n["login"].lower())  # a person referenced (assignee, reviewer): no scope
     return None
@@ -906,7 +906,7 @@ def handle_gh(h, sess, method):
         ev["exit"] = code
         if code == 0 and req.created:
             with LOCK:
-                sess.add_scope(("repo", req.created))
+                sess.add_scope(("gh", req.created))
                 sess.save()
             out.msg(f"added {req.created} to this session's scope")
         for note in req.notes if code == 0 else []:
@@ -962,7 +962,7 @@ class GhProvider:
         for url in reg.get("remotes", []):
             r = github_repo(url)
             if r:
-                sess.add_scope(("repo", r))
+                sess.add_scope(("gh", r))
         out["mounts"].append([str(SHIM), "/usr/local/bin/gh", "ro"])
         out["context"].append(
             f"gh is a shim: commands run on the host as GitHub user {login}. gh auth token and "
@@ -973,3 +973,23 @@ class GhProvider:
 
 
 provider(GhProvider())
+
+
+def _gh_owner_entries(sess):
+    return [p.lower() for p in sess.entries("gh") if "/" not in p]
+
+
+# gh:OWNER/REPO is a repository (patterns too: gh:OWNER/*); gh:OWNER is the owner itself
+# (owner-level reads, its project list, creating repositories there).
+scope_kind("gh", provider="gh", parse=lambda v: v.strip().lower().removesuffix(".git"),
+           help="gh:OWNER/REPO (gh:OWNER/* for every repository of OWNER), gh:OWNER (the owner itself)")
+scope_kind("gh-project", provider="gh", parse=lambda v: v.strip().lower(),
+           help="gh-project:OWNER/NUMBER (gh-project:OWNER/* for all of OWNER's projects)")
+# Target kinds that are checked against those entries, not written in the scope themselves.
+scope_kind("gh-projects-of", provider="gh", entry=False,
+           match=lambda sess, v: v in _gh_owner_entries(sess) or any(
+               p.lower().split("/")[0] == v for p in sess.entries("gh-project")),
+           grant=lambda v: ("gh-project", f"{v}/*"), label=lambda v: f"gh-project:{v}/*")
+scope_kind("gh-fork-into", provider="gh", entry=False,
+           match=lambda sess, v: v == sess.login.lower() or v in _gh_owner_entries(sess),
+           grant=lambda v: ("gh", v), label=lambda v: f"gh:{v} (fork into)")
