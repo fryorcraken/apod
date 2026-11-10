@@ -12,7 +12,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from core import AGENT, BDIR, SHIM, BrokerError, Request, check, need_key, provider, read_body, rejected_msg, scope_kind
+from core import (AGENT, BDIR, SHIM, BrokerError, Request, check, matches, need_key, provider, read_body,
+                  rejected_msg, role_rules, scope_kind)
 
 
 def classify(payload, namespace):
@@ -81,8 +82,22 @@ class SignProvider:
         return [(cfg["key"], cfg.get("confirm", False))] if cfg.get("key") else []
 
     def configure(self, sess, cfg, reg, out):
+        """[sign] key makes signing available; it's on for a pod when the role signs (its sign
+        list, or a role grant), as the profile's git identity, or when the scope names git-sign:
+        addresses (--scope git-sign:ADDRESS), as those."""
         if not cfg.get("key"):
             return False
+        allow, deny = role_rules(sess.role)
+        by_role = any(matches(a, allow) and not matches(a, deny) for a in ("sign:commit", "sign:tag"))
+        if not by_role and not sess.entries("git-sign"):
+            out["context"].append(f"Commits aren't signed in this pod: role {sess.role} doesn't sign, and the scope "
+                                  "names no git-sign: address.")
+            return False
+        if by_role:
+            for e in sess.identity.get("emails", []):
+                sess.add_scope(("git-sign", e))
+        else:  # git-sign: in the scope: this session signs (as those addresses) whatever its role
+            sess.grants["actions"] += [a for a in ("sign:commit", "sign:tag") if a not in sess.grants["actions"]]
         try:
             line, blob = need_key(sess, out, cfg["key"], cfg.get("confirm", False))
         except BrokerError as e:
@@ -94,8 +109,9 @@ class SignProvider:
                               ["user.signingkey", f"key::{line}"]]
         if cfg.get("auto", True):
             out["git_config"] += [["commit.gpgsign", "true"], ["tag.gpgsign", "true"]]
-        out["context"].append("git commits and tags are signed by the broker with an SSH key held on the host "
-                              "(gpg.format=ssh); signing as anyone but the profile's git identity needs approval.")
+        who = ", ".join(sess.entries("git-sign"))
+        out["context"].append(f"git commits and tags are signed by the broker with an SSH key held on the host "
+                              f"(gpg.format=ssh), as {who}; signing as anyone else needs approval.")
         return True
 
 

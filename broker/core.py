@@ -525,6 +525,9 @@ def authorize(sess, req, ev, waiting=None):
 
 def check(sess, req, waiting=None, extra=None):
     """authorize() with the event logged: (ok, event)."""
+    # The same action or target twice (a GraphQL request with 20 identical mutations) is one.
+    req.actions = list(dict.fromkeys(req.actions))
+    req.targets = list(dict.fromkeys(tuple(t) for t in req.targets))
     ev = new_event(sess, req)
     ev.update(extra or {})
     try:
@@ -818,9 +821,6 @@ def register(r):
                 old.append(f"{e.strip()} → {old_scope(e)}")
     if old:
         warnings.append(f"scope entries in the old form; write them as {', '.join(old)}")
-    for e in identity["emails"]:
-        if "git-sign" in SCOPES:
-            sess.add_scope(("git-sign", e))
     out = {"env": {"APOD_BROKER_SOCK": f"{POD_DIR}/broker.sock"}, "git_config": [], "mounts": [],
            "context": [], "need_keys": [], "providers": [], "warnings": warnings}
     start_agent()

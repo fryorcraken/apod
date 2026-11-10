@@ -560,7 +560,6 @@ class BrokerTest(unittest.TestCase):
         w = []
         pm = self.register("pm", ["acme/widget", "project:acme/5"], warnings=w)  # the old forms still work
         self.assertIn("acme/widget → gh:acme/widget, project:acme/5 → gh-project:acme/5", w[0])
-        self.assertIn("git-sign:agent@example.com", pm["scope"])  # the profile's git identity
         w = []
         self.assertIn("git-sign:m@example.com", self.register("dev", ["email:m@example.com"], warnings=w)["scope"])
         self.assertIn("email:m@example.com → git-sign:m@example.com", w[0])
@@ -643,8 +642,18 @@ class BrokerTest(unittest.TestCase):
     # --- sign ------------------------------------------------------------------------------
 
     def test_sign_commits(self):
-        sess = self.register("dev", [], toml=f'[sign]\nkey = "{self.tmp}/signkey"\n')
+        # Signing is available ([sign] key) but on only where the role signs or the scope says so.
+        toml = f'[sign]\nkey = "{self.tmp}/signkey"\n'
+        reader = self.register("reader", [], toml=toml)
+        self.assertNotIn("sign", reader["providers"])
+        self.assertIn("Commits aren't signed in this pod: role reader doesn't sign", reader["context"])
+        self.assertNotIn(["commit.gpgsign", "true"], reader["git_config"])
+        scoped = self.register("reader", ["git-sign:agent@example.com"], toml=toml)
+        self.assertIn("sign", scoped["providers"])
+        self.assertIn("Approved by the user for this session: sign:commit, sign:tag", scoped["context"])
+        sess = self.register("dev", [], toml=toml)
         self.assertIn("sign", sess["providers"])
+        self.assertIn("git-sign:agent@example.com", sess["scope"])  # the profile's git identity
         repo = self.tmp / "signed"
         e = self.pod_env(sess)
         subprocess.run(["git", "init", "-q", repo], check=True, env=e)

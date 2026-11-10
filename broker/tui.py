@@ -98,12 +98,24 @@ def tui_style(decision):
     return "bad"
 
 
-def tui_detail(e, st, width):
+def tui_detail(e, st, width, height=None):
+    """The detail pane's lines, at most HEIGHT: each field is cut to fit, the request text first
+    (y copies it all)."""
     import textwrap
-    out = []
-    for line in tui_detail_lines(e, st):
-        out += textwrap.wrap(line, max(20, width - 2), subsequent_indent="  ") or [""]
-    return out
+    fields = [textwrap.wrap(line, max(20, width - 2), subsequent_indent="  ") or [""]
+              for line in tui_detail_lines(e, st)]
+    if height is not None:
+        # Every field keeps its first line. The rest of the room goes to the actions, targets,
+        # reason and status first, then to the request text; a cut field ends with "…".
+        room = max(0, height - len(fields))
+        keep = [1] * len(fields)
+        for i in list(range(1, len(fields))) + [0]:
+            keep[i] += min(len(fields[i]) - 1, room)
+            room -= keep[i] - 1
+        for i, f in enumerate(fields):
+            if keep[i] < len(f):
+                fields[i] = f[:keep[i] - 1] + [f[keep[i] - 1][:max(0, width - 4)] + " …"]
+    return [line for f in fields for line in f]
 
 
 def copy_seq(text):
@@ -230,8 +242,9 @@ def run(scr):
             put(2, 1, err, styles["bad"])
         elif msg and now() - msg_t < 6:
             put(2, 1, msg, styles["grant"])
-        detail = tui_detail(item, st, w) if view == "requests" and item else []
-        list_h = max(3, h - 4 - (len(detail) + 1 if detail else 0))
+        # The detail pane gets at most half the room below the tabs, so the list always shows.
+        detail = tui_detail(item, st, w, max(6, (h - 5) // 2)) if view == "requests" and item else []
+        list_h = max(1, h - 5 - (len(detail) + 1 if detail else 0))
         if idx < top:
             top = idx
         elif idx >= top + list_h:

@@ -273,9 +273,9 @@ built-in one, in `~/.agent-pod/roles.toml`: a role there with a built-in's name 
 it (and its `description` replaces the built-in one). A pod with no role is a `reader`.
 
 - `reader`: view PRs, issues, CI runs and repositories, read the REST and GraphQL APIs for the
-  repositories in scope, fetch; sign commits; ssh to the hosts in scope.
+  repositories in scope, fetch; ssh to the hosts in scope.
 - `dev`: reader plus push branches (not the default branch), open Radicle patches, create and edit
-  PRs, comment, create issues.
+  PRs, comment, create issues; sign commits.
 - `maintainer`: dev plus merge and review PRs, edit and close issues, re-run CI, fork and create
   repositories, push tags and delete branches.
 - `pm`: reader plus project boards (list, view, add and move items, add fields, templates) and
@@ -293,7 +293,7 @@ kind belongs to an extension, and values take shell-style patterns (`*`). The sh
 | `gh-project:OWNER/NUMBER`, `gh-project:OWNER/*` | gh | A project board. |
 | `rad:RID` | rad | A Radicle repository. |
 | `ssh:HOST`, `ssh:USER@HOST` | ssh | A host as named in your host's ssh config, for any user or that user. |
-| `git-sign:ADDRESS` | sign | Signing commits and tags as that address (the profile's git identity is always in scope). |
+| `git-sign:ADDRESS` | sign | Signing commits and tags as that address, whatever the role. |
 
 `apod broker scopes` lists the kinds the loaded extensions provide. An entry of a kind no
 extension provides is ignored, with a warning at launch. The older forms (`OWNER/REPO`, `OWNER`,
@@ -337,8 +337,12 @@ the profile.
   passed on) and `push force` (a branch update that isn't a fast-forward). A Radicle push lands in
   a staging repository the broker owns first, then the broker pushes it on with the host's
   `git-remote-rad`; nothing from the pod's repository runs on the host.
-- sign: `commit` or `tag`, by the author, committer or tagger email (in scope: the profile's git
-  identity).
+- sign: `commit` or `tag`, by the author, committer or tagger email. `[sign] key` makes signing
+  available, and it's turned on for a pod in one of two ways. If the role signs (`dev`,
+  `maintainer`, `ops`, or a role you give `sign = ["commit", "tag"]`), the pod signs as the
+  profile's git identity. If the scope has `git-sign:ADDRESS` entries
+  (`--scope git-sign:me@example.com`), it signs as those addresses, whatever the role. Otherwise
+  git in the pod doesn't sign, and the agent is told so.
 - ssh: `login` to the host whose host key the pod's ssh binds to the agent (OpenSSH 8.9's
   `session-bind`, verified by the broker's ssh-agent, matched against the host's `known_hosts`
   for the names in scope), every hop of a forwarded agent included; `connect` for the

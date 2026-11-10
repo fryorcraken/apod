@@ -31,11 +31,10 @@ gh = [
 ]
 github = ["fetch", "fetch public"]
 rad = ["fetch"]
-sign = ["commit", "tag"]
 ssh = ["connect", "login"]
 
 [roles.dev]
-description = "reader + push branches, open patches, create and edit PRs, create and comment on issues"
+description = "reader + push branches, open patches, create and edit PRs, create and comment on issues, sign commits"
 extends = ["reader"]
 gh = [
   "pr create", "pr edit", "pr comment", "pr ready",
@@ -47,6 +46,7 @@ gh = [
 ]
 github = ["push branch"]
 rad = ["push branch", "push patch"]
+sign = ["commit", "tag"]
 
 [roles.maintainer]
 description = "dev + merge and review PRs, manage issues and CI runs, fork and create repositories, tags"
