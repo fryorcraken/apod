@@ -252,7 +252,9 @@ fi
 
 case $agent in
   claude)   cmd=(claude --permission-mode bypassPermissions) ;;
-  opencode) cmd=(opencode) ;;  # permissions: see agentenv below
+  # --auto: no permission prompts (as bypassPermissions for Claude). --standalone: a private
+  # server, not opencode's background service, which pods sharing a profile home would share.
+  opencode) cmd=(opencode --auto --standalone) ;;
   bash)     cmd=(bash -l) ;;
   *) usage ;;
 esac
@@ -448,13 +450,6 @@ if [ -n "$bsid" ] || [ -n "$sshkey" ]; then
     m=${m%:z}; m=${m/%,z/}; mounts[i]=$m
   done
 fi
-# No permission prompts, as for Claude (bypassPermissions): opencode allows most tools by default
-# but asks before touching files outside the project, such as the profile's mounts. Its loop guard
-# (doom_loop: the same call three times) still asks. The profile's env can set its own.
-agentenv=()
-if [ "$agent" = opencode ] && ! grep -q '^OPENCODE_PERMISSION=' "$envf"; then
-  agentenv=(-e 'OPENCODE_PERMISSION={"external_directory":"allow"}')
-fi
 run=(podman run --rm "${tty[@]}" --userns=keep-id
   --name "apod-$profile-$(basename "$proj")-$$"
   --hostname "apod-$profile"
@@ -463,7 +458,7 @@ run=(podman run --rm "${tty[@]}" --userns=keep-id
   -e HOME=/home/agent
   -e APOD_PROFILE="$profile"
   -e CLAUDE_CODE_DISABLE_AGENT_VIEW=1
-  "${gitenv[@]}" "${benv[@]}" "${agentenv[@]}"
+  "${gitenv[@]}" "${benv[@]}"
   "${mounts[@]}" -w "$proj")
 [ -z "$network" ] || run+=(--network "$network")
 run+=("${volumes[@]}" --label apod.profile="$profile" --label apod.project="$proj" --label apod.session="$session")

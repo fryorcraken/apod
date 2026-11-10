@@ -105,11 +105,10 @@ apod bot ~/src/some-repo -- --continue      # anything after -- goes to the agen
 Agents run without permission prompts, since the container is the boundary:
 
 - **Claude Code** runs with `--permission-mode bypassPermissions`.
-- **opencode** allows most tools by default but asks before touching files outside the project
-  folder, such as the profile's mounts. apod sets
-  `OPENCODE_PERMISSION={"external_directory":"allow"}` so it doesn't. Its loop guard (`doom_loop`,
-  the same tool call three times in a row) still asks. Set `OPENCODE_PERMISSION` in the profile's
-  `env` to choose your own.
+- **opencode** (2.x, `@opencode/cli`) runs with `--auto`, which approves every permission a
+  config doesn't explicitly deny: a `"deny"` in the profile's `opencode.json` still holds. It also
+  runs with `--standalone`, a private server per pod instead of opencode's background service,
+  which pods of the same profile would otherwise share through their common home.
 
 Only the project folder is mounted (read-write). GitHub SSH remotes, including `github-*` host
 aliases from `~/.ssh/config`, are rewritten to HTTPS inside the pod, so `gh` and `git push` go

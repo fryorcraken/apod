@@ -11,7 +11,8 @@ RUN curl -fsSL https://claude.ai/install.sh | bash \
     && cp -L /root/.local/bin/claude /usr/local/bin/claude \
     && rm -rf /root/.local /root/.claude /root/.claude.json
 
-RUN npm install -g opencode-ai && npm cache clean --force
+# opencode 2.x is published as @opencode/cli (opencode-ai stopped at 1.x).
+RUN npm install -g @opencode/cli && npm cache clean --force
 
 # Binaries live in the image; update by rebuilding.
 ENV DISABLE_AUTOUPDATER=1
