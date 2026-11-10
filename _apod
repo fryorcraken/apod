@@ -71,4 +71,4 @@ _arguments -s -S \
   '*'{-m,--ro}'[mount a file or folder read-only]:path:_files' \
   '*--rw[mount a file or folder read-write]:path:_files' \
   '--persona[use the broker with this persona (none: no broker)]:persona:_apod_personas' \
-  '*--scope[add to the broker scope (OWNER/REPO, OWNER/*, OWNER, project:OWNER/N, rad:RID, ssh:[USER@]HOST, email:ADDR)]:scope:'
+  '*--scope[use the broker, adding to its scope (OWNER/REPO, OWNER/*, OWNER, project:OWNER/N, rad:RID, ssh:USER@HOST or ssh:HOST, email:ADDR)]:scope:'

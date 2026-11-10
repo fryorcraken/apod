@@ -214,10 +214,13 @@ if [ -f "$root/$profile/volumes" ]; then
 fi
 
 [ -f "$envf" ] || { echo "apod: missing $envf (git identity, see README)" >&2; exit 2; }
-# Broker: when the profile has a broker.toml or --persona is given ("--persona none" turns it off).
+# Broker: when the profile has a broker.toml, or --persona or --scope is given ("--persona none"
+# turns it off). The persona comes from --persona, else the profile's or the global broker.toml.
 usebroker=
-if [ "$persona" = none ]; then persona=
-elif [ -n "$persona" ] || [ -f "$root/$profile/broker.toml" ]; then usebroker=1; fi
+if [ "$persona" = none ]; then
+  persona=
+  [ ${#scopes[@]} -eq 0 ] || { echo "apod: --scope needs the broker, which --persona none turns off" >&2; exit 2; }
+elif [ -n "$persona" ] || [ ${#scopes[@]} -gt 0 ] || [ -f "$root/$profile/broker.toml" ]; then usebroker=1; fi
 ghsecret=()
 if [ -z "$usebroker" ]; then
   # GitHub token: the podman secret gh-<profile>, or another profile's if the github file names one.
@@ -430,6 +433,14 @@ fi
 # this into the container.
 case $agent in claude|opencode) export HERDR_AGENT=$agent ;; esac
 
+# Pods with a host socket (broker, ssh-key) run without SELinux labelling (below), so relabelling
+# their mounts (:z) does nothing useful, and it fails on files you don't own.
+if [ -n "$bsid" ] || [ -n "$sshkey" ]; then
+  for i in "${!mounts[@]}"; do
+    m=${mounts[$i]}; [ "$m" = -v ] && continue
+    m=${m%:z}; m=${m/%,z/}; mounts[i]=$m
+  done
+fi
 run=(podman run --rm "${tty[@]}" --userns=keep-id
   --name "apod-$profile-$(basename "$proj")-$$"
   --hostname "apod-$profile"

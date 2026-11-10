@@ -159,7 +159,7 @@ HTTPS pushes are unauthenticated.
 
 ### Broker
 
-A profile with a `broker.toml` (or a run with `--persona`) gets no credentials at all. A broker on
+A profile with a `broker.toml` (or a run with `--persona` or `--scope`) gets no credentials at all. A broker on
 the host, `apod-broker`, acts for the pod instead, through a socket directory mounted at
 `/run/apod-broker`:
 
@@ -222,7 +222,7 @@ key = "~/.ssh/id_apod_broker"
 apod ops --persona ops --scope ssh:fatso --scope ssh:root@q ~/src/infra   # these two hosts only
 ```
 
-A pod uses the broker when its profile has a `broker.toml` or the launch passes `--persona`. The
+A pod uses the broker when its profile has a `broker.toml` or the launch passes `--persona` or `--scope` (the persona then comes from `--persona`, the profile or the global file). The
 global file alone doesn't switch token profiles to the broker.
 
 **Keys** (ssh, signing, and the Radicle key in `home/keys/radicle`) live in the broker's own
