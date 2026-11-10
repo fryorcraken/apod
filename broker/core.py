@@ -44,8 +44,11 @@ ASK_TIMEOUT = float(os.environ.get("APOD_BROKER_ASK_TIMEOUT", "90"))
 if ASK_TIMEOUT.is_integer():
     ASK_TIMEOUT = int(ASK_TIMEOUT)
 
-# Scope kinds, as written in broker.toml's scope list and --scope.
-SCOPE_KINDS = ("repo", "owner", "project", "rad", "host", "identity")
+# Scope kinds and how they're written in broker.toml's scope list and --scope ("" for the two
+# GitHub kinds: OWNER/REPO and OWNER). Providers add their own with scope_kind().
+SCOPE_KINDS = ["repo", "owner", "project", "rad", "host", "identity"]
+SCOPE_PREFIX = {"project": "project:", "rad": "rad:", "host": "ssh:", "identity": "email:"}
+EXTENSIONS = ROOT / "broker-extensions"  # the user's own providers, *.py, loaded after the built-in ones
 
 
 class BrokerError(Exception):
@@ -67,11 +70,39 @@ def now():
 
 
 def provider(p):
-    """Register a provider: an object with name, configure(sess, cfg, reg, out), and optionally
-    routes [(method, prefix, handler)], listen(sess) -> [servers], summary(sess) -> [str]."""
+    """Register a provider: an object with name and configure(sess, cfg, reg, out) -> bool, and
+    optionally routes [(method, path prefix, handler(h, sess, method))], listen(sess) -> [servers]
+    and close(session id). See README.md, "Writing a broker extension"."""
+    if p.name in PROVIDERS:
+        raise BrokerError(f"a provider named {p.name} is already registered")
     PROVIDERS[p.name] = p
     ROUTES.extend(getattr(p, "routes", []))
     return p
+
+
+def scope_kind(kind, prefix):
+    """Add a scope kind, written PREFIXvalue in broker.toml and --scope (e.g. "url", "url:"). A
+    target (kind, value) is in scope when it matches one of the session's entries of that kind
+    (shell-style patterns, case-insensitive)."""
+    if not re.fullmatch(r"[a-z][a-z0-9-]*", kind) or not prefix.endswith(":"):
+        raise BrokerError(f"bad scope kind {kind!r} or prefix {prefix!r}")
+    if kind not in SCOPE_KINDS:
+        SCOPE_KINDS.append(kind)
+    SCOPE_PREFIX[kind] = prefix
+
+
+def load_extensions():
+    """Import ~/.agent-pod/broker-extensions/*.py, in name order; each registers its providers.
+    One that fails is skipped, with the error on stderr (the broker's log)."""
+    import importlib.util
+    for f in sorted(EXTENSIONS.glob("*.py")) if EXTENSIONS.is_dir() else []:
+        try:
+            spec = importlib.util.spec_from_file_location(f"apod_ext_{f.stem}", f)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = mod
+            spec.loader.exec_module(mod)
+        except Exception as e:  # noqa: BLE001 (a broken extension mustn't stop the broker)
+            print(f"apod-broker: extension {f} not loaded: {e!r}", file=sys.stderr, flush=True)
 
 
 def expand(path):
@@ -141,7 +172,7 @@ def matches(action, patterns):
 def parse_scope(entry):
     """A scope entry as written by the user -> (kind, value)."""
     e = entry.strip()
-    for kind, prefix in (("project", "project:"), ("rad", "rad:"), ("host", "ssh:"), ("identity", "email:")):
+    for kind, prefix in SCOPE_PREFIX.items():
         if e.lower().startswith(prefix):
             return kind, e[len(prefix):].strip()
     if "/" in e:
@@ -157,8 +188,7 @@ def fmt_target(t):
 
 
 def fmt_scope(kind, v):
-    return {"repo": v, "owner": v, "project": f"project:{v}", "rad": f"rad:{v}", "host": f"ssh:{v}",
-            "identity": f"email:{v}"}.get(kind, f"{kind}:{v}")
+    return v if kind in ("repo", "owner") else f"{SCOPE_PREFIX.get(kind, kind + ':')}{v}"
 
 
 class Session:
@@ -167,7 +197,7 @@ class Session:
     def __init__(self, d):
         for k in self.FIELDS:
             setattr(self, k, d.get(k))
-        self.scope = {k: list((self.scope or {}).get(k, [])) for k in SCOPE_KINDS}
+        self.scope = {k: list(v) for k, v in {**{k: [] for k in SCOPE_KINDS}, **(self.scope or {})}.items()}
         self.grants = {k: list((self.grants or {}).get(k, [])) for k in ("actions", "unscoped")}
         self.cfg = self.cfg or {}
         self.identity = self.identity or {}
@@ -205,9 +235,7 @@ class Session:
             if not user:  # a connection: any entry for that host
                 return any(fnmatch.fnmatchcase(name, p.rpartition("@")[2]) for p in pats("host"))
             return any(fnmatch.fnmatchcase(lv if "@" in p else name, p) for p in pats("host"))
-        if kind in ("repo", "project", "rad", "identity", "owner"):
-            return any(fnmatch.fnmatchcase(lv, p) for p in pats(kind))
-        return False
+        return any(fnmatch.fnmatchcase(lv, p) for p in pats(kind))
 
     def add_scope(self, t):
         kind, v = t[0], t[1]
@@ -220,12 +248,12 @@ class Session:
         elif kind == "host":  # "@NAME" (a connection) allows NAME for any user; USER@NAME stays that user's
             lst, v = self.scope["host"], v[1:] if v.startswith("@") else v
         else:
-            lst = self.scope[kind]
+            lst = self.scope.setdefault(kind, [])
         if v not in lst:
             lst.append(v)
 
     def scope_list(self):
-        return [fmt_scope(k, v) for k in SCOPE_KINDS for v in self.scope[k]]
+        return [fmt_scope(k, v) for k in self.scope for v in self.scope[k]]
 
     def summary(self):
         allow, _ = persona_rules(self.persona)

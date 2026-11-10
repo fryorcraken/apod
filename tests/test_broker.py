@@ -203,6 +203,12 @@ class BrokerTest(unittest.TestCase):
         (bin_ / "git-remote-rad").chmod(0o755)
         for name in ("apod-git-forward", "apod-sign", "apod-ssh-connect"):
             os.symlink(SHIM, bin_ / name)
+        # The example extension, installed as a user would, and a notify-send that records its args.
+        (cls.root / "broker-extensions").mkdir()
+        os.symlink(HERE / "extensions/notify.py", cls.root / "broker-extensions/notify.py")
+        (cls.root / "broker-extensions/broken.py").write_text("raise RuntimeError('broken on purpose')\n")
+        (bin_ / "fake-notify").write_text(f"#!/bin/sh\nprintf '%s|' \"$@\" >> {cls.tmp}/notified\n")
+        (bin_ / "fake-notify").chmod(0o755)
         cls.n = itertools.count()
         # The host's ssh setup: a config entry for "fatso" (an echo server stands in for sshd) and
         # its host key in known_hosts; a user key for logins and one for signing.
@@ -379,6 +385,26 @@ class BrokerTest(unittest.TestCase):
             s.sendall(b"POST /state HTTP/1.0\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}")
             data = b"".join(iter(lambda: s.recv(65536), b""))
         return json.loads(data.split(b"\r\n\r\n", 1)[1])
+
+    def test_extension(self):
+        (self.root / "personas.toml").write_text('[personas.dev-notify]\nextends = ["dev"]\nnotify = ["send"]\n')
+        self.addCleanup((self.root / "personas.toml").unlink)
+        sess = self.register("dev-notify", ["acme/widget"], toml=f'[notify]\nenabled = true\n'
+                             f'command = ["{self.tmp}/bin/fake-notify"]\n')
+        self.assertIn("notify", sess["providers"])
+        self.assertIn(["%s" % (HERE / "extensions/apod-notify"), "/usr/local/bin/apod-notify", "ro"], sess["mounts"])
+        self.assertIn("  notify: send", sess["context"])
+        e = dict(self.env, APOD_BROKER_SOCK=str(Path(sess["dir"]) / "broker.sock"))
+        client = [sys.executable, HERE / "extensions/apod-notify"]
+        r = subprocess.run([*client, "build", "done"], env=e, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.tmp / "notified").read_text(), "apod test|build done|")
+        # notify:urgent isn't in the persona: it waits, then times out.
+        r = subprocess.run([*client, "--urgent", "help"], env=e, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("not allowed for persona dev-notify: notify:urgent", r.stderr)
+        # The broken extension was skipped, with a warning in the broker's log.
+        self.assertIn("broken.py not loaded", (self.tmp / "broker.log").read_text())
 
     def test_links_in_text_are_not_targets(self):
         body = "see https://github.com/other/research and https://github.com/orgs/other/projects/3"

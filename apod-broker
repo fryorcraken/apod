@@ -9,6 +9,7 @@ sys.path.insert(0, str(HERE / "broker"))
 
 import core  # noqa: E402
 import gh, github, rad, sign, ssh  # noqa: E402,F401  (providers register themselves, in this order)
+core.load_extensions()  # ~/.agent-pod/broker-extensions/*.py
 
 if __name__ == "__main__":
     sys.exit(core.main(sys.argv[1:], Path(__file__).resolve()))

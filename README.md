@@ -6,6 +6,29 @@ and network, and either its own GitHub token or no credentials at all, with GitH
 commit signing and ssh handled by the host's [broker](#broker). An agent can run with no permission prompts while the container,
 not the agent, is the security boundary.
 
+## Why
+
+I keep Claude Code on a directory scope rule, so it can't reach outside the folders I've allowed.
+That works well until the work involves scripting: every command that isn't on the allowlist
+stops for a permission prompt, and a session turns into death by a thousand approvals. Approving
+them without reading defeats the point, and loosening the rule gives away the scope.
+
+apod moves the boundary instead. The agent runs in a rootless container that only has the
+project folder and what the profile mounts, so it can run anything without asking, and what it
+can't see it can't touch.
+
+Then I wanted agents to do some GitHub work too: push branches, open PRs, comment on issues, move
+cards on a project board. Handing a pod a token gives it everything that token can do, and
+fine-grained tokens are tedious to make and still coarse (a repository, not "open PRs here but
+don't merge"). So apod's [broker](#broker) keeps credentials on the host and acts for the pod: each
+pod gets a persona (what it may do) and a scope (what it may touch), and anything else waits for
+my approval in a TUI. The few prompts left are the ones worth reading.
+
+The same pattern fits more than GitHub: Radicle pushes, signing commits with a key the pod never
+sees, ssh to my hosts without a key per pod. So the broker is a small core (sessions, personas,
+scope, approvals, the audit log) with each of these as an extension, and adding another is a
+single Python file: see [Writing a broker extension](#writing-a-broker-extension).
+
 ## Where it lives
 
 - **Radicle (primary):** `rad clone rad:z2CjA38QDC7c5tgBkPV23UippSCjK`, published by `fryorgearo`
@@ -126,7 +149,9 @@ the host, `apod-broker`, acts for the pod instead, through a socket directory mo
 
 Every request is checked against the session's **persona** (what it may do) and **scope** (what
 it may touch); anything else waits for your approval. The broker starts with the first pod that
-uses it and keeps running; its state is in `~/.agent-pod/broker/`.
+uses it and keeps running; its state is in `~/.agent-pod/broker/`. Each of these is an
+extension of a small core, and you can add your own: see
+[Writing a broker extension](#writing-a-broker-extension).
 
 ```toml
 # ~/.agent-pod/work/broker.toml
@@ -314,6 +339,158 @@ echo logos-toolchain > ~/.agent-pod/work/image
 
 Tools live under `/opt` so the mounted home can't hide them. Rebuild derived images after
 rebuilding `apod`.
+
+## Writing a broker extension
+
+Every broker feature is a **provider**: `gh`, `github`, `rad`, `sign` and `ssh` in `broker/`, and
+your own in `~/.agent-pod/broker-extensions/*.py`. The broker loads its own providers first,
+then yours in name order. If one of yours fails to load, the broker skips it and writes the error
+to `~/.agent-pod/broker/broker.log`. Run `apod broker restart` after adding or changing one.
+[`extensions/notify.py`](extensions/notify.py) is a complete, tested example: `apod-notify TEXT`
+in the pod sends you a desktop notification. It's about 90 lines with comments.
+
+### How a request flows
+
+```
+pod: a client (a shim, git config, ssh, your own script)
+  │  HTTP over $APOD_BROKER_SOCK (/run/apod-broker/broker.sock, one socket per pod)
+  ▼
+broker: the route (method, path prefix) → your handler(h, sess, method)
+  1. validate what the pod sent (it's untrusted)
+  2. classify it: a Request with actions ("notify:send") and targets (("repo", "acme/widget"))
+  3. check(sess, req): persona allows every action and every target is in scope → go ahead;
+     otherwise it waits for approval (TUI, apod broker allow), up to APOD_BROKER_ASK_TIMEOUT
+  4. act on the host, reply to the pod
+```
+
+Nothing you add needs changes to `apod`. A provider tells `apod` what to set up in the pod when
+the pod registers, and `apod` applies that generically.
+
+### A provider
+
+```python
+# ~/.agent-pod/broker-extensions/hello.py
+from core import Request, check, provider, read_body, rejected_msg
+
+def handle(h, sess, method):                  # h: a BaseHTTPRequestHandler; reply with h.send_json
+    name = read_body(h).decode()[:100]
+    req = Request("hello", f"hello {name}")   # kind, and how the TUI and log show the request
+    req.actions = ["hello:greet"]             # "<provider>:<action>", what persona lists match
+    req.targets = [("identity", name)]        # what it touches; checked against the scope
+    ok, ev = check(sess, req)                 # blocks while it waits for approval
+    if not ok:
+        return h.send_json({"error": rejected_msg(req, ev)}, 403)
+    return h.send_json({"greeting": f"hello {name}"})
+
+class Hello:
+    name = "hello"                            # broker.toml [hello], persona list "hello"
+    routes = [("POST", "/hello", handle)]     # method (GET, POST, CONNECT) and path prefix
+
+    def configure(self, sess, cfg, reg, out): # at registration; cfg is broker.toml's [hello]
+        if not cfg.get("enabled"):
+            return False                      # not active for this pod
+        out["context"].append("POST /hello on $APOD_BROKER_SOCK greets someone.")
+        return True
+
+provider(Hello())
+```
+
+The provider object:
+
+| Attribute | |
+|---|---|
+| `name` | Required, unique. It names the `broker.toml` table, the persona list and the action prefix. |
+| `configure(sess, cfg, reg, out)` | Required. Runs when a pod registers. `cfg` is the provider's `broker.toml` table (`{}` if absent). `reg` is the registration (`profile`, `project`, `remotes`, …). Return whether the provider is active for this pod. |
+| `routes` | `[(method, path prefix, handler)]`, matched in registration order. `/whoami` is the core's. |
+| `listen(sess)` | Optional. Start extra servers in `sess.dir` (mounted in the pod), e.g. a socket that isn't HTTP; return them so the core stops them with the session. `ssh` uses this for its agent. |
+| `close(session_id)` | Optional. Clean up when a pod's session ends. |
+
+What `configure` can add to `out`. `apod` applies each of these to the pod:
+
+| Key | |
+|---|---|
+| `out["mounts"]` | `[host path, pod path, "ro"]`, e.g. a client script into `/usr/local/bin`. |
+| `out["env"]` | Environment variables for the pod. |
+| `out["git_config"]` | `[key, value]` pairs, passed as `GIT_CONFIG_*`. `{forward}` in a key becomes the pod's git forwarder URL. |
+| `out["context"]` | Sentences for the agent's system prompt: what's available and how to use it. |
+| `need_key(sess, out, path)` | Not a key, a function: the broker's ssh-agent must hold this key; `apod` runs `ssh-add` at launch if it doesn't. Returns the public key line and blob. |
+
+### The core's API
+
+All from `core`:
+
+- **`Request(kind, display)`** has `.actions`, a list of `"<provider>:<action>"`. The persona
+  lists in `personas.toml` match the part after the colon, with shell-style patterns. It also has
+  `.targets`, a list of `(kind, value)` pairs. A request with no targets is checked against the
+  persona only.
+- **`check(sess, req, waiting=None, extra=None)`** returns `(ok, event)`. If the request has to
+  wait, `waiting(event)` is called first, so you can tell the pod: `github` and `rad` show git a
+  "remote:" line this way. `extra` is merged into the event. Set `event["exit"]` once you've
+  acted, so the TUI shows a failure.
+- **`rejected_msg(req, ev)`** and **`waiting_msg(req, ev)`** produce the messages the pod should
+  see. They tell the agent how the user can approve the request.
+- **Scope kinds** are `repo` (`OWNER/REPO`), `owner`, `project` (`project:OWNER/N`), `rad`
+  (`rad:RID`), `host` (`ssh:[USER@]HOST`) and `identity` (`email:ADDRESS`). Add your own with
+  **`scope_kind("url", "url:")`**: users then write `url:https://docs.example.com/*` in `scope`
+  or `--scope`, and a target `("url", …)` is in scope when it matches an entry, case-insensitively,
+  with shell-style patterns. A target `("unscoped", "what")` is never in scope; approving it for
+  the session remembers it.
+- **`HARD_DENY`** is a list of action patterns that are never allowed, whatever the persona says.
+- **The session (`sess`)** has `.profile`, `.persona`, `.project`, `.scope`, `.identity` (the
+  profile's git name and emails), `.login` (the `gh` account, if any), `.title()` (the agent
+  session's name) and `.dir` (the session's directory, `/run/apod-broker` in the pod).
+  `.cfg[name]` is yours for per-session state, saved with the session so it survives a broker
+  restart. Keys starting with `_` are the core's.
+- **Helpers**: `read_body(h)`, `h.send_json(obj, status)`, `send_text(h, text, status)`,
+  `BrokerError`, `AGENT` (the broker's ssh-agent socket, for `SSH_AUTH_SOCK`), `BDIR` (the
+  broker's state directory; use `BDIR / "tmp"` for scratch files).
+
+### Personas
+
+An extension's actions belong in a persona list named after the provider. A persona in
+`~/.agent-pod/personas.toml` replaces the built-in persona of the same name, so to add actions,
+make a new persona that extends one:
+
+```toml
+[personas.dev-notify]
+extends = ["dev"]
+notify = ["send"]
+```
+
+Or approve the first request "for the persona" in the TUI (`p`), which saves the grant in
+`~/.agent-pod/broker/grants.json`. The agent's system prompt and `gh auth status` list an active
+provider's allowed actions with the rest.
+
+### The pod side
+
+The pod reaches the broker only through `$APOD_BROKER_SOCK`: HTTP over a unix socket. You can
+connect to it in either of two ways:
+
+- **Mount a client.** [`extensions/apod-notify`](extensions/apod-notify) is about 30 lines of
+  Python. The default image has Python, and the `gh` shim needs it anyway. `curl --unix-socket` works too,
+  if your image has curl.
+- **Point an existing tool at the broker.** The built-in providers do this:
+  - `sign` sets `gpg.ssh.program`;
+  - `github` and `rad` set `url.<forwarder>.insteadOf`;
+  - `ssh` sets `SSH_AUTH_SOCK` and a `ProxyCommand`.
+
+  The pod-side programs are all one script, `broker/pod-shim`, which dispatches on the name it's
+  run as.
+
+### Rules of thumb
+
+- **Treat everything from the pod as hostile.** Validate it, cap its size, never pass it to a
+  shell, and never let it name a path on the host. The `gh` provider refuses arguments that name
+  host files, and it receives the contents of files from the pod rather than reading them on the
+  host.
+- **Classify before acting, and classify by what the request does, not what it says.** For
+  example, `gh` resolves GraphQL node ids on GitHub to find the real repository. A link in an
+  issue body is not a target.
+- **Keep requests short.** An agent's command usually times out at 2 minutes, and the approval
+  wait defaults to 90 seconds. Don't stack a long action on top of it.
+- **Test like `tests/test_broker.py`.** Use a throwaway `APOD_ROOT`, start `apod-broker serve`,
+  `register` a session with a `--profile-dir` holding your `broker.toml`, and call the session's
+  socket. The example extension's test, `test_extension`, is a template.
 
 ## Security notes
 
