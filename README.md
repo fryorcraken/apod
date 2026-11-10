@@ -8,8 +8,8 @@ not the agent, is the security boundary.
 
 ## Why
 
-I keep Claude Code on a directory scope rule, so it can't reach outside the folders I've allowed.
-That works well until the work involves scripting: every command that isn't on the allowlist
+I run Claude Code with `blockReadsOutsideWorkingDirectories` on, so it can't read outside the
+folders I've allowed. That works well until the work involves scripting: every command that isn't on the allowlist
 stops for a permission prompt, and a session turns into death by a thousand approvals. Approving
 them without reading defeats the point, and loosening the rule gives away the scope.
 
