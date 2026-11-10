@@ -42,6 +42,10 @@ PATH_FLAGS = {"gist edit": ["add"], "attestation verify": ["bundle", "custom-tru
               "attestation trusted-root": ["tuf-root"]}
 NODE_ID = re.compile(r"^(?:[A-Z]{1,8}_[A-Za-z0-9_-]{6,}|MD[A-Za-z0-9+/]{6,}={0,2})$")
 GH_URL = re.compile(r"https?://(?:www\.)?github\.com/([^/\s?#]+)(?:/([^/\s?#]+))?(?:/([^/\s?#]+))?(?:/([^/\s?#]+))?")
+# Flags whose values are prose (titles, bodies, notes): a link in them is something the text
+# mentions, not something the command acts on, so it's not a target.
+TEXT_FLAGS = {"body", "title", "subject", "message", "notes", "description", "desc", "readme", "comment",
+              "name", "homepage", "field", "raw-field", "jq", "template", "query", "search"}
 NOT_OWNERS = {"orgs", "users", "settings", "marketplace", "sponsors", "notifications", "apps",
               "features", "enterprise", "enterprises", "topics", "collections", "search", "login",
               "new", "organizations", "explore", "codespaces", "pulls", "issues"}
@@ -414,7 +418,7 @@ def classify_gh(sess, argv, ctx, files, stdin, work):
         return classify_api(sess, req, flags, pos, ctx, files, stdin, work, n)
     elif group in ("gist", "status", "agent-task", "preview"):
         req.targets.append(("unscoped", cmd))
-    req.targets += url_targets(pos + [v for _, v in flags if v])
+    req.targets += url_targets(pos + [v for n, v in flags if v and n not in TEXT_FLAGS])
     req.targets = list(dict.fromkeys(req.targets))
     req.argv = rebuild(path, flags, pos)
     check_host_paths(req.argv, work)

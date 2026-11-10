@@ -354,6 +354,13 @@ class BrokerTest(unittest.TestCase):
         self.assertIn("needs your approval", r.stderr)
         self.assertIn("timed out", r.stderr)
 
+    def test_links_in_text_are_not_targets(self):
+        body = "see https://github.com/other/research and https://github.com/orgs/other/projects/3"
+        out = self.ran("issue", "create", "--title", "https://github.com/other/x", "--body", body)
+        self.assertEqual(out["argv"][:2], ["issue", "create"])
+        r = self.gh("pr", "view", "https://github.com/evil/repo/pull/1", expect=1)  # a positional URL is a target
+        self.assertIn("evil/repo", r.stderr)
+
     def test_hard_deny(self):
         r = self.gh("api", "user", expect=1)  # not in persona: asks
         self.assertIn("api GET /user", r.stderr)
