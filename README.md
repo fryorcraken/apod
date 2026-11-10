@@ -305,8 +305,10 @@ kitty, `OSC 777` for foot, rxvt and VTE terminals (GNOME Terminal, Ptyxis), else
 inside a multiplexer. The broker also calls `notify-send` itself when it's installed. View 2 lists
 sessions with their scope and grants (`x` removes one), view 3 the role grants (`x` removes
 one). Tab or 1–3 switch views, `q` quits. The mouse works too: click a tab, a row, or a button in
-the footer (each shows its key); the wheel scrolls. While the TUI has the mouse, hold Shift to
-select text. Requests and sessions show the agent session's name
+the footer (each shows its key); the wheel scrolls. To select text, hold Shift while you drag
+(most terminals), or press `m` to hand the mouse back to the terminal (`m` again takes it back).
+`y` copies the selected request's details to the clipboard (OSC 52: kitty, foot, Ghostty, WezTerm,
+iTerm2, Alacritty, tmux with `set-clipboard on`; not GNOME Terminal or other VTE ones). Requests and sessions show the agent session's name
 when it has one (Claude Code's `/rename`, read from the transcript in the profile's home), else
 the profile.
 

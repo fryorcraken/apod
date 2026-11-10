@@ -788,6 +788,8 @@ class BrokerTest(unittest.TestCase):
             nonlocal screen
             end = time.time() + timeout
             while time.time() < end:
+                if text in screen:
+                    return True
                 if select.select([master], [], [], 0.1)[0]:
                     screen += os.read(master, 65536)
                     if text in screen:
@@ -811,6 +813,17 @@ class BrokerTest(unittest.TestCase):
         os.write(master, b"\x1b[<0;3;30M\x1b[<0;3;30m")
         o, e = p.communicate(timeout=10)
         self.assertEqual(p.returncode, 0, e)
+        # y copies the selected request (OSC 52, base64); m lets go of the mouse to select text.
+        os.write(master, b"y")
+        self.assertTrue(read_until(b"\x1b]52;c;"), screen[-500:])
+        copied = screen.split(b"\x1b]52;c;")[-1].split(b"\x1b")[0]
+        self.assertIn(b"release delete v8", base64.b64decode(copied))
+        os.write(master, b"m")
+        self.assertTrue(read_until(b"mouse off"))
+        self.assertTrue(read_until(b"Mouse on"))  # the button now turns it back on
+        screen = b""
+        os.write(master, b"m")
+        self.assertTrue(read_until(b"elect text"))  # curses redraws only what changed
         os.write(master, b"\x1b[<0;16;2M\x1b[<0;16;2m")  # the Sessions tab
         self.assertTrue(read_until(b"acme/widget"))
         os.write(master, b"q")

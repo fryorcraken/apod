@@ -100,6 +100,21 @@ def tui_style(decision):
 
 def tui_detail(e, st, width):
     import textwrap
+    out = []
+    for line in tui_detail_lines(e, st):
+        out += textwrap.wrap(line, max(20, width - 2), subsequent_indent="  ") or [""]
+    return out
+
+
+def copy_seq(text):
+    """OSC 52: put TEXT on the clipboard (most terminals; VTE ones such as GNOME Terminal ignore
+    it). Base64, so nothing in TEXT reaches the terminal as a control sequence."""
+    import base64
+    return f"\x1b]52;c;{base64.b64encode(text.encode()).decode()}\x1b\\"
+
+
+def tui_detail_lines(e, st):
+    """A request's details, unwrapped: what the detail pane shows and y copies."""
     if e is None:
         return []
     name = next((x.get("name") for x in st["sessions"] if x["id"] == e["session"]), None) or e.get("name")
@@ -117,17 +132,14 @@ def tui_detail(e, st, width):
         if d.startswith(("rejected", "timed out", "denied by")) and (e["missing"] or e["out"]):
             d += " · granting it lets the agent retry"
         lines.append(d)
-    out = []
-    for line in lines:
-        out += textwrap.wrap(line, max(20, width - 2), subsequent_indent="  ") or [""]
-    return out
+    return lines
 
 
 def can_grant(e):
     return e["decision"].startswith(("rejected", "timed out", "denied by")) and bool(e["missing"] or e["out"])
 
 
-def tui_buttons(view, item):
+def tui_buttons(view, item, mouse=True):
     """The footer's buttons for a view and its selected row: [(key, label)]; each is clickable and
     does what pressing its key does."""
     b = []
@@ -136,11 +148,12 @@ def tui_buttons(view, item):
             b = [("a", "Allow once"), ("s", "For session"), ("r", f"For role {item['role']}"), ("d", "Deny")]
         elif can_grant(item):
             b = [("s", "Grant for session"), ("r", f"Grant for role {item['role']}")]
+        b.append(("y", "Copy"))
     elif view == "sessions" and item and "value" in item:
         b = [("x", "Remove")]
     elif view == "grants" and item:
         b = [("x", "Remove")]
-    return b + [("\t", "Next view"), ("q", "Quit")]
+    return b + [("m", "Select text" if mouse else "Mouse on"), ("\t", "Next view"), ("q", "Quit")]
 
 
 def run(scr):
@@ -148,6 +161,7 @@ def run(scr):
     curses.curs_set(0)
     scr.timeout(1000)
     scr.keypad(True)
+    mouse = True
     curses.mousemask(curses.ALL_MOUSE_EVENTS)
     curses.mouseinterval(0)  # a press acts at once, no waiting to tell clicks from double clicks
     styles = {"": curses.A_NORMAL, "dim": curses.A_DIM, "head": curses.A_BOLD, "button": curses.A_REVERSE,
@@ -237,7 +251,7 @@ def run(scr):
             for i, line in enumerate(detail):
                 put(y + i, 1, line, curses.A_BOLD if i == 0 else 0)
         x = 1
-        for key, label in tui_buttons(view, item):
+        for key, label in tui_buttons(view, item, mouse):
             text = f" {'Tab' if key == chr(9) else key} {label} "
             if x + len(text) >= w:
                 break
@@ -287,6 +301,15 @@ def run(scr):
                         curses.KEY_NPAGE: list_h, curses.KEY_PPAGE: -list_h}.get(k)
                 i = 0 if k in (curses.KEY_HOME, ord("g")) else len(keys) - 1 if k in (curses.KEY_END, ord("G")) else i + step
                 sel = keys[max(0, min(len(keys) - 1, i))]
+            elif ch == "m":
+                # Mouse off: the terminal's own selection works again (so does Shift+drag, in most
+                # terminals, with the mouse on).
+                mouse = not mouse
+                curses.mousemask(curses.ALL_MOUSE_EVENTS if mouse else 0)
+                msg, msg_t = ("mouse on" if mouse else "mouse off: select text with the mouse; m to turn it back on"), now()
+            elif view == "requests" and item and ch == "y":
+                os.write(1, copy_seq("\n".join(tui_detail_lines(item, st)) + "\n").encode())
+                msg, msg_t = f"copied #{item['id']} to the clipboard (if the terminal allows OSC 52)", now()
             elif view == "requests" and item and ch and ch in "asrd":
                 how = {"a": "once", "s": "session", "r": "role", "d": "deny"}[ch]
                 ev = client("/decide", {"id": item["id"], "how": how})
