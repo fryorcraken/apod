@@ -34,7 +34,7 @@ def classify(payload, namespace):
         k, _, v = line.partition(" ")
         if k in fields:
             m = re.search(r"<([^>]*)>", v)
-            req.targets.append(("email", (m.group(1) if m else v).lower()))
+            req.targets.append(("git-sign", (m.group(1) if m else v).lower()))
     req.targets = list(dict.fromkeys(req.targets))
     return req
 
@@ -100,5 +100,5 @@ class SignProvider:
 
 
 provider(SignProvider())
-scope_kind("email", provider="sign", parse=lambda v: v.strip().lower(),
-           help="email:ADDRESS (sign commits and tags as ADDRESS; the profile's git identity is in scope)")
+scope_kind("git-sign", provider="sign", parse=lambda v: v.strip().lower(),
+           help="git-sign:ADDRESS (sign commits and tags as ADDRESS; the profile's git identity is in scope)")

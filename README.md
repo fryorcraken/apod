@@ -124,7 +124,7 @@ A launch combines a **profile**, a **role**, a **scope** and a **project** into 
 |---|---|---|---|
 | **Profile** | An agent identity: who the agent is and what it can see. One per identity or kind of job, e.g. `bot`, `ops`. | Its git author (`env`). Its home (`home/`): Claude or opencode login, history and settings, Google login; every pod of the profile shares it, at the same time too. Its mounts, image, network, volumes and connectors. How it reaches GitHub and hosts: either a token (`apod token`, `ssh-key`) or a `broker.toml` with its default role and scope, its GitHub account (`[gh] user`, or `--gh-user` for one launch) and its keys. | `~/.agent-pod/<profile>/` |
 | **Role** | What a pod may do without asking, by action: the same for every profile that uses it. | One list per broker provider: `gh` commands, git pushes to GitHub and Radicle, commit signing, ssh. No identity, credentials or targets. | Built in (`roles.toml`: `reader`, `dev`, `maintainer`, `pm`, `ops`); `~/.agent-pod/roles.toml` adds to them. A profile's `role =`, or `--role`; default `reader`. |
-| **Scope** | What those actions may touch, as `KIND:VALUE` entries; each extension declares its kinds. | `gh:OWNER/REPO`, `gh:OWNER`, `gh-project:OWNER/N`, `rad:RID`, `ssh:[USER@]HOST`, `email:ADDRESS`, and your extensions' kinds (`apod broker scopes` lists them). | The project's GitHub and Radicle remotes and the profile's git identity, automatically; the profile's `scope` and `[ssh] hosts`; `--scope`. |
+| **Scope** | What those actions may touch, as `KIND:VALUE` entries; each extension declares its kinds. | `gh:OWNER/REPO`, `gh:OWNER`, `gh-project:OWNER/N`, `rad:RID`, `ssh:[USER@]HOST`, `git-sign:ADDRESS`, and your extensions' kinds (`apod broker scopes` lists them). | The project's GitHub and Radicle remotes and the profile's git identity, automatically; the profile's `scope` and `[ssh] hosts`; `--scope`. |
 | **Project** | The folder the agent works in. | Mounted read-write; its remotes join the scope. | The folder argument. |
 | **Session** | One running pod, registered with the broker. | Its profile, role and scope, and what you approve "for the session"; it all ends with the pod. | Each launch. |
 
@@ -293,13 +293,13 @@ kind belongs to an extension, and values take shell-style patterns (`*`). The sh
 | `gh-project:OWNER/NUMBER`, `gh-project:OWNER/*` | gh | A project board. |
 | `rad:RID` | rad | A Radicle repository. |
 | `ssh:HOST`, `ssh:USER@HOST` | ssh | A host as named in your host's ssh config, for any user or that user. |
-| `email:ADDRESS` | sign | Signing commits and tags as that address. |
+| `git-sign:ADDRESS` | sign | Signing commits and tags as that address (the profile's git identity is always in scope). |
 
 `apod broker scopes` lists the kinds the loaded extensions provide. An entry of a kind no
 extension provides is ignored, with a warning at launch. The older forms (`OWNER/REPO`, `OWNER`,
-`project:OWNER/N`) still work, with a warning naming the new form. Forks and repositories the
-session creates join its scope. The TUI and the log show targets the same way, so what you see
-out of scope is what you'd add.
+`project:OWNER/N`, `email:ADDRESS`) still work, with a warning naming the new form. Forks and
+repositories the session creates join its scope. The TUI and the log show targets the same way,
+so what you see out of scope is what you'd add.
 
 **Approvals.** A request outside the role or the scope waits (`APOD_BROKER_ASK_TIMEOUT`,
 default 90 seconds; 0 rejects at once) and shows up in `apod broker` (a terminal UI),

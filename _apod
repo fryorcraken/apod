@@ -75,4 +75,4 @@ _arguments -s -S \
   '--role[use the broker with this role (default: from broker.toml, else reader)]:role:_apod_roles' \
   '--no-broker[no broker for this run, even with a broker.toml]' \
   '--gh-user[use the broker, acting on GitHub as this host gh account]:account:' \
-  '*--scope[use the broker, adding to its scope (gh:OWNER/REPO, gh:OWNER/*, gh:OWNER, gh-project:OWNER/N, rad:RID, ssh:USER@HOST or ssh:HOST, email:ADDR)]:scope:'
+  '*--scope[use the broker, adding to its scope (gh:OWNER/REPO, gh:OWNER/*, gh:OWNER, gh-project:OWNER/N, rad:RID, ssh:USER@HOST or ssh:HOST, git-sign:ADDR)]:scope:'

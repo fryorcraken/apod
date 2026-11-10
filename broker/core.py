@@ -49,10 +49,11 @@ if ASK_TIMEOUT.is_integer():
 
 # Scope kinds, keyed by prefix: an entry is written PREFIX:VALUE in broker.toml's scope list and
 # --scope, a target is (PREFIX, VALUE). Core knows none; extensions declare theirs with
-# scope_kind() (gh:, gh-project:, rad:, ssh:, email: are the shipped extensions'). "unscoped"
+# scope_kind() (gh:, gh-project:, rad:, ssh:, git-sign: are the shipped extensions'). "unscoped"
 # targets are core's: they're in scope only once the user approves them for the session.
 SCOPES = {}
-OLD_TARGET_KINDS = {"repo": "gh", "owner": "gh", "project": "gh-project", "host": "ssh", "identity": "email"}
+OLD_TARGET_KINDS = {"repo": "gh", "owner": "gh", "project": "gh-project", "host": "ssh", "identity": "git-sign",
+                    "email": "git-sign"}
 GLOBAL_CONFIG = ROOT / "broker.toml"   # defaults for every profile's broker.toml
 EXTENSIONS = ROOT / "broker-extensions"  # the user's own extensions, *.py; a name here replaces a shipped one
 SHIPPED_EXTENSIONS = CHECKOUT / "extensions"
@@ -283,11 +284,12 @@ def parse_scope(entry):
 
 
 def old_scope(entry):
-    """An entry written in an older form (OWNER/REPO, OWNER, project:OWNER/N) -> as it's written
-    now (gh:..., gh-project:...), else None."""
+    """An entry written in an older form (OWNER/REPO, OWNER, project:OWNER/N, email:ADDRESS) -> as
+    it's written now (gh:..., gh-project:..., git-sign:...), else None."""
     e = entry.strip()
-    if e.lower().startswith("project:"):
-        return "gh-project:" + e[len("project:"):].strip()
+    for old, new in (("project:", "gh-project:"), ("email:", "git-sign:")):
+        if e.lower().startswith(old):
+            return new + e[len(old):].strip()
     if ":" not in e:
         return "gh:" + e
     return None
@@ -817,8 +819,8 @@ def register(r):
     if old:
         warnings.append(f"scope entries in the old form; write them as {', '.join(old)}")
     for e in identity["emails"]:
-        if "email" in SCOPES:
-            sess.add_scope(("email", e))
+        if "git-sign" in SCOPES:
+            sess.add_scope(("git-sign", e))
     out = {"env": {"APOD_BROKER_SOCK": f"{POD_DIR}/broker.sock"}, "git_config": [], "mounts": [],
            "context": [], "need_keys": [], "providers": [], "warnings": warnings}
     start_agent()

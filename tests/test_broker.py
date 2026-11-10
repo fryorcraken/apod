@@ -560,6 +560,10 @@ class BrokerTest(unittest.TestCase):
         w = []
         pm = self.register("pm", ["acme/widget", "project:acme/5"], warnings=w)  # the old forms still work
         self.assertIn("acme/widget → gh:acme/widget, project:acme/5 → gh-project:acme/5", w[0])
+        self.assertIn("git-sign:agent@example.com", pm["scope"])  # the profile's git identity
+        w = []
+        self.assertIn("git-sign:m@example.com", self.register("dev", ["email:m@example.com"], warnings=w)["scope"])
+        self.assertIn("email:m@example.com → git-sign:m@example.com", w[0])
         self.assertEqual(pm["scope"][:2], ["gh:acme/widget", "gh-project:acme/5"])
         self.ran("project", "item-list", "5", "--owner", "acme", sess=pm)
         r = self.gh("project", "item-edit", "--project-id", "PVT_kwDOBBB222", "--id", "PVTI_lADOAAA444", sess=pm, expect=1)
@@ -660,7 +664,7 @@ class BrokerTest(unittest.TestCase):
         r = subprocess.run(["git", "-C", repo, "commit", "-q", "--allow-empty", "-m", "other",
                             "--author", "Mallory <m@evil.example>"], env=e, capture_output=True, text=True)
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("email:m@evil.example", self.admin("log", "-n", "3").stdout)
+        self.assertIn("git-sign:m@evil.example", self.admin("log", "-n", "3").stdout)
 
     # --- ssh -------------------------------------------------------------------------------
 
