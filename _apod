@@ -7,6 +7,7 @@ _apod_profiles() {
   profiles=(${APOD_ROOT:-$HOME/.agent-pod}/*(N/:t))
   profiles=(${profiles:#broker})
   profiles=(${profiles:#broker-extensions})
+  profiles=(${profiles:#worklog})
   _describe -t profiles 'profile' profiles
 }
 
@@ -65,15 +66,31 @@ case ${words[2]} in
     return ;;
 esac
 
-_arguments -s -S \
-  '1:profile:_apod_first' \
-  '2:project dir:_directories' \
-  '-a[agent to run]:agent:(claude opencode bash)' \
-  '(-i --image)'{-i,--image}'[container image for this run]:image:_apod_images' \
-  '*'{-c,--connectors}'[enable claude.ai connectors for this run]:connectors:_apod_connectors' \
-  '*'{-m,--ro}'[mount a file or folder read-only]:path:_files' \
-  '*--rw[mount a file or folder read-write]:path:_files' \
-  '--role[use the broker with this role (default: from broker.toml, else reader)]:role:_apod_roles' \
-  '--no-broker[no broker for this run, even with a broker.toml]' \
-  '--gh-user[use the broker, acting on GitHub as this host gh account]:account:' \
+# The launch options, also listed with the folders on a bare <TAB> after the profile (the folder is
+# optional, and _arguments alone offers options only once the word starts with -).
+launchopts=(
+  '-a[agent to run]:agent:(claude opencode bash)'
+  '(-i --image)'{-i,--image}'[container image for this run]:image:_apod_images'
+  '*'{-c,--connectors}'[enable claude.ai connectors for this run]:connectors:_apod_connectors'
+  '*'{-m,--ro}'[mount a file or folder read-only]:path:_files'
+  '*--rw[mount a file or folder read-write]:path:_files'
+  '--role[use the broker with this role (default: from broker.toml, else reader)]:role:_apod_roles'
+  '--no-broker[no broker for this run, even with a broker.toml]'
+  '--gh-user[use the broker, acting on GitHub as this host gh account]:account:'
   '*--scope[use the broker, adding to its scope (gh:OWNER/REPO, gh:OWNER/*, gh:OWNER, gh-project:OWNER/N, rad:RID, ssh:USER@HOST or ssh:HOST, git-local:PATH)]:scope:'
+)
+
+_apod_dir() {
+  _directories
+  [[ -n $PREFIX ]] && return
+  local -a opts; local spec name
+  for spec in $launchopts; do
+    name=${${spec#\(*\)}#\*}; name=${name%%\[*}
+    # an option that can't repeat is offered once
+    [[ $spec != \** && -n ${words[(r)$name]} ]] && continue
+    opts+=("$name:${${spec#*\[}%%\]*}")
+  done
+  _describe -t launch-options 'option' opts
+}
+
+_arguments -s -S '1:profile:_apod_first' '2:project dir:_apod_dir' $launchopts
