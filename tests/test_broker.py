@@ -11,6 +11,7 @@ import struct
 import http.server
 import getpass
 import json
+import re
 import os
 import shutil
 import socketserver
@@ -218,6 +219,16 @@ TAGGER_EXT = textwrap.dedent('''
 ''')
 
 
+def md_code_blocks(md, marker):
+    """{file name: code} of a Markdown file's code blocks whose first lines name a file under marker."""
+    out = {}
+    for block in re.findall(r"```\w*\n(.*?)```", md.read_text(), re.S):
+        for line in block.splitlines()[:2]:
+            if line.startswith("# " + marker):
+                out[line[len("# " + marker):].strip()] = block
+    return out
+
+
 def unix_post(sock, path, body):
     import http.client
 
@@ -271,6 +282,12 @@ class BrokerTest(unittest.TestCase):
         (ext / "badroute.py").write_text("from api import Provider, provider\n"
                                          "class P(Provider):\n    name = 'badroute'\n    routes = [('POST', '/gh/x', print)]\n"
                                          "provider(P())\n")
+        # EXTENSIONS.md's tutorial, as the guide has it, with a systemctl that records its args.
+        for name, code in md_code_blocks(HERE / "EXTENSIONS.md", "~/.agent-pod/broker-extensions/").items():
+            (ext / name).write_text(code)
+            (ext / name).chmod(0o755)
+        (bin_ / "systemctl").write_text(f"#!/bin/sh\nprintf '%s ' \"$@\" >> {cls.tmp}/systemctl\necho active\n")
+        (bin_ / "systemctl").chmod(0o755)
         (ext / "needy.py").write_text("from api import Provider, provider\n"
                                       "class P(Provider):\n    name = 'needy'\n    requires = ['nothere']\n"
                                       "    def configure(self, sess, cfg, reg, out):\n        return True\n"
@@ -498,6 +515,27 @@ class BrokerTest(unittest.TestCase):
         status, body = unix_post(sock, "/tag", {"name": "beta"})  # out of scope: waits, then times out
         self.assertEqual(status, 403)
         self.assertIn("out of this session's scope: tag:beta", body["error"])
+
+    def test_extensions_md_tutorial(self):
+        """The svc extension from EXTENSIONS.md works as the guide says."""
+        (self.root / "roles.toml").write_text('[roles.svcdev]\nextends = ["reader"]\nsvc = ["status"]\n')
+        self.addCleanup((self.root / "roles.toml").unlink)
+        sess = self.register("svcdev", [], toml='[svc]\nenabled = true\nunits = ["web"]\n')
+        self.assertIn("svc", sess["providers"])
+        self.assertIn("unit:web.service", sess["scope"])
+        self.assertIn("apod-svc status|restart UNIT", sess["context"])
+        e = dict(self.env, APOD_BROKER_SOCK=str(Path(sess["dir"]) / "broker.sock"))
+        client = [sys.executable, "-I", self.root / "broker-extensions/apod-svc"]  # -I: not its folder's json.py
+        r = subprocess.run([*client, "status", "web"], env=e, capture_output=True, text=True)
+        self.assertEqual((r.returncode, r.stdout), (0, "active\n"), r.stderr)
+        self.assertEqual((self.tmp / "systemctl").read_text(), "--user status --no-pager -- web.service ")
+        r = subprocess.run([*client, "restart", "web"], env=e, capture_output=True, text=True)
+        self.assertIn("not allowed for role svcdev: svc:restart", r.stderr)
+        r = subprocess.run([*client, "status", "db"], env=e, capture_output=True, text=True)
+        self.assertIn("out of this session's scope: unit:db.service", r.stderr)
+        r = subprocess.run([*client, "status", "--user"], env=e, capture_output=True, text=True)
+        self.assertIn("not a unit name", r.stderr)
+        self.assertEqual((self.tmp / "systemctl").read_text(), "--user status --no-pager -- web.service ")
 
     def test_extension_api_checks(self):
         """What a broken or misdeclared extension registered doesn't stay behind."""
