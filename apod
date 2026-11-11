@@ -393,15 +393,23 @@ mounts+=("${filemounts[@]}" -v "$proj:$proj:z")
 # Broker session: the broker reads the profile's broker.toml and env, and the project's remotes
 # (GitHub and Radicle remotes join the scope), and answers with what the pod needs: mounts,
 # environment, git config, keys to load into its agent, and a note for the agent.
-bsid=; binfo=; bproviders=
+bsid=; binfo=; bproviders=; agentpid=
+# Set before registering, so that a Ctrl-C at a passphrase prompt doesn't leave the session behind.
+cleanup() {
+  [ -z "$agentpid" ] || kill "$agentpid" 2>/dev/null
+  [ -z "${sock:-}" ] || rm -f "$sock"
+  [ -z "$bsid" ] || python3 "$apoddir/apod-broker" unregister "$bsid" 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM HUP
 if [ -n "$usebroker" ]; then
   regargs=(--id "$(uuidgen | tr -d - | cut -c1-12)" --profile "$profile" --profile-dir "$root/$profile" --project "$proj")
   [ -z "$role" ] || regargs+=(--role "$role")
   [ -z "$ghuser" ] || regargs+=(--gh-user "$ghuser")
   for s in "${scopes[@]}"; do regargs+=(--scope "$s"); done
   while read -r _ url; do regargs+=(--remote "$url"); done < <(git -C "$proj" config --get-regexp '^remote\..*\.(url|pushurl)$' 2>/dev/null || true)
+  bsid=${regargs[1]}
   binfo=$(python3 "$apoddir/apod-broker" register "${regargs[@]}") || exit 2
-  bsid=$(jq -r .id <<< "$binfo")
   bproviders=" $(jq -r '.providers | join(" ")' <<< "$binfo") "
   # Keys the broker's agent doesn't hold yet: ssh-add asks for their passphrases here.
   agentsock=$(jq -r .agent <<< "$binfo")
@@ -540,13 +548,6 @@ else
   cmdline=("$image" bash -lc 'gh auth setup-git >/dev/null 2>&1 || true; exec "$@"' _ "${cmd[@]}" "$@")
 fi
 [ -n "$sshkey" ] || [ -n "$bsid" ] || exec "${run[@]}" "${cmdline[@]}"
-agentpid=
-cleanup() {
-  [ -z "$agentpid" ] || kill "$agentpid" 2>/dev/null
-  [ -z "${sock:-}" ] || rm -f "$sock"
-  [ -z "$bsid" ] || python3 "$apoddir/apod-broker" unregister "$bsid" 2>/dev/null || true
-}
-trap cleanup EXIT
 if [ -z "$sshkey" ]; then "${run[@]}" "${cmdline[@]}"; exit; fi
 
 # Dedicated ssh-agent for this run: asks for the key's passphrase here, drops the key after

@@ -10,7 +10,8 @@
 #           "graphql query FIELD" or "graphql mutation NAME" (top-level fields; repository,
 #           organization/user and node ids are checked against the scope)
 #   github  git over https to github.com: "fetch", "fetch public" (public repositories outside
-#           the scope), "push branch", "push default-branch", "push tag", "push delete"
+#           the scope), "push branch", "push default-branch", "push tag", "push delete", "push force"
+#           (a branch update that isn't a fast-forward: --force and --force-with-lease alike)
 #   rad     git to rad:// remotes: "fetch", "push branch", "push default-branch", "push patch"
 #           (HEAD:refs/patches), "push tag", "push delete", "push force" (not a fast-forward)
 #   sign    "commit", "tag", "as other" (a commit or tag by anyone but the profile's git identity)
@@ -35,7 +36,7 @@ rad = ["fetch"]
 ssh = ["connect", "login"]
 
 [roles.dev]
-description = "reader + push branches, open patches, create and edit PRs, create and comment on issues, sign commits"
+description = "reader + push branches (force pushes too), open patches, create and edit PRs, create and comment on issues, sign commits"
 extends = ["reader"]
 gh = [
   "pr create", "pr edit", "pr comment", "pr ready",
@@ -45,8 +46,8 @@ gh = [
   "graphql mutation addComment", "graphql mutation addPullRequestReviewComment",
   "graphql mutation addPullRequestReviewThreadReply", "graphql mutation resolveReviewThread",
 ]
-github = ["push branch"]
-rad = ["push branch", "push patch"]
+github = ["push branch", "push force"]
+rad = ["push branch", "push patch", "push force"]
 sign = ["commit", "tag"]
 
 [roles.maintainer]

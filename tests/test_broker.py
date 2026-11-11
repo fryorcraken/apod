@@ -40,6 +40,12 @@ FAKE_GH = textwrap.dedent(f"""\
         print("tok-" + (a[a.index("--user") + 1] if "--user" in a else "active")); sys.exit()
     if a[:2] == ["api", "user"]:
         print("octo"); sys.exit()
+    if a[:1] == ["api"] and "/compare/" in a[1]:  # is A an ancestor of B, in the test's upstream
+        import subprocess
+        repo, _, ab = a[1][len("repos/"):].partition("/compare/")
+        x, _, y = ab.partition("...")
+        r = subprocess.run(["git", "-C", f"@UPSTREAM@/{{repo}}.git", "merge-base", "--is-ancestor", x, y])
+        print("identical" if x == y else "ahead" if r.returncode == 0 else "diverged"); sys.exit()
     if a[:1] == ["api"] and a[1].startswith("repos/") and "--jq" in a:
         print(json.dumps({{"default_branch": "main", "private": a[1] != "repos/other/public"}})); sys.exit()
     if a[:2] == ["api", "graphql"] and any("nodes(ids:" in x for x in a):
@@ -234,7 +240,7 @@ class BrokerTest(unittest.TestCase):
         cls.root.mkdir()
         bin_ = cls.tmp / "bin"
         bin_.mkdir()
-        (bin_ / "gh").write_text(FAKE_GH)
+        (bin_ / "gh").write_text(FAKE_GH.replace("@UPSTREAM@", str(cls.tmp / "upstream")))
         (bin_ / "gh").chmod(0o755)
         (bin_ / "git-remote-rad").write_text(FAKE_REMOTE_RAD)
         (bin_ / "git-remote-rad").chmod(0o755)
@@ -617,6 +623,18 @@ class BrokerTest(unittest.TestCase):
         r = subprocess.run(["git", "-C", d, "push", "origin", ":topic"], env=e, capture_output=True, text=True)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("github:push delete", r.stderr)
+        # A fast-forward is a branch push; a rewrite is a force push, which dev may do.
+        subprocess.run(["git", "-C", d, "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "y"], env=e, check=True)
+        r = subprocess.run(["git", "-C", d, "push", "origin", "HEAD:refs/heads/topic"], env=e, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        subprocess.run(["git", "-C", d, "-c", "user.email=t@t", "commit", "-q", "--amend", "--allow-empty", "-m", "y2"],
+                       env=e, check=True)
+        r = subprocess.run(["git", "-C", d, "push", "--force-with-lease", "origin", "HEAD:refs/heads/topic"], env=e,
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        log = self.admin("log", "-n", "2").stdout
+        self.assertIn("allowed              git push github.com/acme/widget refs/heads/topic", log)
+        self.assertIn("allowed              git push --force github.com/acme/widget refs/heads/topic", log)
         # Out of scope: a public repo can be fetched, not pushed.
         r = subprocess.run(["git", "ls-remote", "https://github.com/other/public"], env=e, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -870,12 +888,13 @@ class BrokerTest(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("rad:push default-branch", r.stderr)
         self.assertNotEqual(onward("refs/heads/master"), head)
-        # Rewriting topic: a force push, which dev doesn't have.
+        # Rewriting topic: a force push, which dev may do; it goes on as one.
         subprocess.run(["git", "-C", d, "commit", "-q", "--amend", "--allow-empty", "-m", "rewritten"], env=e, check=True)
         r = subprocess.run(["git", "-C", d, "push", "-f", "origin", "HEAD:refs/heads/topic"], env=e, capture_output=True, text=True)
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn("rad:push force", r.stderr)
-        self.assertEqual(onward("refs/heads/topic"), head)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        new = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"], env=e, capture_output=True, text=True).stdout.strip()
+        self.assertEqual(onward("refs/heads/topic"), new)
+        self.assertIn(f"git push --force rad:{RID} refs/heads/topic", self.admin("log", "-n", "3").stdout)
 
     def test_tui_approves(self):
         import fcntl

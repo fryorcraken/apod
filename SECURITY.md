@@ -95,7 +95,7 @@ The broker turns each request into actions and targets, and checks them before a
     repository they belong to.
   - Links in titles and bodies are not targets.
 - **git pushes are checked ref by ref.** Branch, default branch, tag, delete and patch are
-  separate actions. For Radicle, so is a force push.
+  separate actions, and so is a force push (an update that isn't a fast-forward).
 - **Signing:** commits and tags are signed only as the profile's git identity, and only in the
   repositories in scope, unless you approve otherwise. The broker sees the identity in the object
   it signs, but it learns the repository from the pod: a hostile agent can name an in-scope
@@ -174,7 +174,10 @@ The broker turns each request into actions and targets, and checks them before a
   a separate one, so a pod's patches look like yours.
 - **Reads within the scope.** Roles allow broad reads on targets in scope, such as
   `api GET /repos/{repo}/*`, and `github:fetch public` allows fetching any public repository.
-  Private data in scope is readable.
+  Private data in scope is readable. A read can also reach past the scope: a GraphQL query is
+  scoped by its top-level fields, so one on an in-scope repository can follow links to others
+  (its owner's repositories, a fork's parent), and REST lists such as forks do the same. Treat
+  everything the account can read as readable.
 - **SELinux is off for broker pods unless you install apod's module.** By default they run with
   `label=disable`, because SELinux stops a container from connecting to the broker's socket; the
   same goes for pods with an `ssh-key`. `apod selinux install` loads a one-rule module that lets

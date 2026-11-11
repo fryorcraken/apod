@@ -278,8 +278,8 @@ it (and its `description` replaces the built-in one). A pod with no role is a `r
 
 - `reader`: view PRs, issues, CI runs and repositories, read the REST and GraphQL APIs for the
   repositories in scope, fetch; ssh to the hosts in scope.
-- `dev`: reader plus push branches (not the default branch), open Radicle patches, create and edit
-  PRs, comment, create issues; sign commits.
+- `dev`: reader plus push branches (not the default branch), force pushes included, open Radicle
+  patches, create and edit PRs, comment, create issues; sign commits.
 - `maintainer`: dev plus merge and review PRs, edit and close issues, re-run CI, fork and create
   repositories, push tags and delete branches.
 - `pm`: reader plus project boards (list, view, add and move items, add fields, templates) and
@@ -337,8 +337,12 @@ the profile.
   `organization`/`user` arguments and node ids (looked up on GitHub) checked against the scope. A
   query or mutation that can't be scoped that way waits for approval.
 - github and rad pushes by ref: `push branch`, `push default-branch`, `push tag`, `push delete`,
-  and for Radicle `push patch` (`HEAD:refs/patches`, push options such as `-o patch.message=...`
-  passed on) and `push force` (a branch update that isn't a fast-forward). A Radicle push lands in
+  `push force` (a branch update that isn't a fast-forward, added to the ref's own action), and for
+  Radicle `push patch` (`HEAD:refs/patches`, push options such as `-o patch.message=...` passed
+  on). `--force-with-lease` and `--force` look the same to the broker: the lease is checked by git
+  in the pod, against its remote-tracking branch. For GitHub, the broker reads the commits in the
+  push and asks GitHub about the ones it already has; a push it can't show to be a fast-forward
+  counts as a force push. A Radicle push lands in
   a staging repository the broker owns first, then the broker pushes it on with the host's
   `git-remote-rad`; nothing from the pod's repository runs on the host.
 - sign: the three parts each have their place.

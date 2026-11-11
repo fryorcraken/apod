@@ -16,7 +16,7 @@ import urllib.parse
 from pathlib import Path
 
 import gitwire
-from core import (AGENT, BDIR, EVENTS, BrokerError, Request, check, evaluate, expand, need_key, now, provider, scope_kind,
+from core import (GIT_BODY_LIMIT, AGENT, BDIR, EVENTS, BrokerError, Request, check, evaluate, expand, need_key, now, provider, scope_kind,
                   read_body, rejected_msg, run_quiet, send_text)
 
 RAD_URL = re.compile(r"^rad://(z[1-9A-HJ-NP-Za-km-z]+)(?:/(z[1-9A-HJ-NP-Za-km-z]+))?/?$")
@@ -102,7 +102,7 @@ def handle(h, sess, method):
     service = urllib.parse.parse_qs(u.query).get("service", [""])[0] if endpoint == "info/refs" else endpoint
     if service not in ("git-upload-pack", "git-receive-pack") or (endpoint == "info/refs") != (method == "GET"):
         return send_text(h, "unsupported git request", 400)
-    body = read_body(h) if method == "POST" else None
+    body = read_body(h, GIT_BODY_LIMIT) if method == "POST" else None
     cfg = sess.cfg["rad"]
     push = service == "git-receive-pack"
     req = Request("rad", f"git {'push' if push else 'fetch'} rad:{rid}" + (f"/{nid}" if nid else ""))

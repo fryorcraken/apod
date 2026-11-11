@@ -1,17 +1,19 @@
 """github provider: the pod's github.com remotes point at the broker (through apod-git-forward
 in the pod), which checks each fetch and each pushed ref and forwards the request to GitHub with
 the host gh account's token. Actions: github:fetch, github:fetch public (a public repository
-outside the scope), github:push branch|default-branch|tag|delete|other-ref."""
+outside the scope), github:push branch|default-branch|tag|delete|other-ref, and github:push force
+for a branch update that isn't a fast-forward (with or without a lease: the broker can't tell)."""
 import base64
 import http.client
 import json
 import os
 import re
 import urllib.parse
+import zlib
 from pathlib import Path
 
 import gitwire
-from core import EVENTS, BrokerError, Request, check, evaluate, now, provider, read_body, rejected_msg, send_text
+from core import GIT_BODY_LIMIT, EVENTS, BrokerError, Request, check, evaluate, now, provider, read_body, rejected_msg, send_text
 from gh import gh_query, gh_user, token_for
 
 UPSTREAM = os.environ.get("APOD_GH_GIT_UPSTREAM", "https://github.com")
@@ -19,13 +21,18 @@ _repo_info = {}
 
 
 def repo_info(sess, repo):
-    if repo not in _repo_info:
+    """A repository's default branch and visibility, as the session's account sees it; cached for
+    five minutes, so a repository made private or a renamed default branch is seen soon."""
+    key = (gh_user(sess), repo)
+    info, ts = _repo_info.get(key, (None, 0))
+    if info is None or now() - ts > 300:
         out = gh_query(sess, ["api", f"repos/{repo}", "--jq", "{default_branch, private}"])
         try:
-            _repo_info[repo] = json.loads(out or "")
+            info = json.loads(out or "")
         except ValueError:
             return {}
-    return _repo_info[repo]
+        _repo_info[key] = (info, now())
+    return info
 
 
 def upstream_request(sess, method, path, body, h, gzip_ok=True):
@@ -64,7 +71,7 @@ def handle(h, sess, method):
     service = urllib.parse.parse_qs(u.query).get("service", [""])[0] if endpoint == "info/refs" else endpoint
     if service not in ("git-upload-pack", "git-receive-pack") or (endpoint == "info/refs") != (method == "GET"):
         return send_text(h, "unsupported git request", 400)
-    body = read_body(h) if method == "POST" else None
+    body = read_body(h, GIT_BODY_LIMIT) if method == "POST" else None
     upath = f"/{m.group(1)}/{m.group(2)}.git/{endpoint}" + (f"?{u.query}" if u.query else "")
     push = service == "git-receive-pack"
     req = Request("github", f"git {'push' if push else 'fetch'} github.com/{repo}")
@@ -102,12 +109,31 @@ def handle(h, sess, method):
 
 def handle_push(h, sess, req, repo, upath, body):
     try:
-        cmds, caps, _, _ = gitwire.parse_push(body, h.headers.get("Content-Encoding", "").lower() == "gzip")
-    except (BrokerError, ValueError) as e:
+        data = gitwire.push_data(body, h.headers.get("Content-Encoding", "").lower() == "gzip")
+        cmds, caps, _, offset = gitwire.parse_push(data)
+        try:
+            commits = gitwire.pack_commits(data[offset:])
+        except (IndexError, ValueError, zlib.error):
+            commits = None
+    except (BrokerError, ValueError, zlib.error) as e:
         return send_text(h, f"couldn't read the push: {e}")
     default = repo_info(sess, repo).get("default_branch")
-    req.actions = list(dict.fromkeys("github:" + gitwire.ref_kind(o, n, r, default) for o, n, r in cmds)) or ["github:push"]
-    req.display = f"git push github.com/{repo} " + " ".join(r for _, _, r in cmds)
+    kinds = [gitwire.ref_kind(o, n, r, default) for o, n, r in cmds]
+    asked = []
+
+    def is_ancestor(a, b):
+        if len(asked) >= 20:
+            return False
+        asked.append(b)
+        return gh_query(sess, ["api", f"repos/{repo}/compare/{a}...{b}", "--jq", ".status"]) in ("ahead\n", "identical\n")
+
+    # A branch update that isn't a fast-forward (git push --force or --force-with-lease) is its own action.
+    force = [r for o, n, r in cmds if o != gitwire.ZERO and n != gitwire.ZERO and r.startswith("refs/heads/")
+             and not gitwire.fast_forward(o, n, commits, is_ancestor)]
+    if force:
+        kinds.append("push force")
+    req.actions = list(dict.fromkeys("github:" + k for k in kinds)) or ["github:push"]
+    req.display = f"git push {'--force ' if force else ''}github.com/{repo} " + " ".join(r for _, _, r in cmds)
     reply = gitwire.PushReply(h, caps)
     ok, ev = check(sess, req, reply.waiting)
     if not ok:

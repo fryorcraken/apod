@@ -719,8 +719,8 @@ def node_ids(v):
         return [v] if NODE_ID.match(v) else []
     if isinstance(v, list):
         return [i for x in v for i in node_ids(x)]
-    if isinstance(v, dict):
-        return [i for x in v.values() for i in node_ids(x)]
+    if isinstance(v, dict):  # clientMutationId is free text the caller echoes back, not an object
+        return [i for k, x in v.items() if k != "clientMutationId" for i in node_ids(x)]
     return []
 
 
@@ -754,11 +754,9 @@ def classify_graphql(sess, req, query, variables):
                 ids = node_ids(args)
                 req.targets += resolve_nodes(sess, ids) if ids else [("unscoped", f"graphql {name} without ids")]
             elif optype == "mutation":
-                ids = node_ids(args)
-                if ids:
-                    req.targets += resolve_nodes(sess, ids)
-                else:
-                    req.targets.append(("unscoped", f"graphql mutation {name} (no node ids to scope it)"))
+                found = resolve_nodes(sess, node_ids(args))
+                # Only people (assignees, reviewers) or no ids at all: nothing says where it acts.
+                req.targets += found or [("unscoped", f"graphql mutation {name} (no node ids to scope it)")]
     if not req.actions:
         req.actions = ["graphql (empty)"]
 
@@ -806,7 +804,8 @@ def resolve_nodes(sess, ids):
         except (ValueError, KeyError, TypeError):
             nodes = [None] * len(todo)
         for i, node in zip(todo, nodes):
-            _nodes[i] = node_target(node)
+            if node_target(node) is not None:  # a failed lookup is tried again next time
+                _nodes[i] = node_target(node)
     targets = []
     for i in ids:
         t = _nodes.get(i)

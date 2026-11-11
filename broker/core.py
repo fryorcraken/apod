@@ -250,7 +250,7 @@ def load_grants():
 
 
 def save_grants(g):
-    tmp = GRANTS.with_suffix(".tmp")
+    tmp = GRANTS.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(json.dumps(g, indent=2) + "\n")
     tmp.replace(GRANTS)
 
@@ -355,7 +355,7 @@ class Session:
         return (self.cfg.get("gh") or {}).get("login", "")
 
     def save(self):
-        tmp = self.state.with_suffix(".tmp")
+        tmp = self.state.with_suffix(f".{threading.get_ident()}.tmp")
         tmp.write_text(json.dumps(self.data(), indent=2) + "\n")
         tmp.replace(self.state)
 
@@ -610,19 +610,30 @@ def decide(eid, how):
 # ---------------------------------------------------------------------------------------------
 # HTTP on unix sockets
 
-def read_body(h):
+BODY_LIMIT = 64 << 20   # a request from a pod; git pushes may be larger (GIT_BODY_LIMIT)
+GIT_BODY_LIMIT = 2 << 30
+
+
+def read_body(h, limit=BODY_LIMIT):
+    """A request's body, at most limit bytes (BrokerError beyond that)."""
     if h.headers.get("Transfer-Encoding", "").lower() == "chunked":
-        chunks = []
+        chunks, total = [], 0
         while True:
-            n = int(h.rfile.readline().split(b";")[0].strip() or b"0", 16)
+            n = int(h.rfile.readline(64).split(b";")[0].strip() or b"0", 16)
             if n == 0:
-                while h.rfile.readline() not in (b"\r\n", b"\n", b""):
+                while h.rfile.readline(1024) not in (b"\r\n", b"\n", b""):
                     pass
                 break
+            total += n
+            if total > limit:
+                raise BrokerError(f"request body over {limit >> 20} MiB")
             chunks.append(h.rfile.read(n))
-            h.rfile.readline()
+            h.rfile.readline(64)
         return b"".join(chunks)
-    return h.rfile.read(int(h.headers.get("Content-Length") or 0))
+    n = int(h.headers.get("Content-Length") or 0)
+    if n > limit or n < 0:
+        raise BrokerError(f"request body over {limit >> 20} MiB")
+    return h.rfile.read(n)
 
 
 def send_text(h, text, status=403):
@@ -953,21 +964,23 @@ def admin_call(path, body):
     if path == "/decide":
         return decide(int(body["id"]), body["how"])
     if path == "/grants/remove":
-        g = load_grants()
-        lst = g["roles"].get(body["role"], [])
-        if body["action"] in lst:
-            lst.remove(body["action"])
-        save_grants(g)
+        with LOCK:
+            g = load_grants()
+            lst = g["roles"].get(body["role"], [])
+            if body["action"] in lst:
+                lst.remove(body["action"])
+            save_grants(g)
         return {"ok": True}
     if path == "/scope/remove":
-        sess = SESSIONS[body["session"]]
-        kind, v = body.get("kind"), body["value"]
-        if kind in sess.scope and v in sess.scope[kind]:
-            sess.scope[kind].remove(v)
-        for k in ("actions", "unscoped"):
-            if v in sess.grants[k]:
-                sess.grants[k].remove(v)
-        sess.save()
+        with LOCK:
+            sess = SESSIONS[body["session"]]
+            kind, v = body.get("kind"), body["value"]
+            if kind in sess.scope and v in sess.scope[kind]:
+                sess.scope[kind].remove(v)
+            for k in ("actions", "unscoped"):
+                if v in sess.grants[k]:
+                    sess.grants[k].remove(v)
+            sess.save()
         return {"ok": True}
     if path == "/state":
         return state()
@@ -991,8 +1004,34 @@ class AdminHandler(Handler):
         try:
             body = json.loads(read_body(self) or b"{}")
             self.send_json(admin_call(self.path, body))
-        except (BrokerError, KeyError, ValueError) as e:
+        except (BrokerError, KeyError, ValueError, TypeError, AttributeError) as e:
             self.send_json({"error": str(e)}, 400)
+
+
+def live_pods():
+    """The broker session ids of the pods podman has (running or not), or None if podman can't say."""
+    try:
+        r = subprocess.run(["podman", "ps", "-a", "--filter", "label=apod.broker",
+                            "--format", '{{index .Labels "apod.broker"}}'],
+                           capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return set(r.stdout.split()) if r.returncode == 0 else None
+
+
+def prune_loop(every=300, grace=600):
+    """Ends sessions whose pod is gone (apod killed before it could unregister): their sockets,
+    approvals and scope shouldn't outlive the pod. A session younger than grace may still be
+    launching its pod."""
+    while True:
+        live = live_pods()
+        if live is not None:
+            for sid, sess in list(SESSIONS.items()):
+                if sid not in live and now() - sess.created > grace:
+                    print(f"apod-broker: session {sid} ({sess.profile}): its pod is gone; ending it",
+                          file=sys.stderr, flush=True)
+                    unregister(sid)
+        time.sleep(every)
 
 
 def serve():
@@ -1041,6 +1080,8 @@ def serve():
             print(f"apod-broker: dropping session {sess.id}: {e}", file=sys.stderr)
             f.unlink(missing_ok=True)
             shutil.rmtree(SDIR / f.stem, ignore_errors=True)
+
+    threading.Thread(target=prune_loop, daemon=True).start()
 
     def term(*_):
         p = AGENT_PROC.get("p")
@@ -1255,4 +1296,6 @@ def main(argv, script):
         if isinstance(e, (FileNotFoundError, ConnectionRefusedError)):
             sys.exit("apod broker: the broker isn't running (it starts with the first pod that uses it)")
         sys.exit(f"apod broker: {e}")
+    except (StopIteration, IndexError, ValueError) as e:  # a missing or malformed argument
+        sys.exit(f"apod broker {cmd}: bad arguments ({e or 'missing value'})\n{USAGE}")
     return 0
