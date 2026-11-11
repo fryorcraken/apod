@@ -302,7 +302,7 @@ class SSHProvider(Provider):
         blobs = []
         for k in keys:
             try:
-                blobs.append(need_key(sess, out, k, cfg.get("confirm", False))[1])
+                blobs.append(need_key(sess, out, k, cfg.get("confirm", False), "ssh logins")[1])
             except BrokerError as e:
                 out["context"].append(f"SSH key {k} unavailable: {e}.")
         if not blobs:

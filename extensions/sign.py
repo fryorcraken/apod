@@ -114,7 +114,7 @@ class SignProvider(Provider):
             sess.add_scope(("git-local", sess.project))
             sess.add_scope(("git-local", sess.project.rstrip("/") + "/*"))
         try:
-            line, blob = need_key(sess, out, cfg["key"], cfg.get("confirm", False))
+            line, blob = need_key(sess, out, cfg["key"], cfg.get("confirm", False), "signing commits")
         except BrokerError as e:
             out["context"].append(f"Commit signing is unavailable: {e}.")
             return False

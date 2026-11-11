@@ -236,7 +236,8 @@ class RadProvider(Provider):
         key = cfg.get("key") or (str(Path(home) / "keys/radicle") if (Path(home) / "keys/radicle.pub").exists() else None)
         if key:
             try:
-                need_key(sess, out, key, cfg.get("confirm", False))
+                need_key(sess, out, key, cfg.get("confirm", False),
+                         "Radicle pushes, as the host's identity (the passphrase from rad auth)")
             except BrokerError as e:
                 out["context"].append(f"Radicle pushes may fail: {e}.")
         out["git_config"].append(["url.{forward}rad/.insteadOf", "rad://"])

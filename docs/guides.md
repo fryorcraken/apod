@@ -81,8 +81,8 @@ key = "~/.ssh/id_apod_broker_sign"
 ```
 
 **Keys** (ssh, signing, and Radicle's) live in the broker's own ssh-agent, never in the pod. At
-launch, apod loads the ones it doesn't hold yet with `ssh-add`, which asks for their passphrases;
-they expire after `APOD_SSH_TTL` (default `4h`). After a broker restart, or before launching,
+launch, apod loads the ones it doesn't hold yet with `ssh-add`, which asks for their passphrases
+(an empty line skips a key: the pod starts, and the requests that need it fail); they expire after `APOD_SSH_TTL` (default `4h`). After a broker restart, or before launching,
 `apod broker keys` lists every key the profiles and running pods use and loads the missing ones.
 One key can serve many hosts: the destination is checked per login.
 
@@ -158,6 +158,9 @@ repository the broker owns, then goes on with the host's `git-remote-rad`.
    (`RAD_HOME=~/.radicle-pods rad auth`) and point `home` at it.
 4. **Check it** in a pod: `git fetch rad`, then `git push rad HEAD:refs/patches -o
    patch.message="test"` opens a patch (`dev` may).
+
+Launching in a project with a `rad://` remote asks for the identity's key passphrase (the one
+from `rad auth`) unless the broker's agent already holds it: pushes are signed with it.
 
 Roles: `dev` pushes branches (force pushes too) and opens patches; `maintainer` also pushes tags
 and deletes branches. The default branch waits for you.

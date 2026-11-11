@@ -865,16 +865,21 @@ def pubkey_of(path):
     return line, line.split()[1]
 
 
-def need_key(sess, out, path, confirm=False):
+def need_key(sess, out, path, confirm=False, purpose=""):
     """Note a key the session uses, held in the broker's agent; apod loads it if it's missing
-    (ssh-add asks for the passphrase on the user's terminal)."""
+    (ssh-add asks for the passphrase on the user's terminal, after showing `purpose`)."""
     line, blob = pubkey_of(path)
     k = {"path": str(expand(path)), "confirm": bool(confirm)}
     keys = sess.cfg.setdefault("_keys", [])
     if k not in keys:
         keys.append(k)
-    if blob not in agent_keys() and k not in out["need_keys"]:
-        out["need_keys"].append(k)
+    if blob not in agent_keys():
+        e = next((e for e in out["need_keys"] if e["path"] == k["path"] and e["confirm"] == k["confirm"]), None)
+        if e is None:
+            e = dict(k, purpose=[])
+            out["need_keys"].append(e)
+        if purpose and purpose not in e["purpose"]:
+            e["purpose"].append(purpose)
     return line, blob
 
 

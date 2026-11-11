@@ -425,15 +425,16 @@ if [ -n "$usebroker" ]; then
   # Keys the broker's agent doesn't hold yet: ssh-add asks for their passphrases here.
   agentsock=$(jq -r .agent <<< "$binfo")
   ttyin=/dev/tty; { : < /dev/tty; } 2>/dev/null || ttyin=/dev/null
-  while IFS=$'\t' read -r kpath kconfirm; do
+  while IFS=$'\t' read -r kpath kconfirm kpurpose; do
     [ -n "$kpath" ] || continue
+    echo "apod: the broker needs $kpath${kpurpose:+ for $kpurpose}. Enter its passphrase, or an empty line to skip (those requests will fail)." >&2
     addopts=(-q -t "${APOD_SSH_TTL:-4h}"); [ "$kconfirm" = true ] && addopts+=(-c)
     if [ "$kconfirm" = true ] && [ -z "${SSH_ASKPASS:-}" ] && [ ! -x /usr/libexec/openssh/ssh-askpass ]; then
       echo "apod: $kpath has confirm = true, which needs ssh-askpass to ask you on each use: sudo dnf install openssh-askpass" >&2
     fi
     # stdin: the terminal, for the passphrase (the loop's stdin is the list of keys).
     SSH_AUTH_SOCK=$agentsock ssh-add "${addopts[@]}" "$kpath" < "$ttyin" || echo "apod: couldn't load $kpath into the broker's agent" >&2
-  done < <(jq -r '.need_keys[] | [.path, .confirm] | @tsv' <<< "$binfo")
+  done < <(jq -r '.need_keys[] | [.path, .confirm, ((.purpose // []) | join(", "))] | @tsv' <<< "$binfo")
   mounts+=(-v "$(jq -r .dir <<< "$binfo"):$(jq -r .pod_dir <<< "$binfo"):z"
     -v "$apoddir/broker/pod-shim:/usr/local/bin/apod-git-forward:ro,z")
   while IFS=$'\t' read -r src dst mode; do mounts+=(-v "$src:$dst:$mode,z"); done < <(jq -r '.mounts[] | @tsv' <<< "$binfo")

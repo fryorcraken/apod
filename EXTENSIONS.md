@@ -273,7 +273,7 @@ What `configure` can add to `out`, which `apod` applies to the pod:
 | `out["git_config"]` | `[[key, value]]`, passed as `GIT_CONFIG_*`, so they override the pod's git config files. `{forward}` in a key becomes the pod's git forwarder URL (`github`, `rad`). |
 | `out["context"]` | Sentences for the agent's system prompt: what's available and how to use it. |
 | `out["warnings"]` | Lines `apod` prints at launch, for the user. |
-| `need_key(sess, out, path, confirm=False)` | A function, not a key: the broker's ssh-agent must hold this key, and `apod` runs `ssh-add` at launch if it doesn't. Returns `(public key line, blob)`; raises `BrokerError` if `path.pub` is missing. |
+| `need_key(sess, out, path, confirm=False, purpose="")` | A function, not a key: the broker's ssh-agent must hold this key, and `apod` runs `ssh-add` at launch if it doesn't, after telling the user what it's for (`purpose`, such as `"signing commits"`). Returns `(public key line, blob)`; raises `BrokerError` if `path.pub` is missing. |
 
 ### Handlers
 
