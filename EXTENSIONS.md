@@ -3,7 +3,7 @@
 The broker's core (`broker/`) handles sessions, roles, scope, approvals and the log. Everything a
 pod can do through it (`gh`, git to GitHub and Radicle, commit signing, ssh, notifications) is an
 **extension**: a Python file that registers providers and scope kinds. This guide is for writing
-one. For using the shipped ones, see the [README](README.md#broker).
+one. For using the shipped ones, see the [guides](docs/guides.md#the-broker).
 
 - [Where extensions live](#where-extensions-live)
 - [How a request is checked](#how-a-request-is-checked)

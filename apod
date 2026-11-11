@@ -10,7 +10,7 @@ set -euo pipefail
 usage() {
   echo "usage: apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [--role R] [--scope S]... [--gh-user ACCOUNT] [--no-broker] [project-dir] [-- agent args...]" >&2
   echo "       apod resume [--list|--latest|--claude] [dir] | history | ps | profiles | token <profile> [--rm] | google-auth <profile>" >&2
-  echo "       apod broker [ui]|log [-f]|pending|allow ID [--session|--role]|deny ID|sessions|roles|grants|keys|restart|stop" >&2
+  echo "       apod broker [ui]|log [-f] [-n N]|pending|allow ID [--session|--role]|deny ID|sessions|roles|grants|scopes|keys|restart|stop" >&2
   echo "       apod selinux [install|remove|status]" >&2
   exit 2
 }

@@ -18,8 +18,8 @@ It's shipped, so it's always loaded; it's active for profiles that turn it on:
     notify = ["send"]
 
 Without a role that allows it, each notification waits for your approval like any other
-request (approve "for the role" once to stop being asked). See README.md, "Writing a broker
-extension", for the API this uses.
+request (approve "for the role" once to stop being asked). See EXTENSIONS.md for the API this
+uses.
 """
 import json
 import shutil
