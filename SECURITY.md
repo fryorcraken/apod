@@ -44,6 +44,7 @@ do and leaves a record of what it did.
   filesystem:
   - the project folder (read-write);
   - the profile's own home (`~/.agent-pod/<profile>/home`, read-write);
+  - its session's work log folder (`~/.agent-pod/worklog/<id>`, read-write);
   - the profile's `mounts`, read-only unless marked `rw`;
   - your `~/.claude/CLAUDE.md` and `~/.claude/skills`, read-only.
 - **Processes:** the host's processes, other pods and their files are not visible.
@@ -154,6 +155,9 @@ The broker turns each request into actions and targets, and checks them before a
   that run code when *you* later use the repository on the host. Give pods their own worktrees,
   point `core.hooksPath` at an empty directory, and review what a pod changed before running
   anything from it.
+- **Work logs are written by pods.** They're the agent's account of its work, not a record (the
+  broker's log is), and text in them can try to steer whatever agent later reads them. Review
+  them in a pod with the logs mounted read-only, not with an agent on the host.
 - **Network egress.** Pods can reach the internet, so a pod can send whatever it can read (the
   project, its mounts, its own home) anywhere. With `network = host`, a pod can also reach the
   host's localhost services and your LAN or Tailscale hosts directly. The ssh agent still signs

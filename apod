@@ -177,7 +177,7 @@ case ${1:-} in
     root=${APOD_ROOT:-$HOME/.agent-pod}; used=()
     for d in "$root"/*/; do
       p=$(basename "$d"); t=-; g=no; b=-
-      [ "$p" = broker ] || [ "$p" = broker-extensions ] && continue
+      case $p in broker|broker-extensions|worklog) continue ;; esac
       src=$p; [ -f "$d/github" ] && src=$(head -n1 "$d/github" | tr -d '[:space:]')
       if podman secret exists "gh-$src"; then t=$([ "$src" = "$p" ] && echo set || echo "gh-$src"); fi
       [ -f "$d/home/.config/google-docs-mcp/token.json" ] && g=yes
@@ -199,6 +199,9 @@ esac
 
 [ $# -ge 1 ] || usage
 profile=$1; shift
+case $profile in broker|broker-extensions|worklog|-*)
+  echo "apod: '$profile' isn't a profile name (broker, broker-extensions and worklog are apod's own folders)" >&2; exit 2 ;;
+esac
 agent=claude
 image=
 proj=
@@ -358,6 +361,14 @@ if [ "$agent" = claude ]; then
   if [ -z "$explicit" ]; then session=$(uuidgen); cmd+=(--session-id "$session"); fi
 fi
 
+# Work log: a folder per session on the host (worklog/<id>/), mounted read-write, where the agent
+# keeps notes on what it did, for reviews and work reports across sessions. A resumed Claude
+# session keeps its log (same id); other launches start a new one.
+worklog=${session:-$(uuidgen)}
+if ! { mkdir -p "$root/worklog/$worklog" && touch "$root/worklog/$worklog/worklog.md"; }; then
+  echo "apod: couldn't create the work log in $root/worklog" >&2; exit 2
+fi
+
 # Extra mounts: the profile's mounts file (one path per line, read-only unless prefixed "rw "),
 # then --ro/--rw, which override the file's mode for the same path. Each path is mounted once.
 declare -A mmode=(); morder=()
@@ -379,7 +390,7 @@ for e in "${climounts[@]}"; do
 done
 
 # Extra mounts go before the project so a project nested inside a read-only tree stays writable.
-mounts=(-v "$phome:/home/agent:z")
+mounts=(-v "$phome:/home/agent:z" -v "$root/worklog/$worklog:/run/apod-worklog:z")
 romounts=(); rwmounts=()
 for path in "${morder[@]}"; do
   if [ "${mmode[$path]}" = rw ]; then rwmounts+=("$path"); mounts+=(-v "$path:$path:z")
@@ -459,6 +470,7 @@ if [ ${#ccloud[@]} -gt 0 ]; then
 else
   context+=$'\n'"claude.ai connectors (Notion, Google Docs, etc.) are disabled for this run; they can be enabled at launch with apod -c."
 fi
+context+=$'\n'"Work log: keep /run/apod-worklog/worklog.md up to date. It is kept on the host after this pod ends, and the user reviews it, across sessions, for work reports. After each meaningful step, append a few lines under a heading with today's date (## YYYY-MM-DD, a new one when the day changes): what you did, decided or found, what's blocked, what's next. Link PRs, issues and commits; facts, not narration; never secrets. Don't rewrite earlier entries."
 if [ "$agent" = claude ]; then cmd+=(--append-system-prompt "$context"); fi
 
 tty=(-i); [ -t 0 ] && tty+=(-t)
@@ -530,9 +542,9 @@ run+=("${volumes[@]}" --label apod.profile="$profile" --label apod.project="$pro
 
 # Remember this launch (apod history, apod resume).
 printf '%s\0' "${recopts[@]}" | jq -cRs --argjson ts "$(date +%s)" --arg profile "$profile" \
-  --arg agent "$agent" --arg project "$proj" --arg session "$session" --arg pane "$(pane_id)" \
+  --arg agent "$agent" --arg project "$proj" --arg session "$session" --arg worklog "$worklog" --arg pane "$(pane_id)" \
   '{ts: $ts, profile: $profile, agent: $agent, project: $project,
-    session: (if $session == "" then null else $session end), pane: (if $pane == "" then null else $pane end),
+    session: (if $session == "" then null else $session end), worklog: $worklog, pane: (if $pane == "" then null else $pane end),
     opts: (split("\u0000") | .[:-1])}' \
   >> "$root/history.jsonl" || echo "apod: couldn't record this launch in the history" >&2
 if [ -n "$bsid" ]; then

@@ -199,7 +199,9 @@ variables from the profile's `env`.
 | `roles.toml` | Your roles. |
 | `broker-extensions/` | Your broker extensions ([EXTENSIONS.md](../EXTENSIONS.md)). |
 | `broker/` | The broker's state: `log.jsonl` (every request), `broker.log` (its own log), `grants.json` (approvals for roles), `sessions/`, its sockets. |
-| `history.jsonl` | Every launch, for `apod history` and `apod resume`. |
+| `history.jsonl` | Every launch, for `apod history` and `apod resume`; its `worklog` field names the launch's work log. |
+| `worklog/<id>/worklog.md` | Each session's [work log](guides.md#work-logs), written by the agent. |
 | `selinux` | Written by `apod selinux install`. |
 
 Keep `~/.agent-pod` out of every pod's mounts: it holds the profiles' logins and the broker's state.
+Its `worklog/` folder alone is fine, read-only, for a pod that reviews the logs.

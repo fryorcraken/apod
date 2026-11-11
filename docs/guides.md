@@ -16,6 +16,7 @@ variable.
 - [Mounts, network and images](#mounts-network-and-images)
 - [SELinux](#selinux)
 - [claude.ai connectors and MCP servers](#claudeai-connectors-and-mcp-servers)
+- [Work logs](#work-logs)
 - [History, resume and herdr](#history-resume-and-herdr)
 - [Checking a setup in a real pod](#checking-a-setup-in-a-real-pod)
 
@@ -470,6 +471,25 @@ connector tool that isn't enabled, including ones added to the account later.
 (`APOD_GDOCS_MCP`, default `~/src/fryorcraken/google-docs-mcp`) in the pod from a read-only mount,
 with scopes `docs,sheets,slides,drive` (`APOD_GDOCS_SCOPES`) and lazy tools. Each profile signs in
 once on the host with `apod google-auth <profile>`. It can't be combined with `gdoc`.
+
+## Work logs
+
+Each session keeps a work log on the host, `~/.agent-pod/worklog/<id>/worklog.md`, mounted in
+the pod at `/run/apod-worklog/worklog.md`. Claude is told to add to it after each meaningful
+step: a dated heading (`## 2026-11-11`), then what it did, decided or found, what's blocked and
+what's next, with links to PRs, issues and commits. The logs outlive their pods, so an agent can
+review a week's work across every session, for a status update for example.
+
+The id is the Claude session id, so `apod resume` carries on with the same log; other launches
+(`--continue`, opencode, bash) start a new one. The `worklog` field of each launch in
+`history.jsonl` names its log, with the profile, folder and time it was started.
+
+Treat the logs as the agent's account, not as a record: the pod can write anything in them. The
+broker's `log.jsonl` is the record of what it actually did on GitHub, Radicle and ssh. And
+since a pod writes them, be careful about handing them to an agent on the host that has more
+access than the pods did: run the review in a pod, with the logs mounted read-only
+(`apod reviewer --ro ~/.agent-pod/worklog ~/reports`), rather than with your own `claude`.
+opencode isn't told about its log yet (only Claude gets apod's notes at startup).
 
 ## History, resume and herdr
 

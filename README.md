@@ -132,6 +132,7 @@ scope; anything else waits for you. You can approve it once, for the session, or
   [mounts, network and images](docs/guides.md#mounts-network-and-images),
   [SELinux](docs/guides.md#selinux),
   [claude.ai connectors and MCP servers](docs/guides.md#claudeai-connectors-and-mcp-servers),
+  [work logs](docs/guides.md#work-logs),
   [history, resume and herdr](docs/guides.md#history-resume-and-herdr).
 - **[Reference](docs/reference.md):** every command and option, profile file, `broker.toml`
   key, the `roles.toml` format, scope kinds, how requests are classified, environment variables.
