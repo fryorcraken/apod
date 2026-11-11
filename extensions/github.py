@@ -13,7 +13,8 @@ import zlib
 from pathlib import Path
 
 import gitwire
-from core import GIT_BODY_LIMIT, EVENTS, BrokerError, Request, check, evaluate, now, provider, read_body, rejected_msg, send_text
+from api import (GIT_BODY_LIMIT, BrokerError, Provider, Request, check, evaluate, now, provider, read_body,
+                 recently_allowed, rejected_msg, send_text)
 from gh import gh_query, gh_user, token_for
 
 UPSTREAM = os.environ.get("APOD_GH_GIT_UPSTREAM", "https://github.com")
@@ -87,9 +88,7 @@ def handle(h, sess, method):
             req.actions, req.targets = ["github:fetch public"], []
         if method == "POST":
             # Checked (and logged) at the ref advertisement; the negotiation rounds follow it.
-            if evaluate(sess, req)[0] != "allow" and not any(
-                    e["session"] == sess.id and e["request"] == req.display and now() - e["ts"] < 600
-                    and e["decision"].startswith(("allowed", "approved")) for e in list(EVENTS)):
+            if evaluate(sess, req)[0] != "allow" and not recently_allowed(sess, req):
                 return send_text(h, f"fetch of {repo} not allowed")
             return forward()
     elif method == "GET":
@@ -159,13 +158,12 @@ def ssh_aliases():
             for a in line.split()[1:] if a.startswith("github-")]
 
 
-class GithubProvider:
+class GithubProvider(Provider):
     name = "github"
     routes = [("GET", "/git/github/", handle), ("POST", "/git/github/", handle)]
+    requires = ["gh"]  # the token is the gh account's: no account, no GitHub remotes
 
     def configure(self, sess, cfg, reg, out):
-        if "gh" not in sess.cfg:
-            return False  # no host gh login: no token to forward with
         prefixes = ["https://github.com/", "git@github.com:", "github.com:", "ssh://git@github.com/"]
         for a in ssh_aliases():
             prefixes += [f"git@{a}:", f"{a}:", f"ssh://git@{a}/"]

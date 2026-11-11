@@ -18,8 +18,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from core import (AGENT, BDIR, POD_DIR, SHIM, BrokerError, Request, check, matches, need_key, provider, read_body,
-                  rejected_msg, remote_target, role_rules, scope_kind)
+from api import (AGENT, BDIR, POD_DIR, SHIM, BrokerError, Provider, Request, allowed, check, need_key, provider,
+                 read_body, rejected_msg, remote_target, scope_kind)
 
 
 def classify(payload, namespace, sess=None, remote="", toplevel=""):
@@ -95,7 +95,7 @@ def handle(h, sess, method):
         return h.send_json({"signature": sig.read_text()})
 
 
-class SignProvider:
+class SignProvider(Provider):
     name = "sign"
     routes = [("POST", "/sign", handle)]
 
@@ -108,9 +108,7 @@ class SignProvider:
         git commit -S still works, and waits for approval."""
         if not cfg.get("key"):
             return False
-        allow, deny = role_rules(sess.role)
-        allow = allow + sess.grants["actions"]
-        signs = {a: matches(f"sign:{a}", allow) and not matches(f"sign:{a}", deny) for a in ("commit", "tag")}
+        signs = {a: allowed(sess, f"sign:{a}") for a in ("commit", "tag")}
         # The project folder is where a repository without a GitHub or Radicle remote may be signed.
         if sess.project:
             sess.add_scope(("git-local", sess.project))

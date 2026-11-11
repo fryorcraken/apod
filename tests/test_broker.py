@@ -255,7 +255,26 @@ class BrokerTest(unittest.TestCase):
         (ext / "notify.py").write_text((HERE / "extensions/notify.py").read_text()
                                        .replace('Path(__file__).resolve().parent / "apod-notify"', f'Path("{HERE}/extensions/apod-notify")')
                                        .replace("sends the user a desktop notification", "(the user's own) notifies the user"))
-        (ext / "broken.py").write_text("raise RuntimeError('broken on purpose')\n")
+        # broken registers a provider and a scope kind, then fails: both are undone.
+        (ext / "broken.py").write_text(textwrap.dedent("""\
+            from api import Provider, provider, scope_kind
+            scope_kind("broken")
+            class B(Provider):
+                name = "broken"
+                routes = [("POST", "/broken", lambda h, sess, m: h.send_json({}))]
+                def configure(self, sess, cfg, reg, out):
+                    return True
+            provider(B())
+            raise RuntimeError('broken on purpose')
+            """))
+        # Refused at registration: a route that overlaps gh's; on, but needs a provider that isn't.
+        (ext / "badroute.py").write_text("from api import Provider, provider\n"
+                                         "class P(Provider):\n    name = 'badroute'\n    routes = [('POST', '/gh/x', print)]\n"
+                                         "provider(P())\n")
+        (ext / "needy.py").write_text("from api import Provider, provider\n"
+                                      "class P(Provider):\n    name = 'needy'\n    requires = ['nothere']\n"
+                                      "    def configure(self, sess, cfg, reg, out):\n        return True\n"
+                                      "provider(P())\n")
         (ext / "json.py").write_text("raise RuntimeError('should never load')\n")
         (bin_ / "fake-notify").write_text(f"#!/bin/sh\nprintf '%s|' \"$@\" >> {cls.tmp}/notified\n")
         (bin_ / "fake-notify").chmod(0o755)
@@ -479,6 +498,18 @@ class BrokerTest(unittest.TestCase):
         status, body = unix_post(sock, "/tag", {"name": "beta"})  # out of scope: waits, then times out
         self.assertEqual(status, 403)
         self.assertIn("out of this session's scope: tag:beta", body["error"])
+
+    def test_extension_api_checks(self):
+        """What a broken or misdeclared extension registered doesn't stay behind."""
+        self.assertNotIn("broken:", self.admin("scopes").stdout)
+        for p in ("broken", "badroute", "needy"):
+            self.assertNotIn(p, self.sess["providers"])
+        self.assertIn("tagger", self.sess["providers"])  # from core import ... still works
+        sock = str(Path(self.sess["dir"]) / "broker.sock")
+        self.assertEqual(unix_post(sock, "/broken", {})[0], 404)
+        log = (self.tmp / "broker.log").read_text()
+        self.assertIn("broken on purpose", log)
+        self.assertIn("overlaps gh's '/gh'", log)
 
     def test_keys_lists_and_loads_profile_keys(self):
         key = self.tmp / "profilekey"

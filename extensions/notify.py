@@ -26,7 +26,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from core import Request, check, provider, read_body, rejected_msg
+from api import Provider, Request, check, provider, read_body, rejected_msg
 
 CLIENT = Path(__file__).resolve().parent / "apod-notify"
 
@@ -61,7 +61,7 @@ def handle(h, sess, method):
     return h.send_json({"ok": True})
 
 
-class NotifyProvider:
+class NotifyProvider(Provider):
     name = "notify"  # the [notify] table in broker.toml, the notify list in roles, notify:* actions
     routes = [("POST", "/notify", handle)]
 

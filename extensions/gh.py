@@ -15,8 +15,8 @@ import threading
 import urllib.parse
 from pathlib import Path
 
-from core import (BDIR, HARD_DENY, LOCK, SHIM, BrokerError, Request, check, now, provider, read_body, scope_kind,
-                  rejected_msg, waiting_msg)
+from api import (BDIR, HARD_DENY, LOCK, SHIM, BrokerError, Provider, Request, check, now, provider, read_body,
+                 rejected_msg, scope_kind, waiting_msg)
 
 # Never allowed, whatever the role or grants say: these would hand out credentials, change the
 # broker's own gh, open things on the host, or need the pod's local git (the shim does those).
@@ -946,7 +946,7 @@ def gh_login(user):
     return r.stdout.strip()
 
 
-class GhProvider:
+class GhProvider(Provider):
     name = "gh"
     routes = [("POST", "/gh", handle_gh)]
 

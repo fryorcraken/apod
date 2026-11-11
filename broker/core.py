@@ -76,15 +76,82 @@ def now():
     return time.time()
 
 
+class Provider:
+    """What a provider is (subclass it, or give an object the same attributes). See EXTENSIONS.md.
+
+    name       the broker.toml table, the role list and the action prefix ("hello" -> hello:...)
+    routes     [(method, path, handler(h, sess, method))]: requests from the pod's broker socket
+               (GET, POST or CONNECT); path matches the request's path or a "/"-separated prefix
+    requires   names of providers this one needs: configured after them, and only if they're on
+    """
+    name = ""
+    routes = []
+    requires = []
+
+    def configure(self, sess, cfg, reg, out):
+        """At each pod's registration: set the pod up (out) and say whether the provider is on."""
+        return False
+
+    def listen(self, sess):
+        """Sockets of the provider's own in the pod's folder, at registration and broker start."""
+        return []
+
+    def close(self, session_id):
+        """The session ended."""
+
+    def keys(self, cfg):
+        """[(key path, confirm)] for apod broker keys, from the provider's broker.toml table."""
+        return []
+
+
+RESERVED_NAMES = {"allow", "deny", "extends", "description", "unscoped"}  # roles.toml keys, core's targets
+
+
 def provider(p):
-    """Register a provider: an object with name and configure(sess, cfg, reg, out) -> bool, and
-    optionally routes [(method, path prefix, handler(h, sess, method))], listen(sess) -> [servers]
-    and close(session id). See README.md, "Writing a broker extension"."""
-    if p.name in PROVIDERS:
-        raise BrokerError(f"a provider named {p.name} is already registered")
-    PROVIDERS[p.name] = p
-    ROUTES.extend((m, prefix, fn, p.name) for m, prefix, fn in getattr(p, "routes", []))
+    """Register a provider (see Provider). Returns it."""
+    name = getattr(p, "name", "")
+    if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9-]*", name) or name in RESERVED_NAMES:
+        raise BrokerError(f"provider name {name!r}: lowercase letters, digits and -, not {sorted(RESERVED_NAMES)}")
+    if name in PROVIDERS:
+        raise BrokerError(f"a provider named {name} is already registered")
+    if not callable(getattr(p, "configure", None)):
+        raise BrokerError(f"provider {name} has no configure(sess, cfg, reg, out)")
+    routes = list(getattr(p, "routes", []) or [])
+    for r in routes:
+        if len(r) != 3 or r[0] not in ("GET", "POST", "CONNECT") or not callable(r[2]) or \
+                not isinstance(r[1], str) or not (r[1].startswith("/") or (r[0] == "CONNECT" and r[1] == "")):
+            raise BrokerError(f"provider {name}: bad route {r!r} (method GET/POST/CONNECT, path /..., handler)")
+        for m, path, _, other in ROUTES:
+            if m == r[0] and (route_matches(path, r[1]) or route_matches(r[1], path)):
+                raise BrokerError(f"provider {name}: route {r[0]} {r[1]!r} overlaps {other}'s {path!r}")
+    PROVIDERS[name] = p
+    ROUTES.extend((m, path, fn, name) for m, path, fn in routes)
     return p
+
+
+def route_matches(prefix, path):
+    """A route's path matches the request's path, or a prefix of it ending at a "/" or "?"."""
+    if prefix == "" or path == prefix or prefix.endswith("/") and path.startswith(prefix):
+        return True
+    return path.startswith(prefix) and path[len(prefix)] in "/?"
+
+
+def configure_order():
+    """Providers in registration order, each after the ones it requires."""
+    done, order = set(), []
+
+    def visit(n, stack=()):
+        if n in done or n not in PROVIDERS:
+            return
+        if n in stack:
+            raise BrokerError(f"providers require each other: {' -> '.join(stack + (n,))}")
+        for r in getattr(PROVIDERS[n], "requires", []) or []:
+            visit(r, stack + (n,))
+        done.add(n)
+        order.append(PROVIDERS[n])
+    for n in list(PROVIDERS):
+        visit(n)
+    return order
 
 
 class ScopeKind:
@@ -153,7 +220,7 @@ def extension_files():
         for f in sorted(d.glob("*.py")) if d.is_dir() else []:
             # Extensions are imported by name, so one can't take the name of a module the broker
             # or Python uses (json.py would replace json for everything).
-            if f.stem in sys.stdlib_module_names or f.stem in ("core", "gitwire", "tui") or not f.stem.isidentifier():
+            if f.stem in sys.stdlib_module_names or f.stem in ("api", "core", "gitwire", "tui") or not f.stem.isidentifier():
                 print(f"apod-broker: extension {f} not loaded: {f.stem} is the name of a Python or broker module",
                       file=sys.stderr, flush=True)
                 continue
@@ -174,27 +241,36 @@ class _ExtensionFinder:
 
 
 def load_extensions(only=None):
-    """Import the extensions (extension_files), each under its own name: the shipped ones in the
-    order they depend on each other (gh before github), then the rest in name order. Each
-    registers its providers and scope kinds. One that fails is skipped, with the error on
-    stderr (the broker's log)."""
+    """Import the extensions (extension_files), each under its own name: the shipped names first
+    (yours, where you replace one), then the rest, each in name order (one that imports another
+    loads it first). Each registers its providers and scope kinds. One that fails
+    is skipped, with what it registered undone and the error on stderr (the broker's log)."""
     files = extension_files()
     if only is not None:
         files = {k: v for k, v in files.items() if k in only}
     finder = _ExtensionFinder(files)
     sys.meta_path.insert(0, finder)
     loaded = []
-    for name in sorted(files, key=lambda n: (SHIPPED_ORDER.index(n) if n in SHIPPED_ORDER else len(SHIPPED_ORDER), n)):
+    shipped = {f.stem for f in SHIPPED_EXTENSIONS.glob("*.py")} if SHIPPED_EXTENSIONS.is_dir() else set()
+    for name in sorted(files, key=lambda n: (n not in shipped, n)):
+        if name in sys.modules:  # imported already, by an extension that needs it
+            loaded.append(name)
+            continue
+        before = (dict(PROVIDERS), list(ROUTES), dict(SCOPES), list(HARD_DENY), set(sys.modules))
         try:
             importlib.import_module(name)
             loaded.append(name)
         except Exception as e:  # noqa: BLE001 (a broken extension mustn't stop the broker)
-            sys.modules.pop(name, None)
+            # Undo what it registered before it failed (and what it imported, e.g. its dependencies).
+            provs, routes, scopes, deny, mods = before
+            PROVIDERS.clear(), PROVIDERS.update(provs)
+            ROUTES[:], HARD_DENY[:] = routes, deny
+            SCOPES.clear(), SCOPES.update(scopes)
+            for m in set(sys.modules) - mods:
+                if m in files:
+                    sys.modules.pop(m, None)
             print(f"apod-broker: extension {files[name]} not loaded: {e!r}", file=sys.stderr, flush=True)
     return loaded
-
-
-SHIPPED_ORDER = ["gh", "github", "rad", "sign", "ssh"]  # the order providers were always registered in
 
 
 def expand(path):
@@ -504,6 +580,28 @@ def evaluate(sess, req):
     return ("ask" if reasons else "allow"), missing, out, "; ".join(reasons)
 
 
+def allowed(sess, action):
+    """Whether the session's role (with its approvals) allows an action outright, e.g. to set
+    the pod up to use it. The request itself still goes through check()."""
+    req = Request("", "")
+    req.actions = [action]
+    return evaluate(sess, req)[0] == "allow"
+
+
+def recently_allowed(sess, req, within=600):
+    """Whether the same request (by its display) went through for this session in the last
+    `within` seconds: for the follow-up rounds of one operation, checked and logged once."""
+    with LOCK:
+        events = list(EVENTS)
+    return any(e["session"] == sess.id and e["request"] == req.display and now() - e["ts"] < within
+               and e["decision"].startswith(("allowed", "approved")) for e in events)
+
+
+def live_session(session_id):
+    """The session, while it lasts (None once it ended): for a provider's own sockets (listen)."""
+    return SESSIONS.get(session_id)
+
+
 def desktop_notify(ev):
     if not shutil.which("notify-send"):
         return
@@ -677,7 +775,7 @@ class SessionHandler(Handler):
         if method == "GET" and self.path == "/whoami":
             return self.send_json(sess.summary())
         for m, prefix, fn, pname in ROUTES:
-            if m == method and self.path.startswith(prefix):
+            if m == method and route_matches(prefix, self.path):
                 if pname not in (sess.cfg.get("_providers") or []):
                     # Only the providers set up for this pod answer it: one the profile doesn't
                     # configure (no [gh] user, no [ssh]...) must not act with the host's defaults.
@@ -709,21 +807,22 @@ class UnixServer(socketserver.ThreadingUnixStreamServer):
     daemon_threads = True
 
 
-def unix_listen(path, handler):
+def unix_listen(path, handler, session_id=None):
+    """Serve a unix socket (mode 0600) in a thread; handlers see self.server.session_id."""
     if len(os.fsencode(path)) > 107:
         raise BrokerError(f"socket path too long for a unix socket: {path} (use a shorter APOD_ROOT)")
     if os.path.lexists(path):
         os.unlink(path)
     srv = UnixServer(str(path), handler)
     os.chmod(path, 0o600)
+    srv.session_id = session_id
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
 
 
 def listen_session(sess):
     sess.dir.mkdir(parents=True, exist_ok=True)
-    srv = unix_listen(sess.dir / "broker.sock", SessionHandler)
-    srv.session_id = sess.id
+    srv = unix_listen(sess.dir / "broker.sock", SessionHandler, sess.id)
     servers = [srv]
     for p in PROVIDERS.values():
         if hasattr(p, "listen"):
@@ -860,7 +959,10 @@ def register(r):
     out = {"env": {"APOD_BROKER_SOCK": f"{POD_DIR}/broker.sock"}, "git_config": [], "mounts": [],
            "context": [], "need_keys": [], "providers": [], "warnings": warnings}
     start_agent()
-    for p in PROVIDERS.values():
+    for p in configure_order():
+        missing = [n for n in getattr(p, "requires", []) or [] if n not in out["providers"]]
+        if missing:  # what it needs is off for this pod (or not loaded)
+            continue
         try:
             if p.configure(sess, cfg.get(p.name) or {}, r, out):
                 out["providers"].append(p.name)

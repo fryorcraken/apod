@@ -16,8 +16,8 @@ import urllib.parse
 from pathlib import Path
 
 import gitwire
-from core import (GIT_BODY_LIMIT, AGENT, BDIR, EVENTS, BrokerError, Request, check, evaluate, expand, need_key, now, provider, scope_kind,
-                  read_body, rejected_msg, run_quiet, send_text)
+from api import (GIT_BODY_LIMIT, AGENT, BDIR, BrokerError, Provider, Request, check, evaluate, expand, need_key,
+                 provider, read_body, recently_allowed, rejected_msg, run_quiet, scope_kind, send_text)
 
 RAD_URL = re.compile(r"^rad://(z[1-9A-HJ-NP-Za-km-z]+)(?:/(z[1-9A-HJ-NP-Za-km-z]+))?/?$")
 
@@ -113,9 +113,7 @@ def handle(h, sess, method):
             ok, ev = check(sess, req)
             if not ok:
                 return send_text(h, rejected_msg(req, ev))
-        elif evaluate(sess, req)[0] != "allow" and not any(
-                e["session"] == sess.id and e["request"] == req.display and now() - e["ts"] < 600
-                and e["decision"].startswith(("allowed", "approved")) for e in list(EVENTS)):
+        elif evaluate(sess, req)[0] != "allow" and not recently_allowed(sess, req):
             return send_text(h, f"fetch of rad:{rid} not allowed")
         hide = ["refs/rad", "refs/cobs"] + ([] if nid else ["refs/namespaces"])
         extra = {"GIT_CONFIG_COUNT": str(len(hide))}
@@ -207,7 +205,7 @@ def handle_push(h, sess, req, rid, body):
     reply.report(results)
 
 
-class RadProvider:
+class RadProvider(Provider):
     name = "rad"
     routes = [("GET", "/git/rad/", handle), ("POST", "/git/rad/", handle)]
 

@@ -18,7 +18,8 @@ import struct
 import threading
 from pathlib import Path
 
-from core import AGENT, POD_DIR, SHIM, BrokerError, Request, SESSIONS, check, need_key, provider, run_quiet, scope_kind, unix_listen
+from api import (AGENT, POD_DIR, SHIM, BrokerError, Provider, Request, check, live_session, need_key, provider, run_quiet,
+                 scope_kind, unix_listen)
 
 FAILURE, SUCCESS, IDENTITIES, IDENTITIES_ANSWER, SIGN, EXTENSION = 5, 6, 11, 12, 13, 27
 
@@ -140,7 +141,7 @@ class AgentProxy(socketserver.StreamRequestHandler):
         return self.read_msg(self.upf)
 
     def handle(self):
-        sess = SESSIONS.get(self.server.session_id)
+        sess = live_session(self.server.session_id)
         try:
             self.up = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             self.up.connect(str(AGENT))
@@ -287,7 +288,7 @@ def handle_connect(h, sess, method):
     up.close()
 
 
-class SSHProvider:
+class SSHProvider(Provider):
     name = "ssh"
     routes = [("CONNECT", "", handle_connect)]
 
@@ -344,9 +345,7 @@ class SSHProvider:
     def listen(self, sess):
         if not sess.cfg.get("ssh"):
             return []
-        srv = unix_listen(sess.dir / "agent.sock", AgentProxy)
-        srv.session_id = sess.id
-        return [srv]
+        return [unix_listen(sess.dir / "agent.sock", AgentProxy, sess.id)]
 
 
 provider(SSHProvider())
