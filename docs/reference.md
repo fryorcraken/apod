@@ -96,6 +96,8 @@ every profile; key by key within each table; `role` and `scope` are ignored ther
 | `[ssh] confirm`              | `true`: confirm each login on the host.                                                                                                                             |
 | `[ssh] proxy`                | `false`: the pod connects to hosts itself instead of through the broker (default `true`).                                                                           |
 | `[NAME] enabled`             | `false`: the extension NAME is off for the profile's pods, as if it weren't installed (`[rad] enabled = false`).                                                    |
+| `[rad] autodetect`           | `true`: Radicle is on, and the project's `rad://` remotes join the scope. Off by default.                                                                           |
+| `[rad] enabled`              | `true`: Radicle is on, for the `rad:RID` entries in the scope only. `false` wins over `autodetect`.                                                                 |
 | `[rad] home`                 | `RAD_HOME` of the identity pushes land as (default `$RAD_HOME` or `~/.radicle`).                                                                                    |
 | `[rad] key`                  | The Radicle signing key (default `home/keys/radicle`).                                                                                                              |
 | `[rad] confirm`              | `true`: confirm each use of the Radicle key.                                                                                                                        |
@@ -139,13 +141,14 @@ top of [`roles.toml`](../roles.toml) and [below](#how-requests-are-classified).
 | `gh-project:OWNER/NUMBER`, `gh-project:OWNER/*` | gh         | A project board.                                                                                                          |
 | `rad:RID`                                       | rad        | A Radicle repository.                                                                                                     |
 | `ssh:HOST`, `ssh:USER@HOST`                     | ssh        | A host as named in the host's ssh config: as the user that config gives it (its `User`, else your user name), or as USER. |
-| `git-local:PATH`                                | sign       | Signing in a repository with no GitHub or Radicle remote, by its folder.                                                  |
+| `git-local:PATH`                                | git-sign   | Signing in a repository with no GitHub or Radicle remote, by its folder.                                                  |
 
 Values take shell-style patterns, case-insensitive. Automatically in scope, each when its
 extension is on for the pod: the project's GitHub remotes (with `[gh] user`), its Radicle
-remotes, the project folder and the repositories under it (`git-local:`, with a `[git-sign]`
+remotes (with `[rad] autodetect`), the project folder, when it's a git repository, and the repositories under it (`git-local:`, with a `[git-sign]`
 key), `[ssh] hosts` (with an `[ssh]` key), and forks and repositories the session creates. `apod broker scopes` lists every kind,
-your extensions' included.
+your extensions' included. Entries of a kind whose extension is off for the pod are dropped from its
+scope.
 
 ## How requests are classified
 

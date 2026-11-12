@@ -9,8 +9,8 @@ destination before connecting.
 Actions: ssh:connect, ssh:login. Targets: ("ssh", "USER@NAME"), NAME as in the scope
 ("devbox", "root@nas", "key:SHA256:..."); "@NAME" for a connection (no user yet). A scope entry
 NAME covers logins as the user the host's ssh config gives NAME (its User, else yours) only;
-USER@NAME, as USER only. On only for a pod with hosts in scope ([ssh] hosts or --scope ssh:),
-so a key in the global broker.toml isn't asked for at every launch."""
+USER@NAME, as USER only. On for a pod with an [ssh] key and hosts in scope ([ssh] hosts or --scope ssh:); the key is
+asked for at launch only when the role allows ssh:login."""
 import base64
 import fnmatch
 import hashlib
@@ -300,21 +300,18 @@ class SSHProvider(Provider):
     def keys(self, cfg):
         return [(k, cfg.get("confirm", False)) for k in cfg.get("keys") or ([cfg["key"]] if cfg.get("key") else [])]
 
+    def targets(self, cfg, reg):
+        return [("ssh", h) for h in cfg.get("hosts", [])]
+
     def configure(self, sess, cfg, reg, out):
         keys = cfg.get("keys") or ([cfg["key"]] if cfg.get("key") else [])
         if not keys:
             return False
-        for h in cfg.get("hosts", []):
-            sess.add_scope(("ssh", h))
-        if not sess.entries("ssh"):
-            # No host to log in to: don't ask for the key's passphrase at every launch (a key in
-            # the global broker.toml applies to every profile).
-            out["context"].append("ssh: no hosts in this pod's scope, so the broker's ssh logins are off.")
-            return False
         blobs = []
         for k in keys:
             try:
-                blobs.append(need_key(sess, out, k, cfg.get("confirm", False), "ssh logins")[1])
+                blobs.append(need_key(sess, out, k, cfg.get("confirm", False), "ssh logins",
+                                      actions=["ssh:login"])[1])
             except BrokerError as e:
                 out["context"].append(f"SSH key {k} unavailable: {e}.")
         if not blobs:

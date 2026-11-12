@@ -951,6 +951,11 @@ class GhProvider(Provider):
     description = "gh in the pod: the broker runs the real gh as the profile's host gh account"
     guide = "docs/guides.md#github"
     routes = [("POST", "/gh", handle_gh)]
+    needs_target = False  # gh repo create, gh search...: on in a folder without a GitHub remote too
+
+    def targets(self, cfg, reg):
+        """The project's GitHub remotes."""
+        return [("gh", r) for r in (github_repo(u) for u in reg.get("remotes", [])) if r]
 
     def configure(self, sess, cfg, reg, out):
         # The GitHub account is always named: never your active host login by default, which

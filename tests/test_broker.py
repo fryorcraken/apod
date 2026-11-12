@@ -211,6 +211,7 @@ TAGGER_EXT = textwrap.dedent('''
     class Tagger:
         name = "tagger"
         routes = [("POST", "/tag", handle)]
+        needs_target = False  # on without a tag: entry
 
         def configure(self, sess, cfg, reg, out):
             return True
@@ -363,13 +364,16 @@ class BrokerTest(unittest.TestCase):
             shutil.rmtree(cls.tmp, ignore_errors=True)
 
     @classmethod
-    def register(cls, role, scope, user="agentbot", toml="", remotes=(), warnings=None):
+    def register(cls, role, scope, user="agentbot", toml="", remotes=(), warnings=None, project=None):
         pdir = cls.tmp / "profiles" / f"p{next(cls.n)}"
         pdir.mkdir(parents=True)
         (pdir / "env").write_text("GIT_AUTHOR_NAME=Agent\nGIT_AUTHOR_EMAIL=agent@example.com\n"
                                   "GIT_COMMITTER_NAME=Agent\nGIT_COMMITTER_EMAIL=agent@example.com\n")
         (pdir / "broker.toml").write_text(toml + (f'\n[gh]\nuser = "{user}"\n' if user else ""))
-        args = ["register", "--profile", "test", "--profile-dir", str(pdir), "--project", "/p"] + (["--role", role] if role else [])
+        proj = project or cls.tmp / "proj"  # by default a git repository, as a launch folder usually is
+        if not project:
+            (proj / ".git").mkdir(parents=True, exist_ok=True)
+        args = ["register", "--profile", "test", "--profile-dir", str(pdir), "--project", str(proj)] + (["--role", role] if role else [])
         for s in scope:
             args += ["--scope", s]
         for u in remotes:
@@ -461,7 +465,7 @@ class BrokerTest(unittest.TestCase):
         self.assertIn("role pm", r.stdout)
         self.assertIn("  gh: ", r.stdout)
         # Claude Code's /rename lands in the transcript, in the profile's home; the TUI shows it.
-        d = sess["_pdir"] / "home/.claude/projects/-p"
+        d = sess["_pdir"] / "home/.claude/projects" / str(self.tmp / "proj").replace("/", "-")
         d.mkdir(parents=True)
         (d / "s1.jsonl").write_text('{"type":"user"}\n{"type":"custom-title","customTitle":"[eco] boards","sessionId":"s1"}\n')
         names = {s["id"]: s.get("name") for s in self.state()["sessions"]}
@@ -579,7 +583,7 @@ class BrokerTest(unittest.TestCase):
         r = self.admin("keys")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertRegex(r.stdout, rf"to load +{key} +keyprof \[ssh\]")
-        self.assertIn("loaded 1 of 1 key(s)", r.stderr)
+        self.assertRegex(r.stderr, r"loaded (\d) of \1 key\(s\)")  # with running pods' keys not asked for
         r = self.admin("keys")
         self.assertRegex(r.stdout, rf"loaded +{key} +keyprof \[ssh\]")
         self.assertIn("every key is already loaded", r.stderr)
@@ -774,6 +778,13 @@ class BrokerTest(unittest.TestCase):
         old = self.register("reader", ["gh:acme/widget"], toml=toml.replace("[git-sign]", "[sign]"))
         self.assertIn("git-sign", old["providers"])
         self.assertTrue(any("[sign] is now [git-sign]" in w for w in old["warnings"]))
+        # A folder that isn't a git repository: nothing to sign, so off.
+        (self.tmp / "notgit").mkdir(exist_ok=True)
+        sess = self.register("dev", [], toml=toml, project=self.tmp / "notgit")
+        self.assertNotIn("git-sign", sess["providers"])
+        self.assertIn("git-sign (nothing in scope to act on", sess["context"])
+        # A role that can't sign (reader: git commit -S waits for you): on, its key not asked for.
+        self.assertFalse([k for k in reader["need_keys"] if k["path"].endswith("signkey")])
         self.assertNotIn(["commit.gpgsign", "true"], reader["git_config"])
         self.assertIn("Role reader doesn't sign", reader["context"])
         sess = self.register("dev", ["gh:acme/widget"], toml=toml)
@@ -815,7 +826,7 @@ class BrokerTest(unittest.TestCase):
         r = commit(self.tmp / "local")
         self.assertNotEqual(r.returncode, 0)
         self.assertIn(f"git-local:{self.tmp}/local", self.admin("log", "-n", "1").stdout)
-        self.assertIn("git-local:/p/*", sess["scope"])
+        self.assertIn(f"git-local:{self.tmp}/proj/*", sess["scope"])
 
     # --- ssh -------------------------------------------------------------------------------
 
@@ -852,9 +863,13 @@ class BrokerTest(unittest.TestCase):
         self.assertIn("ssh", sess["providers"])
         self.assertEqual([s for s in sess["scope"] if s.startswith("ssh:")], ["ssh:devbox", "ssh:root@nas"])
         self.assertEqual(sess["env"]["SSH_AUTH_SOCK"], f"{sess['pod_dir']}/agent.sock")
-        # A profile's table merges over the global one: its hosts, the global key.
+        # A role that can't log in (dev: each login waits for you): on, its key not asked for.
         sess = self.register("dev", [], toml='[ssh]\nhosts = ["devbox"]\n')
-        self.assertEqual(sess["role"], "dev")
+        self.assertIn("ssh", sess["providers"])
+        self.assertFalse([k for k in sess["need_keys"] if k["path"].endswith("userkey")])
+        # A profile's table merges over the global one: its hosts, the global key.
+        sess = self.register("ops", [], toml='[ssh]\nhosts = ["devbox"]\n')
+        self.assertEqual(sess["role"], "ops")
         self.assertIn("ssh:devbox", sess["scope"])
         self.assertEqual(Agent(Path(sess["dir"]) / "agent.sock").identities(), [blob_of(self.tmp / "userkey.pub")])
         r = self.admin("keys")
@@ -965,24 +980,44 @@ class BrokerTest(unittest.TestCase):
 
     # --- rad -------------------------------------------------------------------------------
 
-    def test_rad_on_only_for_radicle_projects_and_can_be_turned_off(self):
+    def test_rad_is_opt_in_and_on_only_for_radicle_projects(self):
         toml = f'[rad]\nnid = "{NID}"\nstorage = "{self.tmp}/radstore"\nhome = "{self.tmp}/radhome"\n'
-        # A [rad] table alone (as in the global broker.toml) doesn't turn it on, nor ask for its key.
-        sess = self.register("dev", [], toml=toml, remotes=["https://github.com/o/r"])
-        self.assertNotIn("rad", sess["providers"])
-        self.assertEqual(sess["need_keys"], [])
-        self.assertIn("rad", self.register("dev", [f"rad:{RID}"], toml=toml)["providers"])
-        # enabled = false: off even in a Radicle project; GitHub stays on.
-        sess = self.register("dev", [], toml=toml + "enabled = false\n",
-                             remotes=[f"rad://{RID}", "https://github.com/o/r"])
+        # Neither enabled nor autodetect: off, even in a Radicle project (with a warning); GitHub stays on.
+        w = []
+        sess = self.register("dev", [], toml=toml, remotes=[f"rad://{RID}", "https://github.com/o/r"], warnings=w)
         self.assertNotIn("rad", sess["providers"])
         self.assertNotIn(f"rad:{RID}", sess["scope"])
         self.assertIn("github", sess["providers"])
-        self.assertIn("rad extension is turned off", sess["context"])
+        self.assertIn("but the broker's rad extension is off", w[0])
         self.assertFalse(any("rad" in str(c) for c in sess["git_config"]))
+        # A rad: entry without enabled: still off, and dropped from the scope.
+        sess = self.register("dev", [f"rad:{RID}"], toml=toml)
+        self.assertNotIn("rad", sess["providers"])
+        self.assertIn("rad (not set up", sess["context"])
+        self.assertNotIn(f"rad:{RID}", sess["scope"])
+        # enabled = true: on for the rad: entries, not for the folder's remotes.
+        on = toml + "enabled = true\n"
+        self.assertIn("rad", self.register("dev", [f"rad:{RID}"], toml=on)["providers"])
+        sess = self.register("dev", [], toml=on, remotes=[f"rad://{RID}"])
+        self.assertNotIn("rad", sess["providers"])
+        self.assertIn("rad (nothing in scope to act on", sess["context"])
+        self.assertEqual(sess["need_keys"], [])
+        # autodetect = true: the folder's rad remotes join the scope.
+        auto = toml + "autodetect = true\n"
+        sess = self.register("dev", [], toml=auto, remotes=[f"rad://{RID}"])
+        self.assertIn("rad", sess["providers"])
+        self.assertIn(f"rad:{RID}", sess["scope"])
+        # A role that can't push: on (fetches), without asking for the identity's key.
+        sess = self.register("reader", [], toml=auto, remotes=[f"rad://{RID}"])
+        self.assertIn("rad", sess["providers"])
+        self.assertFalse([k for k in sess["need_keys"] if "radicle" in k["path"]])
+        # enabled = false wins.
+        sess = self.register("dev", [], toml=auto + "enabled = false\n", remotes=[f"rad://{RID}"])
+        self.assertNotIn("rad", sess["providers"])
+        self.assertIn("rad (turned off", sess["context"])
 
     def test_rad_fetch_and_push(self):
-        toml = f'[rad]\nnid = "{NID}"\nstorage = "{self.tmp}/radstore"\nhome = "{self.tmp}/radhome"\n'
+        toml = f'[rad]\nautodetect = true\nnid = "{NID}"\nstorage = "{self.tmp}/radstore"\nhome = "{self.tmp}/radhome"\n'
         sess = self.register("dev", [], toml=toml, remotes=[f"rad://{RID}"])
         self.assertIn("rad", sess["providers"])
         self.assertIn(f"rad:{RID}", sess["scope"])

@@ -35,16 +35,33 @@ pod that uses it and keeps running; its state is in `~/.agent-pod/broker/`.
 
 Everything the broker does for a pod is an extension. These ship with apod:
 
-| Extension  | In the pod                                                                           | Set up with                                                     |
-| ---------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------- |
-| `gh`       | `gh` is a shim; the broker runs the real `gh` as the host account the profile names. | `[gh] user`: [GitHub](#github)                                  |
-| `github`   | git's github.com remotes go through the broker, with that account's token.           | `[gh] user`                                                     |
-| `rad`      | `rad://` remotes go through the broker, which pushes as the host's Radicle identity. | a `rad://` remote, or a `rad:` scope entry: [Radicle](#radicle) |
-| `git-sign` | git signs commits and tags with a key the broker holds.                              | `[git-sign] key`: [Signing commits](#signing-commits)           |
-| `ssh`      | `ssh HOST` logs in with the broker's agent, to the hosts in scope, through the host. | an `[ssh]` key, and hosts in scope: [SSH](#ssh)                 |
-| `notify`   | `apod-notify TEXT` sends you a desktop notification.                                 | `[notify] enabled`: [Notifications](#notifications)             |
+| Extension  | In the pod                                                                           | Set up with                                           |
+| ---------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------- |
+| `gh`       | `gh` is a shim; the broker runs the real `gh` as the host account the profile names. | `[gh] user`: [GitHub](#github)                        |
+| `github`   | git's github.com remotes go through the broker, with that account's token.           | `[gh] user`                                           |
+| `rad`      | `rad://` remotes go through the broker, which pushes as the host's Radicle identity. | `[rad] autodetect` or `enabled`: [Radicle](#radicle)  |
+| `git-sign` | git signs commits and tags with a key the broker holds.                              | `[git-sign] key`: [Signing commits](#signing-commits) |
+| `ssh`      | `ssh HOST` logs in with the broker's agent, to the hosts in scope, through the host. | an `[ssh]` key, and hosts in scope: [SSH](#ssh)       |
+| `notify`   | `apod-notify TEXT` sends you a desktop notification.                                 | `[notify] enabled`: [Notifications](#notifications)   |
 
-`[NAME] enabled = false` in a profile's `broker.toml` turns one off for that profile's pods.
+**Loaded, then on per pod.** The broker loads every extension when it starts: each one
+registers its actions, its kinds of target and its routes, and that's all. Whether it does
+anything for a pod is decided at each launch, by the same rules for every extension:
+
+1. It isn't turned off: `[NAME] enabled = false` in the profile's (or the global) `broker.toml`
+   turns it off for that profile's pods.
+2. It's set up: what its table needs is there (`[gh] user`, `[git-sign] key`, an `[ssh]` key,
+   `[rad] autodetect`, `[notify] enabled`). Nothing is on just because a folder looks like it
+   could use it.
+3. It has something to act on: the pod's scope has a target of one of its kinds (a host for
+   `ssh`, a Radicle repository for `rad`, a git repository as the folder for `git-sign`). `gh`
+   is the exception, since it acts on what isn't known up front (`gh repo create`, `gh search`)
+   and asks for anything out of scope.
+4. Its keys are asked for at launch only when the role allows something that uses them: a
+   `reader` isn't asked for the signing key or the Radicle key, nor a `dev` for the ssh key.
+   If you approve such a request anyway, `apod broker keys` loads the key, then retry it.
+
+At startup, the agent is told which extensions are off for its pod, and why.
 What each one counts as an action and a target is under
 [How requests are classified](reference.md#how-requests-are-classified). On the host, `apod
 broker extensions` lists the extensions the broker loaded, yours included, and `apod broker
@@ -91,7 +108,8 @@ key = "~/.ssh/id_apod_broker_sign"
 ```
 
 **Keys** (ssh, signing, and Radicle's) live in the broker's own ssh-agent, never in the pod. At
-launch, apod loads the ones it doesn't hold yet with `ssh-add`, which asks for their passphrases
+launch, apod loads the ones it doesn't hold yet, of the extensions on for the pod and only when
+the role allows something that uses them, with `ssh-add`, which asks for their passphrases
 (an empty line skips a key: the pod starts, and the requests that need it fail); they expire after `APOD_SSH_TTL` (default `4h`). After a broker restart, or before launching,
 `apod broker keys` lists the keys named in the profiles' `broker.toml` tables (not those of
 extensions turned off with `enabled = false`) and those running pods use, and loads the missing
@@ -152,11 +170,19 @@ and `--body`).
 
 ## Radicle
 
-**There's nothing to set up: a project with a `rad://` remote gets Radicle automatically**, for
-any profile that uses the broker and any role. Launch a pod in a `rad clone` (or after `rad
-init`), and its `git fetch` and `git push` to that remote go through the broker, with the
-repository in scope. The launch asks for your Radicle key's passphrase (below). To keep a
-profile's pods off Radicle, see [Turning it off](#turning-radicle-off).
+**Radicle is off until you turn it on.** In the profile's `broker.toml` (or
+`~/.agent-pod/broker.toml`, for every profile):
+
+```toml
+[rad]
+autodetect = true   # pods launched in a folder with a rad:// remote get that repository
+# enabled = true    # instead: only the repositories you name in the scope (rad:RID)
+```
+
+With `autodetect`, launch a pod in a `rad clone` (or after `rad init`), and its `git fetch` and
+`git push` to that remote go through the broker, with the repository in scope. With `enabled`,
+only `rad:RID` entries (the profile's `scope`, or `--scope`) are in scope. A launch in a folder
+with a `rad://` remote that Radicle isn't on for says so.
 
 Pods fetch and push `rad://` remotes through the broker, which pushes as the host's Radicle
 identity. The pod never holds the identity's key: it's loaded in the broker's own ssh-agent on
@@ -169,20 +195,15 @@ There's no `rad` command in the pod, unlike `gh`: only `git fetch` and `git push
 remotes, and patches through `git push rad HEAD:refs/patches -o patch.message="..."`. `rad
 patch`, `rad issue` and `rad sync` aren't available.
 
-**When it's on.** The rad extension is on for a pod, whatever its role, when a Radicle
-repository is in its scope:
+**When it's on.** For a pod whose profile has `[rad] autodetect` or `enabled`, when a Radicle
+repository is in its scope (the folder's `rad://` remote with `autodetect`, or a `rad:RID`
+entry), and the host has `rad` with an identity (`rad auth`) or `[rad] nid` is set. Otherwise
+it's off, and the pod is told why.
 
-- the project has a `rad://` remote (`rad clone`, or `rad init`, which adds one); its
-  repository joins the scope;
-- or the profile's `scope` or `--scope` has a `rad:RID` entry;
-
-and the host has `rad` with an identity (`rad auth`), or `[rad] nid` is set. Without one, the
-pod is told Radicle remotes are unavailable.
-
-A `[rad]` table alone doesn't turn it on. When it's on, the launch asks for the identity's key
-passphrase (the one from `rad auth`) unless the broker's agent already holds it, also for
-roles that only fetch. An empty line skips it: the pod starts, and Radicle pushes fail. A
-loaded key stays for `APOD_SSH_TTL` (default `4h`).
+**The key.** When it's on and the role may push (`dev`, `maintainer`), the launch asks for the
+identity's key passphrase (the one from `rad auth`), unless the broker's agent already holds
+it. Roles that only fetch aren't asked: fetching doesn't use the key. An empty line skips it:
+the pod starts, and Radicle pushes fail. A loaded key stays for `APOD_SSH_TTL` (default `4h`).
 
 **What the role allows:**
 
@@ -211,7 +232,9 @@ That identity has its own storage, so the repositories must be there too (`rad c
 seed` with that `RAD_HOME`), and its own node, running, to publish its pushes. It isn't a
 delegate, so its branches and patches show as another peer's.
 
-<a id="turning-radicle-off"></a>**Turning it off.** In the profile's `broker.toml`:
+<a id="turning-radicle-off"></a>**Turning it off.** Leave `autodetect` and `enabled` out. To turn
+it off for one profile when the global `broker.toml` turns it on, in that profile's
+`broker.toml`:
 
 ```toml
 [rad]
@@ -285,17 +308,20 @@ belongs to the GitHub account that has the key.
 
 3. **Nothing else, usually.** The role and scope you already have decide the rest:
    - **Role:** `dev`, `maintainer` and `ops` sign every commit and tag. With `reader` or `pm`,
-     `git commit -S` waits for your approval. Your own roles sign with `git-sign = ["commit",
+     `git commit -S` waits for your approval, and the launch doesn't ask for the key's
+     passphrase: after approving, `apod broker keys` loads it. Your own roles sign with `git-sign = ["commit",
      "tag"]`.
    - **Scope:** a signature is for the repository the branch pushes to (`gh:OWNER/REPO` or
      `rad:RID`), so the scope you give for pushes covers signing too. The project folder and the
-     repositories under it are in scope as `git-local:PATH`, for repositories with no remote.
+     repositories under it are in scope as `git-local:PATH`, for repositories with no remote,
+     when the folder is a git repository. Launched elsewhere, a pod gets no signing.
    - **Waits for you:** another repository, or a commit whose author or committer isn't the
      profile's identity (`git-sign:as other`).
 
 ### Check it
 
-The next launch loads the key into the broker's agent and asks for its passphrase. Then, in a
+The next launch with a role that signs loads the key into the broker's agent and asks for its
+passphrase. Then, in a
 pod:
 
 ```sh
@@ -357,8 +383,9 @@ route to them.
    for you whatever the role.
 
    **No hosts, no ssh.** A pod with no hosts in scope (no `hosts` here, no `--scope ssh:`) gets
-   no ssh from the broker, and the launch doesn't ask for the key's passphrase. So an `[ssh]`
-   key in `~/.agent-pod/broker.toml` costs nothing to the profiles that don't name hosts.
+   no ssh from the broker, so an `[ssh]` key in `~/.agent-pod/broker.toml` costs nothing to the
+   profiles that don't name hosts. The launch asks for the key's passphrase only when the role
+   logs in without asking (`ops`).
 4. **Check it** in a pod: `ssh devbox true` logs in; `ssh some-other-host true` waits.
 
 Only port 22 or the host's configured ssh port goes through without asking; another port is a

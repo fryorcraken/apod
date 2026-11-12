@@ -104,6 +104,14 @@ class SignProvider(Provider):
     def keys(self, cfg):
         return [(cfg["key"], cfg.get("confirm", False))] if cfg.get("key") else []
 
+    def targets(self, cfg, reg):
+        """The project folder, when it's a git repository (a .git directory or worktree file):
+        where a repository without a GitHub or Radicle remote may be signed."""
+        proj = (reg.get("project") or "").rstrip("/")
+        if not proj or not (Path(proj) / ".git").exists():
+            return []
+        return [("git-local", proj), ("git-local", proj + "/*")]
+
     def configure(self, sess, cfg, reg, out):
         """[git-sign] key: git in the pod can sign. Commits and tags are signed by default
         (commit.gpgsign, tag.gpgsign) when the role allows git-sign:commit / git-sign:tag; otherwise
@@ -111,12 +119,9 @@ class SignProvider(Provider):
         if not cfg.get("key"):
             return False
         signs = {a: allowed(sess, f"git-sign:{a}") for a in ("commit", "tag")}
-        # The project folder is where a repository without a GitHub or Radicle remote may be signed.
-        if sess.project:
-            sess.add_scope(("git-local", sess.project))
-            sess.add_scope(("git-local", sess.project.rstrip("/") + "/*"))
         try:
-            line, blob = need_key(sess, out, cfg["key"], cfg.get("confirm", False), "signing commits")
+            line, blob = need_key(sess, out, cfg["key"], cfg.get("confirm", False), "signing commits",
+                                  actions=["git-sign:commit", "git-sign:tag", "git-sign:other"])
         except BrokerError as e:
             out["context"].append(f"Commit signing is unavailable: {e}.")
             return False

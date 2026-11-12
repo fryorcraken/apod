@@ -63,6 +63,10 @@ With a `broker.toml`, a pod holds no GitHub token and no ssh, signing or Radicle
 - **Keys** (ssh, commit signing, Radicle) are held by the broker's own ssh-agent on the host. The
   pod gets a filtering agent that offers only the session's ssh keys. It signs only ssh login
   requests, never arbitrary data, and pods can't add, remove or lock its keys.
+- **Extensions are off unless set up.** Every extension is loaded, but is on for a pod only when
+  its `broker.toml` table sets it up (an account, a key, `[rad] autodetect`), it isn't
+  `enabled = false`, and the pod's scope has something of its kind. A folder's `rad://` remote
+  alone doesn't give a pod Radicle, and keys are unlocked only for roles that use them.
 - **The broker listens only on unix sockets.** There's a directory per pod, mounted into that pod
   alone, and an admin socket in `~/.agent-pod/broker/` (mode 0700). There is no TCP listener.
 - **The pod's directory is the pod's.** It's mounted read-write, so the broker keeps nothing it

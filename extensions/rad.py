@@ -6,9 +6,11 @@ updates are checked, and the broker then pushes them on with the host's git-remo
 host's Radicle identity (its key loaded in the broker's agent). Push options (-o patch.message=...)
 are passed on.
 
-On for a pod when a Radicle repository is in its scope (a rad:// remote of the project, or a rad:
-entry), whatever its role; [rad] enabled = false turns it off. Setup, roles, keys: the Radicle
-section of docs/guides.md.
+Off unless broker.toml (the profile's or the global one) turns it on: [rad] enabled = true, for the
+Radicle repositories in the scope (rad:RID entries); [rad] autodetect = true, also for the
+project's rad:// remotes. Then on for a pod with a Radicle repository in its scope. The
+identity's key is asked for at launch only when the role may push. Setup, roles, keys: the
+Radicle section of docs/guides.md.
 
 Actions: rad:fetch, rad:push branch|default-branch|tag|delete|patch|other-ref, rad:push force
 (a branch update that isn't a fast-forward). Targets: ("rad", RID)."""
@@ -23,6 +25,7 @@ import gitwire
 from api import (GIT_BODY_LIMIT, AGENT, BDIR, BrokerError, Provider, Request, check, evaluate, expand, need_key,
                  provider, read_body, recently_allowed, rejected_msg, run_quiet, scope_kind, send_text)
 
+PUSHES = [f"rad:push {k}" for k in ("branch", "default-branch", "tag", "delete", "patch", "other-ref", "force")]
 RAD_URL = re.compile(r"^rad://(z[1-9A-HJ-NP-Za-km-z]+)(?:/(z[1-9A-HJ-NP-Za-km-z]+))?/?$")
 
 
@@ -217,13 +220,21 @@ class RadProvider(Provider):
 
     def keys(self, cfg):
         """The key pushes are signed with: [rad] key, else the identity's key in RAD_HOME."""
+        if not (cfg.get("enabled") or cfg.get("autodetect")):
+            return []
         home = expand(cfg.get("home") or os.environ.get("RAD_HOME") or "~/.radicle")
         key = cfg.get("key") or (str(home / "keys/radicle") if (home / "keys/radicle.pub").exists() else None)
         return [(key, cfg.get("confirm", False))] if key else []
 
+    def targets(self, cfg, reg):
+        """With [rad] autodetect = true, the project's rad:// remotes join the scope."""
+        if not cfg.get("autodetect"):
+            return []
+        return [("rad", m.group(1)) for m in (RAD_URL.match(u) for u in reg.get("remotes", [])) if m]
+
     def configure(self, sess, cfg, reg, out):
-        rids = [m.group(1) for m in (RAD_URL.match(u) for u in reg.get("remotes", [])) if m]
-        if not rids and not sess.scope.get("rad"):  # no Radicle repository in this pod's scope
+        # Opt-in ([rad] enabled or autodetect); the core already checked a Radicle repository is in scope.
+        if not (cfg.get("enabled") or cfg.get("autodetect")):
             return False
         home = str(expand(cfg.get("home") or os.environ.get("RAD_HOME") or "~/.radicle"))
         nid = cfg.get("nid")
@@ -237,13 +248,11 @@ class RadProvider(Provider):
                 return False
         storage = str(expand(cfg.get("storage") or Path(home) / "storage"))
         sess.cfg["rad"] = {"home": home, "nid": nid, "storage": storage}
-        for rid in rids:
-            sess.add_scope(("rad", rid))
         key = cfg.get("key") or (str(Path(home) / "keys/radicle") if (Path(home) / "keys/radicle.pub").exists() else None)
         if key:
             try:
                 need_key(sess, out, key, cfg.get("confirm", False),
-                         "Radicle pushes (the passphrase you gave rad auth)")
+                         "Radicle pushes (the passphrase you gave rad auth)", actions=PUSHES)
             except BrokerError as e:
                 out["context"].append(f"Radicle pushes may fail: {e}.")
         out["git_config"].append(["url.{forward}rad/.insteadOf", "rad://"])
@@ -253,4 +262,4 @@ class RadProvider(Provider):
 
 
 provider(RadProvider())
-scope_kind("rad", provider="rad", remote=lambda u: (RAD_URL.match(u) or [None, None])[1], help="rad:RID (a Radicle repository; the project's rad remotes join the scope)")
+scope_kind("rad", provider="rad", remote=lambda u: (RAD_URL.match(u) or [None, None])[1], help="rad:RID (a Radicle repository; with [rad] autodetect, the project's rad remotes join the scope)")

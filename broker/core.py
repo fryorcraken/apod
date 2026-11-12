@@ -83,6 +83,8 @@ class Provider:
     routes     [(method, path, handler(h, sess, method))]: requests from the pod's broker socket
                (GET, POST or CONNECT); path matches the request's path or a "/"-separated prefix
     requires   names of providers this one needs: configured after them, and only if they're on
+    needs_target  False for a provider that's on without a target of its own kinds in scope (gh:
+               it acts on what isn't known up front, and asks for what's out of scope)
     description  one line for apod broker extensions: what it gives pods
     guide      where its guide is, "docs/guides.md#anchor" in the apod checkout (the shipped ones);
                else apod broker extensions NAME shows the extension's module docstring
@@ -90,11 +92,19 @@ class Provider:
     name = ""
     routes = []
     requires = []
+    needs_target = True
     description = ""
     guide = ""
 
+    def targets(self, cfg, reg):
+        """[(kind, value)]: scope entries the provider's broker.toml table or the launch adds, of
+        its own kinds (ssh's hosts, git-sign's folder). Called before the on-rules are applied."""
+        return []
+
     def configure(self, sess, cfg, reg, out):
-        """At each pod's registration: set the pod up (out) and say whether the provider is on."""
+        """At each pod's registration, once the core's rules let the provider on (see
+        provider_off): set the pod up (out) and say whether it's on, False when its broker.toml
+        table lacks what it needs."""
         return False
 
     def listen(self, sess):
@@ -139,6 +149,27 @@ def route_matches(prefix, path):
     if prefix == "" or path == prefix or prefix.endswith("/") and path.startswith(prefix):
         return True
     return path.startswith(prefix) and path[len(prefix)] in "/?"
+
+
+def own_kinds(name):
+    """The scope kinds a provider declares that are written in the scope (entry=True)."""
+    return [k.prefix for k in SCOPES.values() if k.provider == name and k.entry]
+
+
+def provider_off(p, sess, pcfg, on):
+    """Why the core keeps a provider off for a pod, or None to let it configure. The rules, in
+    order: not turned off ([NAME] enabled = false); every provider it requires is on; and, when
+    it declares scope kinds (and needs_target isn't False), the pod's scope has an entry of one
+    of them (nothing to act on otherwise). Whether it's configured (its key, its account) is configure's to say."""
+    if isinstance(pcfg, dict) and pcfg.get("enabled") is False:
+        return f"turned off ({p.name}.enabled = false in broker.toml)"
+    missing = [n for n in getattr(p, "requires", []) or [] if n not in on]
+    if missing:
+        return f"it needs {', '.join(missing)}, which is off"
+    kinds = own_kinds(p.name) if getattr(p, "needs_target", True) else []
+    if kinds and not any(sess.scope.get(k) for k in kinds):
+        return f"nothing in scope to act on (no {' or '.join(k + ':' for k in kinds)} entry)"
+    return None
 
 
 def configure_order():
@@ -876,14 +907,18 @@ def pubkey_of(path):
     return line, line.split()[1]
 
 
-def need_key(sess, out, path, confirm=False, purpose=""):
+def need_key(sess, out, path, confirm=False, purpose="", actions=None):
     """Note a key the session uses, held in the broker's agent; apod loads it if it's missing
-    (ssh-add asks for the passphrase on the user's terminal, after showing `purpose`)."""
+    (ssh-add asks for the passphrase on the user's terminal, after showing `purpose`). With
+    `actions` (the actions that use the key), only when the role allows one of them: otherwise
+    the launch doesn't ask, and apod broker keys loads it if you approve such a request."""
     line, blob = pubkey_of(path)
     k = {"path": str(expand(path)), "confirm": bool(confirm)}
     keys = sess.cfg.setdefault("_keys", [])
     if k not in keys:
         keys.append(k)
+    if actions and not any(allowed(sess, a) for a in actions):
+        return line, blob
     if blob not in agent_keys():
         e = next((e for e in out["need_keys"] if e["path"] == k["path"] and e["confirm"] == k["confirm"]), None)
         if e is None:
@@ -1007,24 +1042,51 @@ def register(r):
     out = {"env": {"APOD_BROKER_SOCK": f"{POD_DIR}/broker.sock"}, "git_config": [], "mounts": [],
            "context": [], "need_keys": [], "providers": [], "warnings": warnings}
     start_agent()
-    for p in configure_order():
-        missing = [n for n in getattr(p, "requires", []) or [] if n not in out["providers"]]
-        if missing:  # what it needs is off for this pod (or not loaded)
-            continue
+    # The scope first, so the rules below see all of it: the profile's and the launch's entries
+    # (above), then what each provider adds from its table and the launch (ssh hosts, the
+    # folder, the project's GitHub remotes; Radicle's with [rad] autodetect).
+    order = configure_order()
+    for p in order:
         pcfg = cfg.get(p.name) or {}
-        if isinstance(pcfg, dict) and pcfg.get("enabled") is False:  # [name] enabled = false
-            out["context"].append(f"The broker's {p.name} extension is turned off for this profile "
-                                  f"({p.name}.enabled = false in broker.toml).")
+        if isinstance(pcfg, dict) and pcfg.get("enabled") is False:
+            continue
+        try:
+            for t in getattr(p, "targets", lambda c, reg: [])(pcfg, r) or []:
+                sess.add_scope(t)
+        except Exception as e:
+            print(f"apod-broker: {p.name}.targets: {e!r}", file=sys.stderr, flush=True)
+    off = {}
+    for p in order:
+        pcfg = cfg.get(p.name) or {}
+        why = provider_off(p, sess, pcfg, out["providers"])
+        if why:
+            off[p.name] = why
+            # A remote of the folder that this extension handles, left alone: say so at launch.
+            urls = [u for u in r.get("remotes", []) for k in own_kinds(p.name)
+                    if SCOPES[k].remote and SCOPES[k].remote(u)]
+            if urls and why.startswith("nothing in scope"):
+                out["warnings"].append(f"{urls[0]} is a {p.name} remote, but the broker's {p.name} extension "
+                                       f"is off for this pod: see apod broker extensions {p.name}")
             continue
         try:
             if p.configure(sess, pcfg, r, out):
                 out["providers"].append(p.name)
+            else:
+                off[p.name] = "not set up for this profile (see apod broker extensions " + p.name + ")"
         except BrokerError:
             raise
         except Exception as e:  # one broken extension doesn't stop every pod
             print(f"apod-broker: {p.name}.configure: {e!r}", file=sys.stderr, flush=True)
             out["warnings"].append(f"broker extension {p.name} failed ({e}); it's off for this pod")
+            off[p.name] = "failed to set up"
     sess.cfg["_providers"] = out["providers"]
+    sess.cfg["_off"] = off
+    for name in off:  # the scope lists only what the pod can act on
+        for k in own_kinds(name):
+            sess.scope.pop(k, None)
+    if off:
+        out["context"].append("Broker extensions off for this pod: "
+                              + "; ".join(f"{n} ({why})" for n, why in off.items()) + ".")
     with LOCK:
         if sid in SESSIONS:
             unregister(sid)
@@ -1334,9 +1396,11 @@ def provider_source(p):
 
 def md_section(text, anchor):
     """The section of a Markdown text under the heading whose GitHub anchor is ANCHOR."""
-    lines, out, level = text.splitlines(), None, 0
+    lines, out, level, fence = text.splitlines(), None, 0, False
     for line in lines:
-        m = re.match(r"(#+) (.*)", line)
+        if line.lstrip().startswith("```"):
+            fence = not fence
+        m = None if fence else re.match(r"(#+) (.*)", line)
         if m and out is not None and len(m.group(1)) <= level:
             break
         if m and out is None:
@@ -1399,6 +1463,12 @@ def extension_info(name):
     if kinds:
         out.append("Scope kinds:")
         out += [f"  {k.prefix + ':':<12} {k.help}" for k in kinds]
+    own = own_kinds(name) if getattr(p, "needs_target", True) else []
+    req = getattr(p, "requires", []) or []
+    out.append(f"On for a pod when: it's set up in broker.toml (its guide says how)"
+               + (f", {', '.join(req)} is on" if req else "")
+               + (f", and the pod's scope has an entry of kind {' or '.join(k + ':' for k in own)}" if own else "")
+               + ". Its keys are asked for only when the role uses them.")
     out.append(f"Off for a profile: [{name}] enabled = false in its broker.toml.")
     return "\n".join(out) + "\n"
 

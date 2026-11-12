@@ -69,7 +69,7 @@ The rest is needed only for what uses it:
 | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | The [broker](docs/guides.md#the-broker) (GitHub, Radicle, signing, ssh for pods) | Python 3.11 or later, OpenSSH 8.9 or later (the pods' image has both)                                                                                                |
 | GitHub through the broker (the `gh` and `github` extensions)                     | `gh`, logged in as the agent's GitHub account                                                                                                                        |
-| Radicle through the broker (`rad`)                                               | `rad`, with an identity (`rad auth`)                                                                                                                                 |
+| Radicle through the broker (`rad`)                                               | `rad`, with an identity (`rad auth`); `[rad] autodetect = true` in `broker.toml`                                                                                     |
 | `apod google-auth` (Google Docs for Claude)                                      | `node`                                                                                                                                                               |
 | zsh completion                                                                   | From the same folder: `ln -s "$PWD/apod/_apod" ~/.oh-my-zsh/custom/completions/_apod`, then `rm -f ~/.zcompdump*; exec zsh` (oh-my-zsh puts that folder on `$fpath`) |
 
@@ -145,7 +145,7 @@ A launch combines a **profile**, a **role**, a **scope** and a **path** into a *
 | **Extension** | Something the broker can do for a pod: `gh`, git to GitHub or Radicle, commit signing, ssh. Each one names its **actions** (`gh:pr create`, `ssh:login`) and declares the **kinds** of target it handles (`gh:` for repositories, `gh-project:` for boards, `ssh:` for hosts). Roles list actions, scopes list targets of those kinds. | Shipped ones in `extensions/`; yours in `~/.agent-pod/broker-extensions/`. `apod broker extensions` lists them.                                                                                                |
 | **Profile**   | *Who* acts: the git identity (your host's, unless `env` sets another), the GitHub account (`[gh] user`), the keys it signs and logs in with, its home (agent login, history, settings), mounts, image and network. One per identity or kind of job.                                                                                    | `~/.agent-pod/<profile>/`                                                                                                                                                                                      |
 | **Role**      | *What* a pod may do without asking: a preset list of actions, per extension (`gh` commands, git pushes, signing, ssh logins).                                                                                                                                                                                                          | Built in: `reader`, `dev`, `maintainer`, `pm`, `ops`; `~/.agent-pod/roles.toml` adds to them or denies from them ([how](docs/guides.md#roles-and-scope)). A profile's `role =`, or `--role`; default `reader`. |
-| **Scope**     | *Where* those actions may happen: targets written `KIND:VALUE`, such as `gh:OWNER/REPO`, `gh-project:OWNER/N`, `rad:RID`, `ssh:HOST`.                                                                                                                                                                                                  | The path's remotes and folder, automatically (when the extension for them is set up); the profile's `scope` and `[ssh] hosts`; `--scope`.                                                                      |
+| **Scope**     | *Where* those actions may happen: targets written `KIND:VALUE`, such as `gh:OWNER/REPO`, `gh-project:OWNER/N`, `rad:RID`, `ssh:HOST`.                                                                                                                                                                                                  | The path's GitHub remotes and folder, automatically (and its Radicle remotes with `[rad] autodetect`); the profile's `scope` and `[ssh] hosts`; `--scope`.                                                     |
 | **Path**      | The folder the agent works in: mounted read-write; its git remotes join the scope.                                                                                                                                                                                                                                                     | The folder argument, else the current folder.                                                                                                                                                                  |
 | **Session**   | One running pod, registered with the broker, with what you approve "for the session". It ends with the pod.                                                                                                                                                                                                                            | Each launch.                                                                                                                                                                                                   |
 
@@ -176,15 +176,16 @@ Everything the broker does for a pod is an extension, each with its own guide:
 - **gh:** `gh` in the pod, run by the broker as a host `gh` account
   ([GitHub](docs/guides.md#github)).
 - **github:** git fetch and push to github.com remotes, with that account's token.
-- **rad:** git fetch and push to `rad://` remotes, as the host's Radicle identity
-  ([Radicle](docs/guides.md#radicle)).
+- **rad:** git fetch and push to `rad://` remotes, as the host's Radicle identity; off until
+  `[rad] autodetect = true` ([Radicle](docs/guides.md#radicle)).
 - **git-sign:** commit and tag signatures with a key the broker holds
   ([Signing commits](docs/guides.md#signing-commits)).
 - **ssh:** logins to the hosts in scope with the broker's agent ([ssh](docs/guides.md#ssh)).
 - **notify:** desktop notifications from the pod ([Notifications](docs/guides.md#notifications)).
 
-The [overview](docs/guides.md#built-in-extensions) has what each needs to be set up, and how to
-turn one off. On the host, `apod broker extensions NAME` shows an extension's guide and what
+The broker loads them all, but each is on for a pod only when it's set up and has something in
+the pod's scope to act on. The [overview](docs/guides.md#built-in-extensions) has the rules,
+what each needs to be set up, and how to turn one off. On the host, `apod broker extensions NAME` shows an extension's guide and what
 each role may do with it. Yours go in `~/.agent-pod/broker-extensions/`
 ([EXTENSIONS.md](EXTENSIONS.md)).
 

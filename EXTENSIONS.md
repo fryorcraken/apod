@@ -111,11 +111,14 @@ class Systemctl(Provider):
     description = "systemctl --user on the host, for the units in scope"   # apod broker extensions
     routes = [("POST", "/systemctl", handle)]
 
+    def targets(self, cfg, reg):
+        # The profile's own units are in scope for its pods. With none, the broker keeps the
+        # extension off: it has nothing to act on.
+        return [("unit", unit_name(u)) for u in cfg.get("units", [])]
+
     def configure(self, sess, cfg, reg, out):
-        if not cfg.get("enabled"):
+        if not cfg.get("enabled"):   # opt-in: [systemctl] enabled = true
             return False
-        for u in cfg.get("units", []):   # the profile's own units are in scope for its pods
-            sess.add_scope(("unit", unit_name(u)))
         out["mounts"].append([str(CLIENT), "/usr/local/bin/systemctl", "ro"])
         out["context"].append("systemctl reaches the host's user services: use it as usual, with --user, for "
                               f"{', '.join(COMMANDS)} (other commands aren't available). Units outside "
@@ -239,7 +242,7 @@ what sort of thing it is, and which extension it belongs to; the value says whic
 **The scope** is the list of targets a pod may touch, written `kind:value`: `gh:acme/widget`,
 `unit:web`. A target is in scope when an entry of its kind matches its value, with patterns
 (`gh:acme/*` covers every repository of `acme`, `unit:dev-*` every service starting with `dev-`).
-Entries come from the host's side only: `gh` adds the project's GitHub remotes, your `configure`
+Entries come from the host's side only: `gh` adds the project's GitHub remotes, your `targets`
 added `units` from `broker.toml`, and the user adds others with `scope =` or `--scope unit:db`.
 
 `scope_kind("unit", ...)` is what makes `unit:` something users can write: it declares the kind,
@@ -254,13 +257,26 @@ web` would wait too, because `reader` doesn't allow `systemctl:restart`. You can
 request once, for the session (it then adds `unit:db.service` to that pod's scope, and the
 action to what it may do), or for the role (the action, for every profile with that role).
 
-**`configure`** ran when the pod started, before any request. It decided whether `systemctl` is on
-for this pod (only with `enabled = true`), added the profile's units to the scope, and told
-`apod` what the pod needs: the client mounted at `/usr/local/bin/systemctl`, and a sentence for
-the agent's system prompt. That sentence says only what's different from the `systemctl` the
-agent knows (user services, four commands, approval outside the scope), so it can rely on
-what it already knows of the command. `gh` does the same: it puts its own
-`gh` in the pod, and adds the project's GitHub repository to the scope.
+**Loaded, then on per pod.** The broker loaded your file when it started: `provider()` and
+`scope_kind()` registered the extension, its routes and its kind, and nothing more. Whether it's
+on for a pod is decided at each launch, the same way for every extension:
+
+1. `[systemctl] enabled = false` would have kept it off, without calling your code.
+2. **`targets`** ran first, with the other extensions': it returned the profile's units, which
+   joined the scope. Since the extension declares a kind (`unit`), the broker keeps it off for a
+   pod whose scope has no `unit:` entry: there's nothing for it to act on.
+3. **`configure`** ran next, before any request. It said whether the extension is set up for
+   this profile (only with `enabled = true`: nothing is on by surprise), and told `apod` what the
+   pod needs: the client mounted at `/usr/local/bin/systemctl`, and a sentence for the agent's
+   system prompt. That sentence says only what's different from the `systemctl` the agent
+   knows (user services, four commands, approval outside the scope), so it can rely on what it
+   already knows of the command. `gh` does the same: it puts its own `gh` in the pod, and its
+   `targets` adds the project's GitHub repository to the scope.
+4. **Keys**, if it had any (`need_key(..., actions=[...])`), are asked for at launch only when
+   the role allows an action that uses them.
+
+The agent is told which extensions are off for its pod, and why, and their kinds' entries are
+dropped from its scope.
 
 ## How the broker decides
 
@@ -368,17 +384,19 @@ Everything here is imported from `api`.
 **`provider(p)`** registers a provider and returns it. Subclass **`Provider`**, or give any
 object the same attributes:
 
-| Attribute                        |                                                                                                                                                                                                                                                                                                                                                         |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`                           | Required: lowercase letters, digits and `-`, unique, not a `roles.toml` key (`allow`, `deny`, `extends`, `description`) or `unscoped`. It names the `broker.toml` table, the role list and the action prefix.                                                                                                                                           |
-| `routes`                         | `[(method, path, handler)]`. `method` is `GET`, `POST` or `CONNECT`. `path` matches a request's path exactly, or as a prefix that ends at a `/` or `?` (`/systemctl` takes `/systemctl` and `/systemctl/x`, not `/systemctlx`); `CONNECT` may use `""` for every CONNECT. A route that overlaps another provider's is refused. `/whoami` is the core's. |
-| `description`                    | One line for `apod broker extensions`: what the extension gives pods.                                                                                                                                                                                                                                                                                   |
-| `guide`                          | Where its guide is, `"docs/guides.md#anchor"` in the apod checkout (the shipped extensions). Without one, `apod broker extensions NAME` shows your module's docstring, so write it as the extension's guide: what it does, its `broker.toml` settings, its actions.                                                                                     |
-| `requires`                       | Names of providers this one needs. It's configured after them, and only when they're on for the pod (`github` requires `gh`).                                                                                                                                                                                                                           |
-| `configure(sess, cfg, reg, out)` | Required. Runs when a pod registers, before its socket exists. Returns whether the provider is on for this pod; requests to its routes from a pod it's off for are refused. See below.                                                                                                                                                                  |
-| `listen(sess)`                   | Optional. Start sockets of your own in `sess.dir`, e.g. one that doesn't speak HTTP (`ssh` serves its agent this way). Called for every provider, on or off, at registration and when the broker starts again, so check `sess.cfg` first. Return the servers; the core stops them when the session ends.                                                |
-| `close(session_id)`              | Optional. The session ended.                                                                                                                                                                                                                                                                                                                            |
-| `keys(cfg)`                      | Optional. `[(key path, confirm)]` named by your `broker.toml` table, for `apod broker keys` to list and load before any pod starts.                                                                                                                                                                                                                     |
+| Attribute                        |                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`                           | Required: lowercase letters, digits and `-`, unique, not a `roles.toml` key (`allow`, `deny`, `extends`, `description`) or `unscoped`. It names the `broker.toml` table, the role list and the action prefix.                                                                                                                                                                                                                                     |
+| `routes`                         | `[(method, path, handler)]`. `method` is `GET`, `POST` or `CONNECT`. `path` matches a request's path exactly, or as a prefix that ends at a `/` or `?` (`/systemctl` takes `/systemctl` and `/systemctl/x`, not `/systemctlx`); `CONNECT` may use `""` for every CONNECT. A route that overlaps another provider's is refused. `/whoami` is the core's.                                                                                           |
+| `description`                    | One line for `apod broker extensions`: what the extension gives pods.                                                                                                                                                                                                                                                                                                                                                                             |
+| `guide`                          | Where its guide is, `"docs/guides.md#anchor"` in the apod checkout (the shipped extensions). Without one, `apod broker extensions NAME` shows your module's docstring, so write it as the extension's guide: what it does, its `broker.toml` settings, its actions.                                                                                                                                                                               |
+| `requires`                       | Names of providers this one needs. It's configured after them, and only when they're on for the pod (`github` requires `gh`).                                                                                                                                                                                                                                                                                                                     |
+| `targets(cfg, reg)`              | Optional. `[(kind, value)]`: scope entries of your kinds that your table or the launch implies (the `systemctl` units, `ssh`'s hosts, `gh`'s remotes, `git-sign`'s folder). Runs for every provider before any `configure`, so that the rules below see the whole scope.                                                                                                                                                                          |
+| `needs_target`                   | Default `True`: when you declare scope kinds, you're off for a pod whose scope has no entry of them. `False` to be on without one, if you act on what isn't known up front (`gh`: `gh repo create`, `gh search`).                                                                                                                                                                                                                                 |
+| `configure(sess, cfg, reg, out)` | Required. Runs when a pod registers, before its socket exists, and only when the rules let you on: not `enabled = false`, what you `require` on, and a target of your kinds in scope (unless `needs_target` is `False`). Returns whether you're set up for this pod: return `False` when your table lacks what you need; nothing should be on just because it could be. Requests to your routes from a pod you're off for are refused. See below. |
+| `listen(sess)`                   | Optional. Start sockets of your own in `sess.dir`, e.g. one that doesn't speak HTTP (`ssh` serves its agent this way). Called for every provider, on or off, at registration and when the broker starts again, so check `sess.cfg` first. Return the servers; the core stops them when the session ends.                                                                                                                                          |
+| `close(session_id)`              | Optional. The session ended.                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `keys(cfg)`                      | Optional. `[(key path, confirm)]` named by your `broker.toml` table, for `apod broker keys` to list and load before any pod starts.                                                                                                                                                                                                                                                                                                               |
 
 **`configure(sess, cfg, reg, out)`:**
 
@@ -396,14 +414,14 @@ object the same attributes:
 
 What `configure` can add to `out`, which `apod` applies to the pod:
 
-| Key                                                    |                                                                                                                                                                                                                                                                                       |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `out["mounts"]`                                        | `[host path, pod path, mode]`, mode `"ro"` or `"rw"`. Paths can't contain `:`, tabs or newlines, and the host path must exist.                                                                                                                                                        |
-| `out["env"]`                                           | `{name: value}` for the pod's environment, single-line values. `APOD_BROKER_SOCK` is set already.                                                                                                                                                                                     |
-| `out["git_config"]`                                    | `[[key, value]]`, passed as `GIT_CONFIG_*`, so they override the pod's git config files. `{forward}` in a key becomes the pod's git forwarder URL (`github`, `rad`).                                                                                                                  |
-| `out["context"]`                                       | Sentences for the agent's system prompt: what's available and how to use it.                                                                                                                                                                                                          |
-| `out["warnings"]`                                      | Lines `apod` prints at launch, for the user.                                                                                                                                                                                                                                          |
-| `need_key(sess, out, path, confirm=False, purpose="")` | A function, not a key: the broker's ssh-agent must hold this key, and `apod` runs `ssh-add` at launch if it doesn't, after telling the user what it's for (`purpose`, such as `"signing commits"`). Returns `(public key line, blob)`; raises `BrokerError` if `path.pub` is missing. |
+| Key                                                                  |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `out["mounts"]`                                                      | `[host path, pod path, mode]`, mode `"ro"` or `"rw"`. Paths can't contain `:`, tabs or newlines, and the host path must exist.                                                                                                                                                                                                                                                                                                                                                                        |
+| `out["env"]`                                                         | `{name: value}` for the pod's environment, single-line values. `APOD_BROKER_SOCK` is set already.                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `out["git_config"]`                                                  | `[[key, value]]`, passed as `GIT_CONFIG_*`, so they override the pod's git config files. `{forward}` in a key becomes the pod's git forwarder URL (`github`, `rad`).                                                                                                                                                                                                                                                                                                                                  |
+| `out["context"]`                                                     | Sentences for the agent's system prompt: what's available and how to use it.                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `out["warnings"]`                                                    | Lines `apod` prints at launch, for the user.                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `need_key(sess, out, path, confirm=False, purpose="", actions=None)` | A function, not a key: the broker's ssh-agent must hold this key, and `apod` runs `ssh-add` at launch if it doesn't, after telling the user what it's for (`purpose`, such as `"signing commits"`). With `actions` (those that use the key, such as `["ssh:login"]`), only when the role allows one of them: otherwise the launch doesn't ask, and `apod broker keys` loads it if the user approves such a request. Returns `(public key line, blob)`; raises `BrokerError` if `path.pub` is missing. |
 
 ### Handlers
 
