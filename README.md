@@ -1,8 +1,8 @@
 # apod: agents in podman
 
-`apod` runs coding agents (Claude Code, opencode, or a plain shell) in rootless podman
-containers. With the host's [broker](docs/guides.md#the-broker), the pod holds no credentials,
-and three things decide what it can do (see [Concepts](#concepts)):
+`apod` runs coding agents (Claude Code, opencode, ...) in rootless podman containers. With the
+host's [broker](docs/guides.md#the-broker), the pod holds no credentials, and three things
+decide what it can do (see [Concepts](#concepts)):
 
 - its **profile** is *who* acts: the git identity, the GitHub account and the keys;
 - its **role** is *what* it may do: a preset list of actions, such as open a PR, push a branch,
@@ -18,15 +18,13 @@ container, not the agent, is the security boundary.
 
 I ran Claude Code in auto mode, where a classifier model judges each action before it runs, with
 `permissions.blockReadsOutsideWorkingDirectories` on, so it can't read outside the folders I've
-allowed. That works well until the work involves scripting. Simple commands go through, but for
-complex ones (pipes into loops, command substitutions, variables, inline scripts) the checks
-can't tell whether they stay within the working directories, so they ask. Even in auto mode, a
-session turns into death by a thousand approvals. Approving them without reading defeats the
-point, and loosening the rule gives away the scope.
+allowed. That works well until the agent starts scripting (pipes into loops, command
+substitutions, variables, inline scripts): the checks can't tell whether a command is safe, so
+they ask, and a session turns into death by a thousand approvals.
 
-Auto mode doesn't fix this, because it's the same kind of answer: an agent deciding what another
-agent may do. It can't always tell, so it asks, and when it lets something through, it was a
-judgement call. Don't trust an agent to rein in your agent.
+In auto mode, an agent decides what the session's agent may do. It can't always tell, so it
+asks, and when it lets something through, it was a judgement call. Don't trust an agent to rein
+in your agent.
 
 apod moves the boundary instead. The agent runs in a rootless container that only has the
 project folder and what the profile mounts, so it can run anything without asking, and what it
@@ -38,6 +36,8 @@ fine-grained tokens are tedious to make and still coarse (a repository, not "ope
 don't merge"). So apod's [broker](docs/guides.md#the-broker) keeps credentials on the host and
 acts for the pod: each pod gets a role (what it may do) and a scope (what it may touch), and
 anything else waits for my approval in a TUI. The few prompts left are the ones worth reading.
+
+The broker is software, not an agent: it checks rules, it doesn't make judgement calls.
 
 The same pattern fits more than GitHub: Radicle pushes, signing commits with a key the pod never
 sees, ssh to my hosts without a key per pod. So the broker is a small core (sessions, roles,
@@ -58,9 +58,9 @@ Patches are welcome on either.
 On the host: rootless podman, bash, git, jq.
 
 ```sh
-git clone https://github.com/fryorcraken/apod ~/src/rad/apod    # or: rad clone rad:z2CjA38QDC7c5tgBkPV23UippSCjK
-podman build -t apod ~/src/rad/apod                             # the pods' image
-ln -s ~/src/rad/apod/apod ~/.local/bin/apod
+git clone https://github.com/fryorcraken/apod   # or: rad clone rad:z2CjA38QDC7c5tgBkPV23UippSCjK
+podman build -t apod ./apod                     # the pods' image
+ln -s "$PWD/apod/apod" ~/.local/bin/apod
 ```
 
 The rest is needed only for what uses it:
@@ -71,7 +71,7 @@ The rest is needed only for what uses it:
 | GitHub through the broker (the `gh` and `github` extensions) | `gh`, logged in as the agent's GitHub account |
 | Radicle through the broker (`rad`) | `rad`, with an identity (`rad auth`) |
 | `apod google-auth` (Google Docs for Claude) | `node` |
-| zsh completion | `ln -s ~/src/rad/apod/_apod ~/.oh-my-zsh/custom/completions/_apod`, then `rm -f ~/.zcompdump*; exec zsh` (oh-my-zsh puts that folder on `$fpath`) |
+| zsh completion | From the same folder: `ln -s "$PWD/apod/_apod" ~/.oh-my-zsh/custom/completions/_apod`, then `rm -f ~/.zcompdump*; exec zsh` (oh-my-zsh puts that folder on `$fpath`) |
 
 ## Quick start
 
@@ -85,8 +85,8 @@ apod me                    # Claude Code in a pod; the first run asks you to log
 ```
 
 The pod sees this folder (read-write), the profile's home and the session's work log, nothing
-else from the host, and holds no credentials: the agent commits as the profile, but can't push or use GitHub. That's
-what the broker adds (next).
+else from the host, and holds no credentials: the agent commits as the profile, but can't push
+or use GitHub. That's what the broker adds (next).
 
 ```sh
 apod me -a opencode        # opencode instead
