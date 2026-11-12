@@ -142,7 +142,9 @@ class SignProvider(Provider):
             (f"git {on} are signed by the broker" if on else f"Role {sess.role} doesn't sign: git commit -S asks the "
              f"user, through the broker") +
             " with an SSH key held on the host (gpg.format=ssh), in the repositories in scope (by the remote the "
-            "branch pushes to) and as the profile's git identity; anything else needs approval.")
+            f"branch pushes to; a repository without a remote, by its folder: only under {sess.project}) and as "
+            "the profile's git identity; anything else needs approval. To test signing, commit in a repository "
+            f"under {sess.project}, not one in /tmp or a scratchpad.")
         return True
 
 
