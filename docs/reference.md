@@ -94,6 +94,7 @@ every profile; key by key within each table; `role` and `scope` are ignored ther
 | `[ssh] hosts` | Hosts in scope, as named in the host's ssh config: `NAME` (any user) or `USER@NAME`. |
 | `[ssh] confirm` | `true`: confirm each login on the host. |
 | `[ssh] proxy` | `false`: the pod connects to hosts itself instead of through the broker (default `true`). |
+| `[NAME] enabled` | `false`: the extension NAME is off for the profile's pods, as if it weren't installed (`[rad] enabled = false`). |
 | `[rad] home` | `RAD_HOME` of the identity pushes land as (default `$RAD_HOME` or `~/.radicle`). |
 | `[rad] key` | The Radicle signing key (default `home/keys/radicle`). |
 | `[rad] confirm` | `true`: confirm each use of the Radicle key. |

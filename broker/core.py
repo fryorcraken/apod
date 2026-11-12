@@ -968,8 +968,13 @@ def register(r):
         missing = [n for n in getattr(p, "requires", []) or [] if n not in out["providers"]]
         if missing:  # what it needs is off for this pod (or not loaded)
             continue
+        pcfg = cfg.get(p.name) or {}
+        if isinstance(pcfg, dict) and pcfg.get("enabled") is False:  # [name] enabled = false
+            out["context"].append(f"The broker's {p.name} extension is turned off for this profile "
+                                  f"({p.name}.enabled = false in broker.toml).")
+            continue
         try:
-            if p.configure(sess, cfg.get(p.name) or {}, r, out):
+            if p.configure(sess, pcfg, r, out):
                 out["providers"].append(p.name)
         except BrokerError:
             raise

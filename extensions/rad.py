@@ -6,6 +6,10 @@ updates are checked, and the broker then pushes them on with the host's git-remo
 host's Radicle identity (its key loaded in the broker's agent). Push options (-o patch.message=...)
 are passed on.
 
+On for a pod when a Radicle repository is in its scope (a rad:// remote of the project, or a rad:
+entry), whatever its role; [rad] enabled = false turns it off. Setup, roles, keys: the Radicle
+section of docs/guides.md.
+
 Actions: rad:fetch, rad:push branch|default-branch|tag|delete|patch|other-ref, rad:push force
 (a branch update that isn't a fast-forward). Targets: ("rad", RID)."""
 import os
@@ -217,7 +221,7 @@ class RadProvider(Provider):
 
     def configure(self, sess, cfg, reg, out):
         rids = [m.group(1) for m in (RAD_URL.match(u) for u in reg.get("remotes", [])) if m]
-        if not rids and not cfg:
+        if not rids and not sess.scope.get("rad"):  # no Radicle repository in this pod's scope
             return False
         home = str(expand(cfg.get("home") or os.environ.get("RAD_HOME") or "~/.radicle"))
         nid = cfg.get("nid")

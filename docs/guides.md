@@ -137,33 +137,70 @@ and `--body`).
 ## Radicle
 
 Pods fetch and push `rad://` remotes through the broker, which pushes as the host's Radicle
-identity. Nothing from the pod's repository runs on the host: a push lands in a staging
-repository the broker owns, then goes on with the host's `git-remote-rad`.
+identity. The pod never holds the identity's key: it's loaded in the broker's own ssh-agent on
+the host, whose socket isn't mounted in any pod (the ssh extension's agent proxy lists and signs
+only the session's ssh keys). Nothing from the pod's repository runs on the host either: a push
+lands in a staging repository the broker owns, its ref updates are checked against the role and
+scope, then the broker pushes them on with the host's `git-remote-rad`.
 
-1. **Radicle on the host:** `rad` installed, an identity (`rad auth`), and the node running so
-   pushes reach the network.
-2. **The project** has a `rad://` remote (`rad clone`, or `rad init`, which adds one): its
-   repository is in scope automatically. Others: `scope = ["rad:RID"]` or `--scope rad:RID`.
-3. **Optional settings**, in the profile's or the global `broker.toml`:
+There's no `rad` command in the pod, unlike `gh`: only `git fetch` and `git push` to `rad://`
+remotes, and patches through `git push rad HEAD:refs/patches -o patch.message="..."`. `rad
+patch`, `rad issue` and `rad sync` aren't available.
 
-   ```toml
-   [rad]
-   home = "~/.radicle-pods"    # RAD_HOME of the identity pushes land as (default $RAD_HOME or ~/.radicle)
-   # key = "..."               # the signing key (default: home/keys/radicle)
-   # confirm = true            # confirm each use of the key on the host (needs openssh-askpass)
-   # nid, storage              # the node id and storage folder, if rad can't tell
-   ```
+**When it's on.** The rad extension is on for a pod, whatever its role, when a Radicle
+repository is in its scope:
 
-   Pushes otherwise look like yours. To keep pods' patches apart, make a separate identity
-   (`RAD_HOME=~/.radicle-pods rad auth`) and point `home` at it.
-4. **Check it** in a pod: `git fetch rad`, then `git push rad HEAD:refs/patches -o
-   patch.message="test"` opens a patch (`dev` may).
+- the project has a `rad://` remote (`rad clone`, or `rad init`, which adds one); its
+  repository joins the scope;
+- or the profile's `scope` or `--scope` has a `rad:RID` entry.
 
-Launching in a project with a `rad://` remote asks for the identity's key passphrase (the one
-from `rad auth`) unless the broker's agent already holds it: pushes are signed with it.
+A `[rad]` table alone doesn't turn it on. When it's on, the launch asks for the identity's key
+passphrase (the one from `rad auth`) unless the broker's agent already holds it, also for
+roles that only fetch. An empty line skips it: the pod starts, and Radicle pushes fail. A
+loaded key stays for `APOD_SSH_TTL` (default `4h`).
 
-Roles: `dev` pushes branches (force pushes too) and opens patches; `maintainer` also pushes tags
-and deletes branches. The default branch waits for you.
+**What the role allows:**
+
+| Role | Radicle |
+|---|---|
+| `reader`, `pm`, `ops` | `fetch` |
+| `dev` | also `push branch`, `push force`, `push patch` |
+| `maintainer` | also `push tag`, `push delete` |
+
+A push to the default branch (`push default-branch`) waits for you whatever the role.
+
+**Which key.** Pushes are signed with the host's Radicle identity, `~/.radicle` (or
+`$RAD_HOME`): your own key, so a pod's pushes and patches look like yours, and as a delegate of
+the repository its pushes can be canonical (which is why the default branch waits). A dedicated
+identity for pods should work but hasn't been tested:
+
+```toml
+[rad]
+home = "~/.radicle-pods"    # created with RAD_HOME=~/.radicle-pods rad auth
+# key = "..."               # the signing key (default: home/keys/radicle)
+# confirm = true            # confirm each use of the key on the host (needs openssh-askpass)
+# nid, storage              # the node id and storage folder, if rad can't tell
+```
+
+That identity has its own storage, so the repositories must be there too (`rad clone` or `rad
+seed` with that `RAD_HOME`), and its own node, running, to publish its pushes. It isn't a
+delegate, so its branches and patches show as another peer's.
+
+**Turning it off.** In the profile's `broker.toml`:
+
+```toml
+[rad]
+enabled = false
+```
+
+Then pods of that profile get nothing from Radicle, even in a Radicle project: no passphrase at
+launch, no Radicle repository in scope, and `git fetch` or `git push` to a `rad://` remote fail
+in the pod (it has no `git-remote-rad`). Everything else is unchanged: a `dev` pod still pushes
+branches and opens PRs on the project's GitHub remote. `enabled = false` works the same for any
+extension's table (`[ssh]`, `[sign]`, ...).
+
+**Check it** in a pod: `git fetch rad`, then `git push rad HEAD:refs/patches -o
+patch.message="test"` opens a patch (`dev` may).
 
 ## Signing commits
 

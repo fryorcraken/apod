@@ -929,6 +929,22 @@ class BrokerTest(unittest.TestCase):
 
     # --- rad -------------------------------------------------------------------------------
 
+    def test_rad_on_only_for_radicle_projects_and_can_be_turned_off(self):
+        toml = f'[rad]\nnid = "{NID}"\nstorage = "{self.tmp}/radstore"\nhome = "{self.tmp}/radhome"\n'
+        # A [rad] table alone (as in the global broker.toml) doesn't turn it on, nor ask for its key.
+        sess = self.register("dev", [], toml=toml, remotes=["https://github.com/o/r"])
+        self.assertNotIn("rad", sess["providers"])
+        self.assertEqual(sess["need_keys"], [])
+        self.assertIn("rad", self.register("dev", [f"rad:{RID}"], toml=toml)["providers"])
+        # enabled = false: off even in a Radicle project; GitHub stays on.
+        sess = self.register("dev", [], toml=toml + "enabled = false\n",
+                             remotes=[f"rad://{RID}", "https://github.com/o/r"])
+        self.assertNotIn("rad", sess["providers"])
+        self.assertNotIn(f"rad:{RID}", sess["scope"])
+        self.assertIn("github", sess["providers"])
+        self.assertIn("rad extension is turned off", sess["context"])
+        self.assertFalse(any("rad" in str(c) for c in sess["git_config"]))
+
     def test_rad_fetch_and_push(self):
         toml = f'[rad]\nnid = "{NID}"\nstorage = "{self.tmp}/radstore"\nhome = "{self.tmp}/radhome"\n'
         sess = self.register("dev", [], toml=toml, remotes=[f"rad://{RID}"])

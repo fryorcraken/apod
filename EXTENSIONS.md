@@ -254,7 +254,8 @@ object the same attributes:
 **`configure(sess, cfg, reg, out)`:**
 
 - `cfg` is your table: `~/.agent-pod/broker.toml`'s, overridden key by key by the profile's
-  (`{}` if neither has one).
+  (`{}` if neither has one). A table with `enabled = false` never reaches you: the broker
+  leaves your extension off for that profile and tells the agent so.
 - `reg` is the registration: `id`, `profile`, `profile_dir`, `project` (the host path), `role` and
   `gh_user` (when given at launch), `scope` (the launch's `--scope` entries), `remotes` (the
   project's git remote URLs).
