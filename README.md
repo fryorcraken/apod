@@ -1,16 +1,16 @@
 # apod: agents in podman
 
-`apod` runs coding agents (Claude Code, opencode, or a plain shell) in rootless podman containers.
-With the host's [broker](docs/guides.md#the-broker), the pod holds no credentials, and three things decide what
-it can do (see [Concepts](#concepts)):
+`apod` runs coding agents (Claude Code, opencode, or a plain shell) in rootless podman
+containers. With the host's [broker](docs/guides.md#the-broker), the pod holds no credentials,
+and three things decide what it can do (see [Concepts](#concepts)):
 
 - its **profile** is *who* acts: the git identity, the GitHub account and the keys;
 - its **role** is *what* it may do: a preset list of actions, such as open a PR, push a branch,
   sign a commit or log in over ssh;
 - its **scope** is *where*: the repositories, project boards and hosts those actions may touch.
 
-Anything outside them waits for your approval. The agent runs with no
-permission prompts; the container, not the agent, is the security boundary.
+Anything outside them waits for your approval. The agent runs with no permission prompts; the
+container, not the agent, is the security boundary.
 
 **Don't trust an agent to rein in your agent.**
 
@@ -35,9 +35,9 @@ can't see it can't touch.
 Then I wanted agents to do some GitHub work too: push branches, open PRs, comment on issues, move
 cards on a project board. Handing a pod a token gives it everything that token can do, and
 fine-grained tokens are tedious to make and still coarse (a repository, not "open PRs here but
-don't merge"). So apod's [broker](docs/guides.md#the-broker) keeps credentials on the host and acts for the pod: each
-pod gets a role (what it may do) and a scope (what it may touch), and anything else waits for
-my approval in a TUI. The few prompts left are the ones worth reading.
+don't merge"). So apod's [broker](docs/guides.md#the-broker) keeps credentials on the host and
+acts for the pod: each pod gets a role (what it may do) and a scope (what it may touch), and
+anything else waits for my approval in a TUI. The few prompts left are the ones worth reading.
 
 The same pattern fits more than GitHub: Radicle pushes, signing commits with a key the pod never
 sees, ssh to my hosts without a key per pod. So the broker is a small core (sessions, roles,
@@ -55,50 +55,72 @@ Patches are welcome on either.
 
 ## Install
 
-Requirements: rootless podman, bash, jq, git; `gh` and `node` on the host only for
-`apod token` and `apod google-auth`; for the broker, Python 3.11 or later and OpenSSH 8.9 or
-later on the host (the pods' image has both), plus `gh` logged in for GitHub and `rad` for Radicle.
+On the host: rootless podman, bash, git, jq.
 
 ```sh
 git clone https://github.com/fryorcraken/apod ~/src/rad/apod    # or: rad clone rad:z2CjA38QDC7c5tgBkPV23UippSCjK
-podman build -t apod ~/src/rad/apod
+podman build -t apod ~/src/rad/apod                             # the pods' image
 ln -s ~/src/rad/apod/apod ~/.local/bin/apod
-# zsh completion (oh-my-zsh puts $ZSH_CUSTOM/completions on $fpath), then: rm -f ~/.zcompdump*; exec zsh
-ln -s ~/src/rad/apod/_apod ~/.oh-my-zsh/custom/completions/_apod
 ```
+
+The rest is needed only for what uses it:
+
+| For | On the host |
+|---|---|
+| The [broker](docs/guides.md#the-broker) (GitHub, Radicle, signing, ssh for pods) | Python 3.11 or later, OpenSSH 8.9 or later (the pods' image has both) |
+| GitHub through the broker (the `gh` and `github` extensions) | `gh`, logged in as the agent's GitHub account |
+| Radicle through the broker (`rad`) | `rad`, with an identity (`rad auth`) |
+| `apod google-auth` (Google Docs for Claude) | `node` |
+| zsh completion | `ln -s ~/src/rad/apod/_apod ~/.oh-my-zsh/custom/completions/_apod`, then `rm -f ~/.zcompdump*; exec zsh` (oh-my-zsh puts that folder on `$fpath`) |
 
 ## Quick start
 
-You need a GitHub account for the agent (a bot, with write access to the repositories it works
-on), logged in to the host's `gh`:
+A profile needs only a git identity:
+
+```sh
+mkdir -p ~/.agent-pod/me
+printf 'GIT_AUTHOR_NAME=Your Name\nGIT_AUTHOR_EMAIL=you@example.com\n' > ~/.agent-pod/me/env
+cd ~/src/some-repo
+apod me                    # Claude Code in a pod; the first run asks you to log in to Claude once
+```
+
+The pod sees this folder (read-write), the profile's home and the session's work log, nothing
+else from the host, and holds no credentials: the agent commits as the profile, but can't push or use GitHub. That's
+what the broker adds (next).
+
+```sh
+apod me -a opencode        # opencode instead
+apod me -a bash            # a shell in the pod
+apod me -- --continue      # anything after -- goes to the agent
+apod me ~/src/other        # another folder than the current one
+```
+
+### Quick start with GitHub
+
+The broker acts on GitHub for the pod, as a GitHub account for the agent (a bot, with write
+access to the repositories it works on), logged in to the host's `gh`. Its token never enters
+the pod.
 
 ```sh
 gh auth login --hostname github.com   # as the bot; then gh auth switch back to your own account
 mkdir -p ~/.agent-pod/bot
-cat > ~/.agent-pod/bot/env <<'ENV'
-GIT_AUTHOR_NAME=my-bot
-GIT_AUTHOR_EMAIL=12345+my-bot@users.noreply.github.com
-ENV
+printf 'GIT_AUTHOR_NAME=my-bot\nGIT_AUTHOR_EMAIL=12345+my-bot@users.noreply.github.com\n' > ~/.agent-pod/bot/env
 cat > ~/.agent-pod/bot/broker.toml <<'TOML'
-role = "dev"                        # PRs, issues, branch pushes; anything else waits for you
+role = "dev"                          # PRs, issues, branch pushes; anything else waits for you
 [gh]
-user = "my-bot"                     # the host gh login the broker acts as
+user = "my-bot"                       # the host gh login the broker acts as
 TOML
-apod bot ~/src/some-repo            # Claude Code in a pod; first run: log in to Claude once
-apod broker                         # in another terminal: approve what's out of role or scope
+cd ~/src/some-repo && apod bot        # gh and git push work in the pod, within the role and scope
+apod broker                           # in another terminal: approve what's out of role or scope
 ```
 
-The noreply email is under the bot's Settings → Emails. The [GitHub guide](docs/guides.md#github)
+The noreply email is under the bot's Settings → Emails. The project's GitHub remote is in scope;
+`apod bot --role pm` takes another role for one launch. The [GitHub guide](docs/guides.md#github)
 has the details, and the other guides cover Radicle, signing, ssh and the rest.
 
-```sh
-apod bot -a opencode ~/src/some-repo        # opencode instead
-apod bot -a bash .                          # a shell in the pod (gh and git as the profile)
-apod bot ~/src/some-repo -- --continue      # anything after -- goes to the agent
-apod bot --role pm ~/src/org/planning       # the same profile, another role for this launch
-```
+### Permission prompts
 
-Agents run without permission prompts, since the container is the boundary:
+Agents run without them, since the container is the boundary:
 
 - **Claude Code** runs with `--permission-mode bypassPermissions`.
 - **opencode** (2.x, `@opencode/cli`) runs with `--auto`, which approves every permission a
@@ -106,9 +128,8 @@ Agents run without permission prompts, since the container is the boundary:
   runs with `--standalone`, a private server per pod instead of opencode's background service,
   which pods of the same profile would otherwise share through their common home.
 
-Only the project folder is mounted (read-write), plus the profile's home, what it mounts, and
-the session's work log.
-Claude is told at startup what is mounted and what isn't, and, with the broker, its role and scope.
+Claude is told at startup what is mounted and what isn't, and, with the broker, its role and
+scope.
 
 ## Concepts
 
@@ -147,7 +168,8 @@ role); anything else waits for you. You can approve it once, for the session, or
 
 Everything the broker does for a pod is an extension, each with its own guide:
 
-- **gh:** `gh` in the pod, run by the broker as a host `gh` account ([GitHub](docs/guides.md#github)).
+- **gh:** `gh` in the pod, run by the broker as a host `gh` account
+  ([GitHub](docs/guides.md#github)).
 - **github:** git fetch and push to github.com remotes, with that account's token.
 - **rad:** git fetch and push to `rad://` remotes, as the host's Radicle identity
   ([Radicle](docs/guides.md#radicle)).
@@ -158,7 +180,8 @@ Everything the broker does for a pod is an extension, each with its own guide:
 
 The [overview](docs/guides.md#built-in-extensions) has what each needs to be set up, and how to
 turn one off. On the host, `apod broker extensions NAME` shows an extension's guide and what
-each role may do with it. Yours go in `~/.agent-pod/broker-extensions/` ([EXTENSIONS.md](EXTENSIONS.md)).
+each role may do with it. Yours go in `~/.agent-pod/broker-extensions/`
+([EXTENSIONS.md](EXTENSIONS.md)).
 
 ## Documentation
 
