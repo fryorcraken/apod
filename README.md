@@ -12,14 +12,21 @@ it can do (see [Concepts](#concepts)):
 Anything outside them waits for your approval. The agent runs with no
 permission prompts; the container, not the agent, is the security boundary.
 
+**Don't trust an agent to rein in your agent.**
+
 ## Why
 
-I run Claude Code with `permissions.blockReadsOutsideWorkingDirectories` on, so it can't read
-outside the folders I've allowed. That works well until the work involves scripting. Simple
-commands go through, but Claude Code's permission analysis can't fully parse complex ones: pipes
-into loops, command substitutions, variables, inline scripts. It can't tell whether they stay
-within the working directories, so it asks. A session turns into death by a thousand approvals.
-Approving them without reading defeats the point, and loosening the rule gives away the scope.
+I ran Claude Code in auto mode, where a classifier model judges each action before it runs, with
+`permissions.blockReadsOutsideWorkingDirectories` on, so it can't read outside the folders I've
+allowed. That works well until the work involves scripting. Simple commands go through, but for
+complex ones (pipes into loops, command substitutions, variables, inline scripts) the checks
+can't tell whether they stay within the working directories, so they ask. Even in auto mode, a
+session turns into death by a thousand approvals. Approving them without reading defeats the
+point, and loosening the rule gives away the scope.
+
+Auto mode doesn't fix this, because it's the same kind of answer: an agent deciding what another
+agent may do. It can't always tell, so it asks, and when it lets something through, it was a
+judgement call. Don't trust an agent to rein in your agent.
 
 apod moves the boundary instead. The agent runs in a rootless container that only has the
 project folder and what the profile mounts, so it can run anything without asking, and what it
