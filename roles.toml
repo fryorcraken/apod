@@ -19,7 +19,8 @@
 #   git-sign "commit", "tag", "as other" (a commit or tag by anyone but the profile's git identity)
 #   ssh     "connect" (through the broker, ProxyCommand; "connect port" for a port other than ssh's),
 #           "login" (the agent signs a login);
-#           which hosts is the scope's business (broker.toml [ssh] hosts, --scope ssh:HOST)
+#           which hosts is the scope's business (broker.toml [ssh] hosts, --scope ssh:HOST). Only
+#           ops logs in: a login is a shell on the host, beyond what the broker can check.
 
 [roles.reader]
 description = "Read code, PRs, issues and CI; fetch"
@@ -35,7 +36,6 @@ gh = [
 ]
 github = ["fetch", "fetch public"]
 rad = ["fetch"]
-ssh = ["connect", "login"]
 
 [roles.dev]
 description = "reader + push branches (force pushes too), open patches, create and edit PRs, create and comment on issues, sign commits"

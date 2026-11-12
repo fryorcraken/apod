@@ -116,7 +116,8 @@ account can do.
    ```
 
    The broker uses the account the profile names, whichever is active.
-3. **The profile:** the identity in `env` and the account in `broker.toml`:
+3. **The profile:** the bot's git identity in `env` (without it, pods commit as you, with your
+   host's git identity), and the account in `broker.toml`:
 
    ```sh
    # ~/.agent-pod/bot/env
@@ -234,7 +235,8 @@ work, with a warning).
 Two files of the profile take part, both in `~/.agent-pod/<profile>/`:
 
 - `env` says **who the commits are by**: the git name and email (`GIT_AUTHOR_NAME`,
-  `GIT_AUTHOR_EMAIL`). Every profile has one.
+  `GIT_AUTHOR_EMAIL`). Without them, it's your host's git identity (`git config --global
+  user.name`, `user.email`).
 - `broker.toml` says **which key signs them**, in its `[git-sign]` table.
 
 A signature vouches for that email: the broker only signs commits whose author and committer
@@ -262,7 +264,8 @@ belongs to the GitHub account that has the key.
 
 ### Setup
 
-1. **The identity**, in the profile's `env` (most likely there already):
+1. **The identity**, in the profile's `env`, if the commits shouldn't be yours (most likely
+   there already for a bot):
 
    ```sh
    # ~/.agent-pod/work/env
@@ -348,8 +351,10 @@ route to them.
    another user, name it: `root@devbox` allows root (and only root). In the pod, `ssh devbox`
    logs in as the same user your ssh would.
 
-   `--scope ssh:HOST` adds a host for one launch. `reader` and `ops` (and roles that extend
-   `reader`) may log in to the hosts in scope; another host waits for you.
+   `--scope ssh:HOST` adds a host for one launch. Only `ops` logs in to the hosts in scope
+   without asking, since a login is a shell there; with other roles, every login waits for you
+   (or add `ssh = ["connect", "login"]` to a role in your `roles.toml`). Another host waits
+   for you whatever the role.
 4. **Check it** in a pod: `ssh devbox true` logs in; `ssh some-other-host true` waits.
 
 Only port 22 or the host's configured ssh port goes through without asking; another port is a
@@ -397,7 +402,7 @@ NAME` what each role allows of one extension.
 
 | Role         | For                            | May                                                                                                                                                     |
 | ------------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `reader`     | Reviewing, answering questions | View PRs, issues, CI and repositories; read the APIs for what's in scope; fetch; ssh to the hosts in scope.                                             |
+| `reader`     | Reviewing, answering questions | View PRs, issues, CI and repositories; read the APIs for what's in scope; fetch.                                             |
 | `dev`        | Coding                         | reader, plus push branches (force pushes too, not the default branch), open Radicle patches, create and edit PRs, comment, create issues; sign commits. |
 | `maintainer` | Landing work                   | dev, plus merge and review PRs, edit and close issues, re-run CI, fork and create repositories, push tags, delete branches.                             |
 | `pm`         | Project boards                 | reader, plus project boards (items, fields, templates) and creating, editing and commenting on issues.                                                  |

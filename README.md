@@ -27,7 +27,7 @@ asks, and when it lets something through, it was a judgement call. Don't trust a
 in your agent.
 
 apod moves the boundary instead. The agent runs in a rootless container that only has the
-project folder and what the profile mounts, so it can run anything without asking, and what it
+folder it works in and what the profile mounts, so it can run anything without asking, and what it
 can't see it can't touch.
 
 Then I wanted agents to do some GitHub work too: push branches, open PRs, comment on issues, move
@@ -75,23 +75,22 @@ The rest is needed only for what uses it:
 
 ## Quick start
 
-A profile needs only a git identity:
+A profile is a folder:
 
 ```sh
 mkdir -p ~/.agent-pod/me
-printf 'GIT_AUTHOR_NAME=Your Name\nGIT_AUTHOR_EMAIL=you@example.com\n' > ~/.agent-pod/me/env
 cd ~/src/some-repo
 apod me                    # Claude Code in a pod; the first run asks you to log in to Claude once
 ```
 
-The pod sees this folder (read-write), the profile's home and the session's work log, nothing
-else from the host, and holds no credentials: the agent commits as the profile, but can't push
-or use GitHub. That's what the broker adds (next).
+The pod sees the folder you launch it in (read-write), the profile's home and the session's work
+log, nothing else from the host, and holds no credentials: the agent commits as you (your
+host's git `user.name` and `user.email`), but can't push or use GitHub. That's what the broker adds (next).
 
 ```sh
 apod me -a opencode        # opencode instead
 apod me -a bash            # a shell in the pod
-apod me -- --continue      # anything after -- goes to the agent
+apod me -- --resume        # anything after -- goes to the agent
 apod me ~/src/other        # another folder than the current one
 ```
 
@@ -102,7 +101,7 @@ access to the repositories it works on), logged in to the host's `gh`. Its token
 the pod.
 
 ```sh
-gh auth login --hostname github.com   # as the bot; then gh auth switch back to your own account
+gh auth login                         # as the bot; then gh auth switch back to your own account
 mkdir -p ~/.agent-pod/bot
 printf 'GIT_AUTHOR_NAME=my-bot\nGIT_AUTHOR_EMAIL=12345+my-bot@users.noreply.github.com\n' > ~/.agent-pod/bot/env
 cat > ~/.agent-pod/bot/broker.toml <<'TOML'
@@ -111,16 +110,20 @@ role = "dev"                          # PRs, issues, branch pushes; anything els
 user = "my-bot"                       # the host gh login the broker acts as
 TOML
 cd ~/src/some-repo && apod bot        # gh and git push work in the pod, within the role and scope
+```
+
+```sh
 apod broker                           # in another terminal: approve what's out of role or scope
 ```
 
-The noreply email is under the bot's Settings → Emails. The project's GitHub remote is in scope;
+The noreply email is under the bot's Settings → Emails. The folder's GitHub remote is in scope;
 `apod bot --role pm` takes another role for one launch. The [GitHub guide](docs/guides.md#github)
 has the details, and the other guides cover Radicle, signing, ssh and the rest.
 
 ### Permission prompts
 
-Agents run without them, since the container is the boundary:
+`apod` passes some settings to the agents. By default, they run without permission prompts,
+since the container is the boundary:
 
 - **Claude Code** runs with `--permission-mode bypassPermissions`.
 - **opencode** (2.x, `@opencode/cli`) runs with `--auto`, which approves every permission a
@@ -128,22 +131,23 @@ Agents run without them, since the container is the boundary:
   runs with `--standalone`, a private server per pod instead of opencode's background service,
   which pods of the same profile would otherwise share through their common home.
 
-Claude is told at startup what is mounted and what isn't, and, with the broker, its role and
-scope.
+At startup, the agent is told what is mounted and what isn't, and, with the broker, its role
+and scope.
 
 ## Concepts
 
-A launch combines a **profile**, a **role**, a **scope** and a **project** into a **session**:
-`apod <profile> [--role ROLE] [--scope SCOPE]... <project>`. The profile is *who*, the role is
+A launch combines a **profile**, a **role**, a **scope** and a **path** into a **session**:
+`apod <profile> [--role ROLE] [--scope SCOPE]... <path>`. The profile is *who*, the role is
 *what*, the scope is *where*.
 
-| Term        | What it is                                                                                                                                                                                                                                 | Where it's set                                                                                                                                     |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Profile** | *Who* acts: the git identity (name and email, only in `env`), the GitHub account (`[gh] user`), the keys it signs and logs in with, its home (agent login, history, settings), mounts, image and network. One per identity or kind of job. | `~/.agent-pod/<profile>/`                                                                                                                          |
-| **Role**    | *What* a pod may do without asking: a preset list of actions per provider (`gh` commands, git pushes, signing, ssh logins). No identity, credentials or targets.                                                                           | Built in: `reader`, `dev`, `maintainer`, `pm`, `ops`; `~/.agent-pod/roles.toml` adds to them. A profile's `role =`, or `--role`; default `reader`. |
-| **Scope**   | *Where* those actions may happen: `KIND:VALUE` entries such as `gh:OWNER/REPO`, `gh-project:OWNER/N`, `rad:RID`, `ssh:HOST`. Extensions declare the kinds.                                                                                 | The project's remotes and folder, automatically (when the extension for them is set up); the profile's `scope` and `[ssh] hosts`; `--scope`.       |
-| **Project** | The folder the agent works in: mounted read-write; its remotes join the scope.                                                                                                                                                             | The folder argument.                                                                                                                               |
-| **Session** | One running pod, registered with the broker, with what you approve "for the session". It ends with the pod.                                                                                                                                | Each launch.                                                                                                                                       |
+| Term          | What it is                                                                                                                                                                                                                                                                                                                             | Where it's set                                                                                                                                     |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Extension** | Something the broker can do for a pod: `gh`, git to GitHub or Radicle, commit signing, ssh. Each one names its **actions** (`gh:pr create`, `ssh:login`) and declares the **kinds** of target it handles (`gh:` for repositories, `gh-project:` for boards, `ssh:` for hosts). Roles list actions, scopes list targets of those kinds. | Shipped ones in `extensions/`; yours in `~/.agent-pod/broker-extensions/`. `apod broker extensions` lists them.                                    |
+| **Profile**   | *Who* acts: the git identity (your host's, unless `env` sets another), the GitHub account (`[gh] user`), the keys it signs and logs in with, its home (agent login, history, settings), mounts, image and network. One per identity or kind of job.                                                                                    | `~/.agent-pod/<profile>/`                                                                                                                          |
+| **Role**      | *What* a pod may do without asking: a preset list of actions, per extension (`gh` commands, git pushes, signing, ssh logins).                                                                                                                                                                                                          | Built in: `reader`, `dev`, `maintainer`, `pm`, `ops`; `~/.agent-pod/roles.toml` adds to them. A profile's `role =`, or `--role`; default `reader`. |
+| **Scope**     | *Where* those actions may happen: targets written `KIND:VALUE`, such as `gh:OWNER/REPO`, `gh-project:OWNER/N`, `rad:RID`, `ssh:HOST`.                                                                                                                                                                                                  | The path's remotes and folder, automatically (when the extension for them is set up); the profile's `scope` and `[ssh] hosts`; `--scope`.          |
+| **Path**      | The folder the agent works in: mounted read-write; its git remotes join the scope.                                                                                                                                                                                                                                                     | The folder argument, else the current folder.                                                                                                      |
+| **Session**   | One running pod, registered with the broker, with what you approve "for the session". It ends with the pod.                                                                                                                                                                                                                            | Each launch.                                                                                                                                       |
 
 The broker reads each request from a pod as **actions** (what it does) and **targets** (what it
 touches). The role lists actions, the scope lists targets:
@@ -156,8 +160,9 @@ touches). The role lists actions, the scope lists targets:
 | `gh api /rate_limit`                       | `gh:api GET /rate_limit` | none: it touches no repository                |
 
 A target is written like a scope entry, `KIND:VALUE`: the kind says what sort of thing it is (a
-GitHub repository, a project board, a host), the value which one. Each extension declares its
-own kinds (`gh` declares `gh:` and `gh-project:`); `apod broker scopes` lists them. Roles
+GitHub repository, a project board, a host), the value which one. An action's prefix is its
+extension's name; a target's kind is one its extension declared, and one extension can declare
+several (`gh` declares `gh:` and `gh-project:`); `apod broker scopes` lists them. Roles
 exist because there are too many actions to list one by one per profile: each built-in role
 bundles the actions for a kind of job. The broker lets a request through when the role
 allows every action and every target is in the scope (a request with no target needs only the
@@ -216,11 +221,11 @@ panes: herdr sees the agent inside the pod (working, blocked, idle), and after a
 doesn't protect against, a hardening checklist, and how to report a vulnerability. In short:
 
 - The container is the boundary. The agent runs with no permission prompts and sees only the
-  project folder, the profile's home and the profile's mounts.
+  path (the folder it works in), the profile's home and the profile's mounts.
 - With the broker, pods hold no token or key. Every GitHub, Radicle, signing and ssh request is
   checked against the role and scope, and anything else waits for your approval.
 - Pods can still damage what's in scope, send what they can read over the network, and write
-  files in the project (`.git/hooks`, `.claude/settings.json`) that run when you use it on the
+  files in that folder (`.git/hooks`, `.claude/settings.json`) that run when you use it on the
   host. Give pods their own worktrees, one per pod.
 
 ## Contributing

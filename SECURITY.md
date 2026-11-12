@@ -199,7 +199,9 @@ The broker turns each request into actions and targets, and checks them before a
 - **Bugs in the broker.** The broker parses untrusted input from pods: HTTP, git pkt-lines,
   GraphQL, the ssh agent protocol, and `gh` arguments. It runs as you on the host. A parsing or
   classification bug can let a pod do more than its role allows. Likewise, an extension is
-  only as careful as its author.
+  only as careful as its author: read one before you install it. The rules extensions must
+  follow (treat the pod's input as hostile, classify by effect, widen the scope only from the
+  host's side, fail closed) are in [EXTENSIONS.md](EXTENSIONS.md#security-rules).
 - **Two pods on one checkout** can interfere with each other. Use a worktree per pod.
 
 ## Hardening checklist

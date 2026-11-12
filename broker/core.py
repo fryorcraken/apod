@@ -909,6 +909,20 @@ def read_env_file(path):
     return env
 
 
+def git_identity(pdir):
+    """The profile's git identity, as apod gives it to the pod: its env (GIT_AUTHOR_*,
+    GIT_COMMITTER_*), else the host's global git config. Never the project's .git/config, which
+    pods can edit."""
+    env = read_env_file(Path(pdir) / "env")
+
+    def glob(key):
+        return run_quiet(["git", "config", "--global", "--get", key]).stdout.strip()
+    name = env.get("GIT_AUTHOR_NAME") or glob("user.name")
+    email = env.get("GIT_AUTHOR_EMAIL") or glob("user.email")
+    return {"name": env.get("GIT_COMMITTER_NAME") or name,
+            "emails": sorted({e for e in (email, env.get("GIT_COMMITTER_EMAIL")) if e})}
+
+
 def read_toml(f):
     try:
         return tomllib.loads(f.read_text()) if f.exists() else {}
@@ -974,9 +988,7 @@ def register(r):
         cfg["gh"] = dict(cfg.get("gh") or {}, user=r["gh_user"])
     role = r.get("role") or cfg.get("role") or "reader"
     role_rules(role)  # fails on an unknown role
-    env = read_env_file(pdir / "env")
-    identity = {"name": env.get("GIT_COMMITTER_NAME") or env.get("GIT_AUTHOR_NAME", ""),
-                "emails": sorted({e for e in (env.get("GIT_AUTHOR_EMAIL"), env.get("GIT_COMMITTER_EMAIL")) if e})}
+    identity = git_identity(pdir)
     sess = Session({"id": sid, "profile": r.get("profile", ""), "role": role,
                     "project": r.get("project", ""), "created": now(), "identity": identity,
                     "cfg": {"_home": str(pdir / "home")}})

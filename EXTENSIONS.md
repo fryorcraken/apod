@@ -464,7 +464,7 @@ arguments change that:
 | Member                                        |                                                                                                                                                                                                    |
 | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `id`, `profile`, `role`, `project`, `created` | The registration.                                                                                                                                                                                  |
-| `identity`                                    | `{"name", "emails"}`: the profile's git identity, from its `env`.                                                                                                                                  |
+| `identity`                                    | `{"name", "emails"}`: the profile's git identity, from its `env`, else the host's global git config.                                                                                                                                  |
 | `scope`, `entries(prefix)`                    | The scope entries, `{prefix: [values]}`; one kind's list.                                                                                                                                          |
 | `in_scope(target)`                            | Whether a `(kind, value)` target is in scope.                                                                                                                                                      |
 | `add_scope(target)`                           | Add an entry (through the kind's `grant`). Only from host-side facts: your `broker.toml` table, or something the broker created for the pod.                                                       |
@@ -505,6 +505,8 @@ The `gh` extension's helpers, for extensions that act on GitHub with the pod's a
 ## Security rules
 
 An extension runs on the host, as you, and handles requests from pods that may be hostile.
+These are the rules for writing one; [SECURITY.md](SECURITY.md) has apod's threat model, which
+an extension must not weaken.
 
 - **Treat everything from the pod as hostile.** Cap its size (`read_body(h, limit=...)`), check
   its shape, and validate every value before you use it. Run commands as an argument list, never
