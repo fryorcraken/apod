@@ -1078,7 +1078,7 @@ def key_report():
             continue
         who = "all profiles" if f == GLOBAL_CONFIG else f.parent.name
         for p in PROVIDERS.values():
-            if hasattr(p, "keys") and isinstance(cfg.get(p.name), dict):
+            if hasattr(p, "keys") and isinstance(cfg.get(p.name), dict) and cfg[p.name].get("enabled") is not False:
                 for path, confirm in p.keys(cfg[p.name]):
                     path = str(expand(path))
                     if f != GLOBAL_CONFIG and any(u.startswith("all profiles [")

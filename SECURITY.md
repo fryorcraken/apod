@@ -146,6 +146,10 @@ The broker turns each request into actions and targets, and checks them before a
 
 ## What apod does not protect against
 
+- **Anything on a host a pod can ssh to.** An ssh login gives the pod a shell: it can run any
+  command there, as that account, and the broker sees none of it. Adding a host to a pod's scope
+  hands it everything that account can do there; only the list of hosts (and users) is
+  enforced. Use an unprivileged account per host, and scope pods to the hosts their job needs.
 - **Damage within the scope.** Anything the role allows on a target in scope happens without
   asking. Examples: a `dev` pod can push branches, open PRs and comment on issues in those
   repositories, and a `pm` pod can edit issues and boards. Give each profile the narrowest

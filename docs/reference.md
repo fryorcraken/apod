@@ -32,7 +32,7 @@ Options for `apod <profile>`:
 |---|---|
 | `-a claude\|opencode\|bash` | The agent (default `claude`); `bash` is a shell in the pod. |
 | `-i`, `--image IMAGE` | The image, over the profile's `image` file and `APOD_IMAGE` (default `apod`). |
-| `-c`, `--connectors LIST` | claude.ai connector groups for this run, comma-separated, repeatable; `none` turns them off. Replaces the profile's `connectors` file. |
+| `-c`, `--connectors LIST` | claude.ai connector groups for this run, comma-separated, repeatable; `none` turns them off. Replaces the profile's `connectors` file. Claude only: ignored, with a warning, for opencode and bash. |
 | `--ro PATH` (`-m`), `--rw PATH` | Mount a file or folder for this run, read-only or read-write. |
 | `--role ROLE` | The broker role for this run, over `broker.toml`'s `role`. |
 | `--scope KIND:VALUE` | Add to the broker scope for this run; repeatable. |
@@ -49,7 +49,7 @@ Options for `apod <profile>`:
 | `apod broker` (`ui`) | The approval TUI ([guide](guides.md#approving-requests)). |
 | `log [-f] [-n N]` | Recent requests with their decisions; `-f` follows. |
 | `pending` | Requests waiting for approval. |
-| `allow ID [--session\|--role]` | Approve a request: once, for the session, or for its role. |
+| `allow ID [--session\|--role]` | Approve a request: once, for the session, or for its role. Once it's no longer waiting (refused or timed out), only `--session` or `--role`, so that the agent's retry goes through. |
 | `deny ID` | Refuse a waiting request. |
 | `sessions` | Running sessions: profile, role, scope, approvals. |
 | `roles` | Each role's allowed and denied actions. |
@@ -75,7 +75,7 @@ Everything lives in `~/.agent-pod/<profile>/` (`APOD_ROOT` overrides `~/.agent-p
 | `connectors` | Default claude.ai connector groups (`-c` replaces them). |
 | `google-credentials.json` | OAuth client for google-docs-mcp, instead of the checkout's. |
 | `github` | Without the broker: use another profile's GitHub token (`gh-<that profile>`). |
-| `ssh-key` | Without the broker: path to a passphrase-protected private key, served from a per-run ssh-agent. |
+| `ssh-key` | Path to a passphrase-protected private key, served from a per-run ssh-agent. Ignored when the broker's ssh extension is on for the pod (an `[ssh]` key in `broker.toml`), which replaces it. |
 | `ssh-confirm` | If present, confirm every use of that key on the host. |
 
 ## broker.toml
@@ -137,9 +137,10 @@ top of [`roles.toml`](../roles.toml) and [below](#how-requests-are-classified).
 | `ssh:HOST`, `ssh:USER@HOST` | ssh | A host as named in the host's ssh config, for any user or that user. |
 | `git-local:PATH` | sign | Signing in a repository with no GitHub or Radicle remote, by its folder. |
 
-Values take shell-style patterns, case-insensitive. Automatically in scope: the project's GitHub
-and Radicle remotes, the project folder and the repositories under it (`git-local:`), `[ssh]
-hosts`, and forks and repositories the session creates. `apod broker scopes` lists every kind,
+Values take shell-style patterns, case-insensitive. Automatically in scope, each when its
+extension is on for the pod: the project's GitHub remotes (with `[gh] user`), its Radicle
+remotes, the project folder and the repositories under it (`git-local:`, with a `[git-sign]`
+key), `[ssh] hosts` (with an `[ssh]` key), and forks and repositories the session creates. `apod broker scopes` lists every kind,
 your extensions' included.
 
 ## How requests are classified
@@ -158,7 +159,8 @@ The broker turns each request into actions (what it does) and targets (what it t
   instead, through git. Links in titles and bodies aren't targets.
 - **github** and **rad** (git): `fetch`, `fetch public` (a public GitHub repository outside the
   scope), and pushes by ref: `push branch`, `push default-branch`, `push tag`, `push delete`,
-  `push force` (a branch update that isn't a fast-forward, on top of the ref's own action), and
+  `push force` (a branch update that isn't a fast-forward, on top of the ref's own action),
+  `push other-ref` (any other ref, such as `refs/notes/*`), and
   for Radicle `push patch` (`HEAD:refs/patches`, push options such as `-o patch.message=...`
   passed on). `--force-with-lease` and `--force` look the same to the broker: the lease is checked
   by git in the pod. For GitHub, the broker reads the commits in the push and asks GitHub about

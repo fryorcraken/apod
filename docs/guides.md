@@ -93,7 +93,9 @@ key = "~/.ssh/id_apod_broker_sign"
 **Keys** (ssh, signing, and Radicle's) live in the broker's own ssh-agent, never in the pod. At
 launch, apod loads the ones it doesn't hold yet with `ssh-add`, which asks for their passphrases
 (an empty line skips a key: the pod starts, and the requests that need it fail); they expire after `APOD_SSH_TTL` (default `4h`). After a broker restart, or before launching,
-`apod broker keys` lists every key the profiles and running pods use and loads the missing ones.
+`apod broker keys` lists the keys named in the profiles' `broker.toml` tables (not those of
+extensions turned off with `enabled = false`) and those running pods use, and loads the missing
+ones. A Radicle key is listed only once a pod uses it, unless a `[rad]` table names its home.
 One key can serve many hosts: the destination is checked per login.
 
 ## GitHub
@@ -168,7 +170,10 @@ repository is in its scope:
 
 - the project has a `rad://` remote (`rad clone`, or `rad init`, which adds one); its
   repository joins the scope;
-- or the profile's `scope` or `--scope` has a `rad:RID` entry.
+- or the profile's `scope` or `--scope` has a `rad:RID` entry;
+
+and the host has `rad` with an identity (`rad auth`), or `[rad] nid` is set. Without one, the
+pod is told Radicle remotes are unavailable.
 
 A `[rad]` table alone doesn't turn it on. When it's on, the launch asks for the identity's key
 passphrase (the one from `rad auth`) unless the broker's agent already holds it, also for
@@ -220,28 +225,53 @@ patch.message="test"` opens a patch (`dev` may).
 
 ## Signing commits
 
-Pods sign commits and tags with an SSH key that stays on the host. Who signs is the profile (its
-key and identity), what is the role (`git-sign:commit`, `git-sign:tag`), where is the repository.
-The `git-sign` extension was called `sign`: a `[sign]` table and `sign = [...]` role lists still
-work, with a warning at launch.
+With this set up, git in the pod signs commits and tags (`git commit -S`, or every commit for
+roles that sign), and GitHub shows them as "Verified". The pod never holds the signing key: the
+broker signs with it on the host, and only for the repositories in the pod's scope. This is the
+`git-sign` extension (it was called `sign`; a `[sign]` table and `sign = [...]` role lists still
+work, with a warning).
 
-1. **A key** for pods' signatures. Use a separate one from yours if a "Verified" badge should
-   tell your commits apart from a pod's:
+Two files of the profile take part, both in `~/.agent-pod/<profile>/`:
+
+- `env` says **who the commits are by**: the git name and email (`GIT_AUTHOR_NAME`,
+  `GIT_AUTHOR_EMAIL`). Every profile has one.
+- `broker.toml` says **which key signs them**, in its `[git-sign]` table.
+
+A signature vouches for that email: the broker only signs commits whose author and committer
+are the profile's (anything else waits for you), and GitHub only shows "Verified" when the email
+belongs to the GitHub account that has the key.
+
+### Prerequisites
+
+1. **A GitHub account for the profile, with the email in its `env`** among its verified emails
+   (the bot's Settings → Emails; the `…@users.noreply.github.com` address counts). It's the
+   account the profile already uses with the broker for GitHub; see [GitHub](#github).
+2. **A dedicated SSH key for pods' signatures.** Not your own key: a separate one means a
+   "Verified" badge tells your commits apart from a pod's, and you can revoke it alone.
 
    ```sh
    ssh-keygen -t ed25519 -f ~/.ssh/id_apod_broker_sign -C "apod pods"
    ```
 
-2. **The identity** the signatures vouch for, in the profile's `env`. For GitHub to show
-   "Verified", the email has to be a verified email of the GitHub account in step 5:
+3. **Its public half on that GitHub account, as a signing key** (not an authentication key).
+   With `gh` logged in as the bot (`gh auth switch` to it, then back):
+
+   ```sh
+   gh ssh-key add ~/.ssh/id_apod_broker_sign.pub --type signing --title "apod pods"
+   ```
+
+### Setup
+
+1. **The identity**, in the profile's `env` (most likely there already):
 
    ```sh
    # ~/.agent-pod/work/env
-   GIT_AUTHOR_NAME=Work Bot
-   GIT_AUTHOR_EMAIL=bot@example.com
+   GIT_AUTHOR_NAME=work-bot
+   GIT_AUTHOR_EMAIL=12345+work-bot@users.noreply.github.com
    ```
 
-3. **The key in `broker.toml`**, the profile's or `~/.agent-pod/broker.toml` for every profile:
+2. **The key**, in the profile's `broker.toml` (or in `~/.agent-pod/broker.toml`, for every
+   profile):
 
    ```toml
    [git-sign]
@@ -250,35 +280,42 @@ work, with a warning at launch.
    auto = false                         # optional: don't turn on commit.gpgsign, even for roles that sign
    ```
 
-4. **A role that signs, and a scope that covers the repository.**
-   - Role: `dev`, `maintainer` and `ops` sign every commit and tag. With `reader` or `pm`,
-     `git commit -S` waits for your approval. Your own roles get it with `git-sign = ["commit",
+3. **Nothing else, usually.** The role and scope you already have decide the rest:
+   - **Role:** `dev`, `maintainer` and `ops` sign every commit and tag. With `reader` or `pm`,
+     `git commit -S` waits for your approval. Your own roles sign with `git-sign = ["commit",
      "tag"]`.
-   - Scope: the repository, by the remote the branch pushes to (`gh:OWNER/REPO` or `rad:RID`), so
-     the scope you give for pushes covers signing too. The project folder and the repositories
-     under it are always in scope, as `git-local:PATH`, for repositories with no such remote.
-   - Anything else waits: another repository, or a commit by someone other than the profile's
-     identity (`git-sign:as other`).
+   - **Scope:** a signature is for the repository the branch pushes to (`gh:OWNER/REPO` or
+     `rad:RID`), so the scope you give for pushes covers signing too. The project folder and the
+     repositories under it are in scope as `git-local:PATH`, for repositories with no remote.
+   - **Waits for you:** another repository, or a commit whose author or committer isn't the
+     profile's identity (`git-sign:as other`).
 
-5. **The public key on GitHub, as a signing key** (not an authentication key), on the account
-   whose email is in `env`:
+### Check it
 
-   ```sh
-   gh ssh-key add ~/.ssh/id_apod_broker_sign.pub --type signing --title "apod pods"
-   ```
-
-The next launch loads the key into the broker's agent and asks for its passphrase. Then, in a pod:
+The next launch loads the key into the broker's agent and asks for its passphrase. Then, in a
+pod:
 
 ```sh
-git commit --allow-empty -m "signing test" && git log --show-signature -1   # Good "git" signature for bot@example.com
+git commit --allow-empty -m "signing test" && git log --show-signature -1   # Good "git" signature for the bot's email
 ```
 
 `git log --show-signature` and `git verify-commit` work in the pod because the broker gives it an
-allowed-signers file with the profile's key and emails. The pod tells the broker which
-repository it's signing in, so this keeps an agent to its scope rather than stopping a hostile
-one; pushing the commit is checked separately ([SECURITY.md](../SECURITY.md)).
+allowed-signers file with the profile's key and emails. Push the commit and GitHub shows it as
+"Verified".
+
+The pod tells the broker which repository it's signing in, so the scope keeps an agent to its
+work rather than stopping a hostile one; pushing the commit is checked separately
+([SECURITY.md](../SECURITY.md)).
 
 ## SSH
+
+> **Read this first.** Once a pod can log in to a host, it can run any command there, as that
+> account: the broker decides *whether* it logs in, not what it does once logged in. On those
+> hosts, roles and approvals no longer limit the damage a pod can do: only that account's own
+> rights do. What the broker does limit is *where*: a pod logs in only to the hosts you
+> configured (`[ssh] hosts`, or `--scope ssh:HOST`), as the users you allow, and any other host
+> waits for your approval. Give pods an unprivileged account on each host, never root unless
+> the job needs it, and only the hosts the job needs.
 
 **Through the broker** (recommended): the pod's `SSH_AUTH_SOCK` is a filtering agent that signs
 logins only to the hosts in scope, and connections go through the host, so the pod needs no
@@ -312,7 +349,7 @@ route to them.
 Only port 22 or the host's configured ssh port goes through without asking; another port is a
 tunnel (`ssh:connect port`). Once logged in, the agent can do anything that account can.
 
-**Without the broker:** a profile's `ssh-key` file names a passphrase-protected private key kept
+**Without the broker's ssh extension** (no broker, or no `[ssh]` key): a profile's `ssh-key` file names a passphrase-protected private key kept
 outside the profile's home. apod starts an ssh-agent on the host for the run, asks for the
 passphrase, and passes only the agent socket into the pod; the key expires after `APOD_SSH_TTL`
 and the agent is killed when the pod exits. `ssh-confirm` (an empty file) confirms every use.
@@ -403,8 +440,9 @@ a desktop notification. Allow it:
   `~/.agent-pod/broker/grants.json`; `apod broker grants` lists them, `grants rm ROLE ACTION`
   removes one). Prefer the session for one-offs.
 
-A rejected request can be allowed after the fact, and the agent retries. From a shell:
-`apod broker allow ID [--session|--role]`, `apod broker deny ID`. `apod broker log -f` follows
+A rejected request can be allowed after the fact, for the session or the role, and the agent
+retries. From a shell: `apod broker allow ID [--session|--role]` (only `--session` or `--role`
+once a request isn't waiting any more), `apod broker deny ID`. `apod broker log -f` follows
 every request with its decision.
 
 **The TUI.**
@@ -452,7 +490,9 @@ tokens no profile launches with. For each profile:
 ## Mounts, network and images
 
 **Mounts.** Only the project folder is mounted (read-write), plus the profile's home and
-`mounts` file, and your `~/.claude/CLAUDE.md` and `~/.claude/skills` read-only.
+`mounts` file, your `~/.claude/CLAUDE.md` and `~/.claude/skills` read-only, the session's
+[work log](#work-logs) (`/run/apod-worklog`, read-write) and, with the broker, its folder
+(`/run/apod-broker`) and the extensions' commands (`gh`, `apod-sign`, ...).
 
 ```
 # ~/.agent-pod/work/mounts
@@ -518,7 +558,8 @@ running these pods with labelling off.
 
 claude.ai connectors (Notion, Google Docs, …) come with the Claude account and act as you, so apod
 turns them off unless enabled for the run with `-c` (comma-separated, repeatable) or the profile's
-`connectors` file; `-c none` turns them off.
+`connectors` file; `-c none` turns them off. This, and the local MCP servers below, apply to
+Claude only: opencode and bash ignore `-c`, with a warning.
 
 Groups: `notion`, `gdoc` (Docs, Drive, Sheets), `todoist`, `canva`, `lovable`, `utsjitsu`,
 `claudedocs`. Other known connectors are denied, and a PreToolUse hook blocks any claude.ai

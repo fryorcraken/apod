@@ -583,6 +583,9 @@ class BrokerTest(unittest.TestCase):
         r = self.admin("keys")
         self.assertRegex(r.stdout, rf"loaded +{key} +keyprof \[ssh\]")
         self.assertIn("every key is already loaded", r.stderr)
+        # An extension turned off for the profile: its key isn't listed.
+        (self.root / "keyprof/broker.toml").write_text(f'[ssh]\nkey = "{key}"\nenabled = false\n')
+        self.assertNotIn("keyprof [ssh]", self.admin("keys").stdout)
 
     def test_terminal_notifications_drop_control_characters(self):
         sys.path.insert(0, str(HERE / "broker"))

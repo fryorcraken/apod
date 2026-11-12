@@ -99,7 +99,8 @@ Agents run without permission prompts, since the container is the boundary:
   runs with `--standalone`, a private server per pod instead of opencode's background service,
   which pods of the same profile would otherwise share through their common home.
 
-Only the project folder is mounted (read-write), plus the profile's home and what it mounts.
+Only the project folder is mounted (read-write), plus the profile's home, what it mounts, and
+the session's work log.
 Claude is told at startup what is mounted and what isn't, and, with the broker, its role and scope.
 
 ## Concepts
@@ -112,7 +113,7 @@ A launch combines a **profile**, a **role**, a **scope** and a **project** into 
 |---|---|---|
 | **Profile** | *Who* acts: the git identity (name and email, only in `env`), the GitHub account (`[gh] user`), the keys it signs and logs in with, its home (agent login, history, settings), mounts, image and network. One per identity or kind of job. | `~/.agent-pod/<profile>/` |
 | **Role** | *What* a pod may do without asking: a preset list of actions per provider (`gh` commands, git pushes, signing, ssh logins). No identity, credentials or targets. | Built in: `reader`, `dev`, `maintainer`, `pm`, `ops`; `~/.agent-pod/roles.toml` adds to them. A profile's `role =`, or `--role`; default `reader`. |
-| **Scope** | *Where* those actions may happen: `KIND:VALUE` entries such as `gh:OWNER/REPO`, `gh-project:OWNER/N`, `rad:RID`, `ssh:HOST`. Extensions declare the kinds. | The project's remotes and folder, automatically; the profile's `scope` and `[ssh] hosts`; `--scope`. |
+| **Scope** | *Where* those actions may happen: `KIND:VALUE` entries such as `gh:OWNER/REPO`, `gh-project:OWNER/N`, `rad:RID`, `ssh:HOST`. Extensions declare the kinds. | The project's remotes and folder, automatically (when the extension for them is set up); the profile's `scope` and `[ssh] hosts`; `--scope`. |
 | **Project** | The folder the agent works in: mounted read-write; its remotes join the scope. | The folder argument. |
 | **Session** | One running pod, registered with the broker, with what you approve "for the session". It ends with the pod. | Each launch. |
 
