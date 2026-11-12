@@ -140,7 +140,7 @@ Everything the broker does for a pod is an extension, each with its own guide:
 - **github:** git fetch and push to github.com remotes, with that account's token.
 - **rad:** git fetch and push to `rad://` remotes, as the host's Radicle identity
   ([Radicle](docs/guides.md#radicle)).
-- **sign:** commit and tag signatures with a key the broker holds
+- **git-sign:** commit and tag signatures with a key the broker holds
   ([Signing commits](docs/guides.md#signing-commits)).
 - **ssh:** logins to the hosts in scope with the broker's agent ([ssh](docs/guides.md#ssh)).
 - **notify:** desktop notifications from the pod ([Notifications](docs/guides.md#notifications)).
@@ -191,8 +191,9 @@ doesn't protect against, a hardening checklist, and how to report a vulnerabilit
 
 ## Contributing
 
-The repository is on Radicle and mirrored to GitHub. To push to both from a clone with both
-remotes (`rad` and `origin`):
+[CONTRIBUTING.md](CONTRIBUTING.md) has where things are, the checklist of docs to update with
+each kind of change, and how to test. The repository is on Radicle and mirrored to GitHub. To
+push to both from a clone with both remotes (`rad` and `origin`):
 
 ```sh
 git config alias.sync '!b=$(git branch --show-current); git push rad "$b" && git push origin "$b"'

@@ -14,7 +14,7 @@
 #           (a branch update that isn't a fast-forward: --force and --force-with-lease alike)
 #   rad     git to rad:// remotes: "fetch", "push branch", "push default-branch", "push patch"
 #           (HEAD:refs/patches), "push tag", "push delete", "push force" (not a fast-forward)
-#   sign    "commit", "tag", "as other" (a commit or tag by anyone but the profile's git identity)
+#   git-sign "commit", "tag", "as other" (a commit or tag by anyone but the profile's git identity)
 #   ssh     "connect" (through the broker, ProxyCommand; "connect port" for a port other than ssh's),
 #           "login" (the agent signs a login);
 #           which hosts is the scope's business (broker.toml [ssh] hosts, --scope ssh:HOST)
@@ -48,7 +48,7 @@ gh = [
 ]
 github = ["push branch", "push force"]
 rad = ["push branch", "push patch", "push force"]
-sign = ["commit", "tag"]
+git-sign = ["commit", "tag"]
 
 [roles.maintainer]
 description = "dev + merge and review PRs, manage issues and CI runs, fork and create repositories, tags"
@@ -87,5 +87,5 @@ gh = [
 description = "ssh to the hosts in scope, sign commits; nothing on GitHub or Radicle beyond fetching"
 github = ["fetch", "fetch public"]
 rad = ["fetch"]
-sign = ["commit", "tag"]
+git-sign = ["commit", "tag"]
 ssh = ["connect", "login"]

@@ -3,7 +3,7 @@
 The broker runs on the host and does things for apod pods that would otherwise need credentials
 in the pod. Each pod gets a session (a profile, a role and a scope) and a socket directory
 mounted at /run/apod-broker. Providers (gh, github, rad, sign, ssh) turn what a pod asks for into
-actions ("gh:pr create", "github:push branch", "sign:commit", "ssh:login") and targets (a
+actions ("gh:pr create", "github:push branch", "git-sign:commit", "ssh:login") and targets (a
 repository, a project, a host, a git identity). A request goes ahead when the role allows every
 action and every target is in the session's scope; anything else waits for the user's approval
 (apod broker ui, apod broker allow) until it times out.
@@ -313,6 +313,10 @@ def load_roles():
         if f.exists():
             data = tomllib.loads(f.read_text())
             for name, role in {**data.get("personas", {}), **data.get("roles", {})}.items():
+                for old, new in RENAMED.items():  # an old extension name's list: sign = [...]
+                    if old in role and isinstance(role[old], list):
+                        role = dict(role)
+                        role[new] = list(role.get(new, [])) + role.pop(old)
                 raw[name] = merge_role(raw[name], role) if name in raw else role
     return raw
 
@@ -327,6 +331,8 @@ def load_grants():
         for name, lst in g.pop("personas").items():
             g["roles"].setdefault(name, []).extend(a for a in lst if a not in g["roles"].get(name, []))
     g.setdefault("roles", {})
+    for name, lst in g["roles"].items():  # approvals saved under an extension's old name
+        g["roles"][name] = list(dict.fromkeys(renamed_action(a) for a in lst))
     return g
 
 
@@ -347,8 +353,8 @@ def role_rules(name, raw=None, seen=None):
         return [], []
     seen.add(name)
     p = raw[name]
-    allow = list(p.get("allow", [])) + list(load_grants()["roles"].get(name, []))
-    deny = list(p.get("deny", []))
+    allow = [renamed_action(a) for a in p.get("allow", [])] + list(load_grants()["roles"].get(name, []))
+    deny = [renamed_action(a) for a in p.get("deny", [])]
     for pname, rules in p.items():
         if pname in PROVIDERS and isinstance(rules, list):
             allow += [f"{pname}:{a}" for a in rules]
@@ -919,6 +925,25 @@ def merge_config(base, over):
     return out
 
 
+RENAMED = {"sign": "git-sign"}  # extensions' old names: their broker.toml tables, role lists, actions
+
+
+def renamed_tables(cfg, where, warnings):
+    """Old extension names' tables under their new names (a table with the new name wins)."""
+    for old, new in RENAMED.items():
+        if isinstance(cfg.get(old), dict):
+            t = cfg.pop(old)
+            cfg.setdefault(new, t)
+            if warnings is not None:
+                warnings.append(f"{where}: [{old}] is now [{new}] (it still works for now)")
+    return cfg
+
+
+def renamed_action(a):
+    p, sep, rest = a.partition(":")
+    return f"{RENAMED[p]}:{rest}" if sep and p in RENAMED else a
+
+
 def load_config(pdir, warnings=None):
     """The global broker.toml's tables (settings shared by every profile: keys, the Radicle
     home, ...) under the profile's broker.toml. What a pod may do (role, scope) comes only from
@@ -929,7 +954,8 @@ def load_config(pdir, warnings=None):
         if warnings is not None:
             warnings.append(f"{GLOBAL_CONFIG}: {k} is ignored there (set it in a profile's broker.toml "
                             f"or at launch); it holds only settings shared by every profile")
-    cfg = read_toml(Path(pdir) / "broker.toml")
+    renamed_tables(glob, GLOBAL_CONFIG, warnings)
+    cfg = renamed_tables(read_toml(Path(pdir) / "broker.toml"), Path(pdir) / "broker.toml", warnings)
     if "persona" in cfg and "role" not in cfg:
         cfg["role"] = cfg.pop("persona")
         if warnings is not None:

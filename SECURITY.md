@@ -76,7 +76,7 @@ can read it and use it for anything the token allows.
 
 The broker turns each request into actions and targets, and checks them before acting:
 
-- **Actions** are what the request does: `gh:pr create`, `github:push branch`, `sign:commit`,
+- **Actions** are what the request does: `gh:pr create`, `github:push branch`, `git-sign:commit`,
   `ssh:login`.
 - **Targets** are what it touches: a repository, a project board, a Radicle repo, a host, a git
   identity.

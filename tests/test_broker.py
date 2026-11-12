@@ -764,9 +764,13 @@ class BrokerTest(unittest.TestCase):
 
     def test_sign_commits(self):
         # The profile holds the key, the role the actions, the scope the repositories.
-        toml = f'[sign]\nkey = "{self.tmp}/signkey"\n'
+        toml = f'[git-sign]\nkey = "{self.tmp}/signkey"\n'
         reader = self.register("reader", ["gh:acme/widget"], toml=toml)
-        self.assertIn("sign", reader["providers"])  # git commit -S works, with approval
+        self.assertIn("git-sign", reader["providers"])  # git commit -S works, with approval
+        # The old name of the table still works, with a warning.
+        old = self.register("reader", ["gh:acme/widget"], toml=toml.replace("[git-sign]", "[sign]"))
+        self.assertIn("git-sign", old["providers"])
+        self.assertTrue(any("[sign] is now [git-sign]" in w for w in old["warnings"]))
         self.assertNotIn(["commit.gpgsign", "true"], reader["git_config"])
         self.assertIn("Role reader doesn't sign", reader["context"])
         sess = self.register("dev", ["gh:acme/widget"], toml=toml)
@@ -796,10 +800,10 @@ class BrokerTest(unittest.TestCase):
                            env=e, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("Good", r.stderr)
-        # As someone else: sign:as other isn't in the role; waits, fails.
+        # As someone else: git-sign:as other isn't in the role; waits, fails.
         r = commit(repo, "--author", "Mallory <m@evil.example>")
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("not allowed for role dev: sign:as other", self.admin("log", "-n", "1").stdout)
+        self.assertIn("not allowed for role dev: git-sign:as other", self.admin("log", "-n", "1").stdout)
         # In a repository out of scope: waits, fails.
         r = commit(self.tmp / "elsewhere", remote="https://github.com/evil/repo")
         self.assertNotEqual(r.returncode, 0)
@@ -892,7 +896,7 @@ class BrokerTest(unittest.TestCase):
         self.addCleanup((self.root / "roles.toml").unlink)
         out = self.admin("roles").stdout
         dev = out.split("dev:", 1)[1].split("\n  allow: ", 1)[1].split("\n", 1)[0]
-        self.assertIn("sign:other", dev)
+        self.assertIn("git-sign:other", dev)  # sign = [...]: the extension's old name still works
         self.assertIn("gh:pr create", dev)
 
     def test_ssh_agent_signs_only_for_hosts_in_scope(self):

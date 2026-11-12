@@ -309,7 +309,7 @@ The agent then uses the command as it already knows it, and the note for its sys
 says what's different: what's missing, what waits for approval. The role lists (`gh = [...]`,
 `systemctl = [...]`) and actions (`gh:pr create`, `systemctl:restart`) then read like the
 command's own.
-Extensions that don't stand for one command (`github` for git's traffic to GitHub, `sign`,
+Extensions that don't stand for one command (`github` for git's traffic to GitHub, `git-sign`,
 `notify`) are named for what they do.
 
 The pod side needs no changes to `apod`: at registration a provider says what to set up in the pod
@@ -317,8 +317,9 @@ The pod side needs no changes to `apod`: at registration a provider says what to
 
 ## Where extensions live
 
-- **Shipped:** [`extensions/`](extensions/) in the apod checkout: `gh`, `github`, `rad`, `sign`,
-  `ssh` and `notify`. They're defaults, loaded like any other extension.
+- **Shipped:** [`extensions/`](extensions/) in the apod checkout: `gh`, `github`, `rad`,
+  `git-sign`, `ssh` and `notify`. They're defaults, loaded like any other extension. A file's
+  name is a Python module name, so `git-sign` is in `git_sign.py`.
 - **Yours:** `~/.agent-pod/broker-extensions/*.py`.
   - A file with a shipped extension's name (`ssh.py`) replaces it.
   - An empty file with that name turns it off.
@@ -426,7 +427,7 @@ A route's handler is `handler(h, sess, method)`:
 | `Request(kind, display)` | `kind` is your provider's name; `display` is how the TUI and log show the request, so make it say what will happen. Fill in `.actions` and `.targets`. |
 | `check(sess, req, waiting=None, extra=None)` | `(ok, event)`. Removes duplicate actions and targets, decides, and logs. If the request has to wait, `waiting(event)` is called first (to tell the pod), then it blocks until the user answers or `ASK_TIMEOUT`. `extra` is merged into the event; `{"once_window": N}` makes approving it once also cover the same targets for `N` seconds (a git push's ref advertisement, then the push). Set `event["exit"]` after acting, for the TUI. |
 | `evaluate(sess, req)` | `(verdict, missing actions, targets out of scope, reason)` with `verdict` `"allow"`, `"ask"` or `"deny"`, without logging or waiting. |
-| `allowed(sess, action)` | Whether the role (with its approvals) allows an action outright. For setting a pod up (`sign` turns on `commit.gpgsign` only for roles that sign); the request itself still goes through `check`. |
+| `allowed(sess, action)` | Whether the role (with its approvals) allows an action outright. For setting a pod up (`git-sign` turns on `commit.gpgsign` only for roles that sign); the request itself still goes through `check`. |
 | `recently_allowed(sess, req, within=600)` | Whether the same request (by `display`) went through for this session in the last `within` seconds: for the later rounds of one operation (a git fetch's negotiation), checked and logged once. |
 | `rejected_msg(req, ev)`, `waiting_msg(req, ev)` | Messages for the pod, telling the agent how the user can approve. |
 | `HARD_DENY` | A list of action patterns that are never allowed, whatever the role or approvals say. Append your provider's; don't add patterns that cover other providers' actions. |
@@ -454,7 +455,7 @@ arguments change that:
 | `remote(url)` | The value this kind gives a git remote URL, or `None` if it's not one of its own. `gh:` turns `git@github.com:acme/widget.git` into `acme/widget`. |
 
 **`remote_target(url)`** asks every kind's `remote` and returns the first `(prefix, value)`, or
-`None`. `sign` uses it to scope a signature by the repository it's for.
+`None`. `git-sign` uses it to scope a signature by the repository it's for.
 
 ### The session
 

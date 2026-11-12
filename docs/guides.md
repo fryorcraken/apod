@@ -40,7 +40,7 @@ Everything the broker does for a pod is an extension. These ship with apod:
 | `gh` | `gh` is a shim; the broker runs the real `gh` as the host account the profile names. | `[gh] user`: [GitHub](#github) |
 | `github` | git's github.com remotes go through the broker, with that account's token. | `[gh] user` |
 | `rad` | `rad://` remotes go through the broker, which pushes as the host's Radicle identity. | a `rad://` remote, or a `rad:` scope entry: [Radicle](#radicle) |
-| `sign` | git signs commits and tags with a key the broker holds. | `[sign] key`: [Signing commits](#signing-commits) |
+| `git-sign` | git signs commits and tags with a key the broker holds. | `[git-sign] key`: [Signing commits](#signing-commits) |
 | `ssh` | `ssh HOST` logs in with the broker's agent, to the hosts in scope, through the host. | `[ssh]`: [SSH](#ssh) |
 | `notify` | `apod-notify TEXT` sends you a desktop notification. | `[notify] enabled`: [Notifications](#notifications) |
 
@@ -62,7 +62,7 @@ scope = ["gh:logos-co/*", "gh-project:logos-co/5"]   # plus the project's GitHub
 [gh]
 user = "work-bot"                    # a host gh account (gh auth login); required for gh and GitHub remotes
 
-[sign]
+[git-sign]
 key = "~/.ssh/id_apod_broker_sign"
 
 [ssh]
@@ -77,7 +77,7 @@ apod broker                                                     # approve reques
 ```
 
 **Settings for every profile.** `~/.agent-pod/broker.toml` takes the same tables (`[ssh]`,
-`[sign]`, `[rad]`, `[notify]`, your extensions'), for every profile that uses the broker. A
+`[git-sign]`, `[rad]`, `[notify]`, your extensions'), for every profile that uses the broker. A
 profile's `broker.toml` overrides them key by key within each table. `role` and `scope` are
 ignored there, with a warning: what a pod may do comes only from its profile and its launch. The
 global file alone doesn't switch a token profile to the broker.
@@ -86,7 +86,7 @@ global file alone doesn't switch a token profile to the broker.
 # ~/.agent-pod/broker.toml
 [ssh]
 key = "~/.ssh/id_apod_broker"
-[sign]
+[git-sign]
 key = "~/.ssh/id_apod_broker_sign"
 ```
 
@@ -146,6 +146,12 @@ and `--body`).
 
 ## Radicle
 
+**There's nothing to set up: a project with a `rad://` remote gets Radicle automatically**, for
+any profile that uses the broker and any role. Launch a pod in a `rad clone` (or after `rad
+init`), and its `git fetch` and `git push` to that remote go through the broker, with the
+repository in scope. The launch asks for your Radicle key's passphrase (below). To keep a
+profile's pods off Radicle, see [Turning it off](#turning-radicle-off).
+
 Pods fetch and push `rad://` remotes through the broker, which pushes as the host's Radicle
 identity. The pod never holds the identity's key: it's loaded in the broker's own ssh-agent on
 the host, whose socket isn't mounted in any pod (the ssh extension's agent proxy lists and signs
@@ -196,7 +202,7 @@ That identity has its own storage, so the repositories must be there too (`rad c
 seed` with that `RAD_HOME`), and its own node, running, to publish its pushes. It isn't a
 delegate, so its branches and patches show as another peer's.
 
-**Turning it off.** In the profile's `broker.toml`:
+<a id="turning-radicle-off"></a>**Turning it off.** In the profile's `broker.toml`:
 
 ```toml
 [rad]
@@ -207,7 +213,7 @@ Then pods of that profile get nothing from Radicle, even in a Radicle project: n
 launch, no Radicle repository in scope, and `git fetch` or `git push` to a `rad://` remote fail
 in the pod (it has no `git-remote-rad`). Everything else is unchanged: a `dev` pod still pushes
 branches and opens PRs on the project's GitHub remote. `enabled = false` works the same for any
-extension's table (`[ssh]`, `[sign]`, ...).
+extension's table (`[ssh]`, `[git-sign]`, ...).
 
 **Check it** in a pod: `git fetch rad`, then `git push rad HEAD:refs/patches -o
 patch.message="test"` opens a patch (`dev` may).
@@ -215,7 +221,9 @@ patch.message="test"` opens a patch (`dev` may).
 ## Signing commits
 
 Pods sign commits and tags with an SSH key that stays on the host. Who signs is the profile (its
-key and identity), what is the role (`sign:commit`, `sign:tag`), where is the repository.
+key and identity), what is the role (`git-sign:commit`, `git-sign:tag`), where is the repository.
+The `git-sign` extension was called `sign`: a `[sign]` table and `sign = [...]` role lists still
+work, with a warning at launch.
 
 1. **A key** for pods' signatures. Use a separate one from yours if a "Verified" badge should
    tell your commits apart from a pod's:
@@ -236,7 +244,7 @@ key and identity), what is the role (`sign:commit`, `sign:tag`), where is the re
 3. **The key in `broker.toml`**, the profile's or `~/.agent-pod/broker.toml` for every profile:
 
    ```toml
-   [sign]
+   [git-sign]
    key = "~/.ssh/id_apod_broker_sign"   # its .pub next to it
    confirm = true                       # optional: confirm each signature on the host (needs openssh-askpass)
    auto = false                         # optional: don't turn on commit.gpgsign, even for roles that sign
@@ -244,13 +252,13 @@ key and identity), what is the role (`sign:commit`, `sign:tag`), where is the re
 
 4. **A role that signs, and a scope that covers the repository.**
    - Role: `dev`, `maintainer` and `ops` sign every commit and tag. With `reader` or `pm`,
-     `git commit -S` waits for your approval. Your own roles get it with `sign = ["commit",
+     `git commit -S` waits for your approval. Your own roles get it with `git-sign = ["commit",
      "tag"]`.
    - Scope: the repository, by the remote the branch pushes to (`gh:OWNER/REPO` or `rad:RID`), so
      the scope you give for pushes covers signing too. The project folder and the repositories
      under it are always in scope, as `git-local:PATH`, for repositories with no such remote.
    - Anything else waits: another repository, or a commit by someone other than the profile's
-     identity (`sign:as other`).
+     identity (`git-sign:as other`).
 
 5. **The public key on GitHub, as a signing key** (not an authentication key), on the account
    whose email is in `env`:

@@ -88,9 +88,9 @@ every profile; key by key within each table; `role` and `scope` are ignored ther
 | `role` | The default role (`--role` overrides; default `reader`). |
 | `scope` | Scope entries, `["gh:ORG/*", "ssh:devbox"]`, added to the project's remotes and `--scope`. |
 | `[gh] user` | The host `gh` account the broker acts as. Required for `gh` and GitHub remotes. |
-| `[sign] key` | The private key pods sign commits and tags with (its `.pub` next to it). |
-| `[sign] confirm` | `true`: confirm each signature on the host (needs openssh-askpass). |
-| `[sign] auto` | `false`: don't turn on `commit.gpgsign`/`tag.gpgsign`, even for roles that sign. |
+| `[git-sign] key` | The private key pods sign commits and tags with (its `.pub` next to it). |
+| `[git-sign] confirm` | `true`: confirm each signature on the host (needs openssh-askpass). |
+| `[git-sign] auto` | `false`: don't turn on `commit.gpgsign`/`tag.gpgsign`, even for roles that sign. |
 | `[ssh] key`, `[ssh] keys` | The private key (or keys) pods log in with. |
 | `[ssh] hosts` | Hosts in scope, as named in the host's ssh config: `NAME` (any user) or `USER@NAME`. |
 | `[ssh] confirm` | `true`: confirm each login on the host. |
@@ -163,8 +163,8 @@ The broker turns each request into actions (what it does) and targets (what it t
   passed on). `--force-with-lease` and `--force` look the same to the broker: the lease is checked
   by git in the pod. For GitHub, the broker reads the commits in the push and asks GitHub about
   the ones it already has; a push it can't show to be a fast-forward counts as a force push.
-- **sign**: `sign:commit`, `sign:tag`; `sign:as other` when the author, committer or tagger isn't
-  the profile's identity; `sign:other` for anything that isn't a commit or tag. The target is the
+- **git-sign**: `git-sign:commit`, `git-sign:tag`; `git-sign:as other` when the author, committer or tagger isn't
+  the profile's identity; `git-sign:other` for anything that isn't a commit or tag. The target is the
   repository, by the remote the branch pushes to, else its folder (`git-local:`).
 - **ssh**: `ssh:login` to the host whose host key the pod's ssh binds to the agent (OpenSSH
   8.9's `session-bind`, matched against the host's `known_hosts`), every hop of a forwarded agent
