@@ -141,9 +141,9 @@ The broker turns each request into actions and targets, and checks them before a
   one-line summary, which the agent's arguments partly shape.
 - **The host's `gh` logins are the accounts you mean pods to act as.** A role limits what a
   pod can do with an account. It doesn't limit the account itself.
-- **Scope entries are as narrow as you write them.** `gh:logos-co/*` covers every repository of
-  the org. `ssh:nas` allows one user on nas, the one your ssh config logs in as (its `User`, else
-  your user name); `ssh:root@nas` allows root.
+- **Scope entries are as narrow as you write them.** `gh:fryorcraken/*` covers every repository of
+  that account. `ssh:nas` allows one user on nas, the one your ssh config logs in as (its
+  `User`, else your user name); `ssh:root@nas` allows root.
 
 ## What apod does not protect against
 

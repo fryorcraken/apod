@@ -57,7 +57,7 @@ A full profile `broker.toml` ([reference](reference.md#brokertoml) for every key
 ```toml
 # ~/.agent-pod/work/broker.toml
 role = "dev"
-scope = ["gh:logos-co/*", "gh-project:logos-co/5"]   # plus the project's GitHub and Radicle remotes
+scope = ["gh:fryorcraken/*", "gh-project:fryorcraken/1"]   # plus the project's GitHub and Radicle remotes
 
 [gh]
 user = "work-bot"                    # a host gh account (gh auth login); required for gh and GitHub remotes
@@ -453,7 +453,7 @@ belongs to. An entry of a kind no extension
 provides is ignored, with a warning at launch. The older forms (`OWNER/REPO`, `OWNER`,
 `project:OWNER/N`) still work, with a warning naming the new form.
 
-Keep scope narrow: `gh:logos-co/*` covers every repository of the org.
+Keep scope narrow: `gh:fryorcraken/*` covers every repository of that account.
 
 ## Approving requests
 
