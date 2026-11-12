@@ -859,6 +859,11 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual(Agent(Path(sess["dir"]) / "agent.sock").identities(), [blob_of(self.tmp / "userkey.pub")])
         r = self.admin("keys")
         self.assertRegex(r.stdout, rf"{self.tmp}/userkey +all profiles \[ssh\]\n")
+        # A profile with no hosts: no ssh, and its key isn't asked for at launch.
+        sess = self.register("ops", [])
+        self.assertNotIn("ssh", sess["providers"])
+        self.assertFalse([k for k in sess["need_keys"] if k["path"].endswith("userkey")])
+        self.assertNotIn("SSH_AUTH_SOCK", sess["env"])
 
     def test_github_needs_a_named_account(self):
         w = []

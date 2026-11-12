@@ -41,7 +41,7 @@ Everything the broker does for a pod is an extension. These ship with apod:
 | `github`   | git's github.com remotes go through the broker, with that account's token.           | `[gh] user`                                                     |
 | `rad`      | `rad://` remotes go through the broker, which pushes as the host's Radicle identity. | a `rad://` remote, or a `rad:` scope entry: [Radicle](#radicle) |
 | `git-sign` | git signs commits and tags with a key the broker holds.                              | `[git-sign] key`: [Signing commits](#signing-commits)           |
-| `ssh`      | `ssh HOST` logs in with the broker's agent, to the hosts in scope, through the host. | `[ssh]`: [SSH](#ssh)                                            |
+| `ssh`      | `ssh HOST` logs in with the broker's agent, to the hosts in scope, through the host. | an `[ssh]` key, and hosts in scope: [SSH](#ssh)                 |
 | `notify`   | `apod-notify TEXT` sends you a desktop notification.                                 | `[notify] enabled`: [Notifications](#notifications)             |
 
 `[NAME] enabled = false` in a profile's `broker.toml` turns one off for that profile's pods.
@@ -355,6 +355,10 @@ route to them.
    without asking, since a login is a shell there; with other roles, every login waits for you
    (or add `ssh = ["connect", "login"]` to a role in your `roles.toml`). Another host waits
    for you whatever the role.
+
+   **No hosts, no ssh.** A pod with no hosts in scope (no `hosts` here, no `--scope ssh:`) gets
+   no ssh from the broker, and the launch doesn't ask for the key's passphrase. So an `[ssh]`
+   key in `~/.agent-pod/broker.toml` costs nothing to the profiles that don't name hosts.
 4. **Check it** in a pod: `ssh devbox true` logs in; `ssh some-other-host true` waits.
 
 Only port 22 or the host's configured ssh port goes through without asking; another port is a

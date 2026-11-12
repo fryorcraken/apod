@@ -424,9 +424,16 @@ if [ -n "$usebroker" ]; then
   # Keys the broker's agent doesn't hold yet: ssh-add asks for their passphrases here.
   agentsock=$(jq -r .agent <<< "$binfo")
   ttyin=/dev/tty; { : < /dev/tty; } 2>/dev/null || ttyin=/dev/null
+  # Colours when stderr is a terminal (and NO_COLOR isn't set): bold, dim, yellow, reset.
+  cb=; cdim=; cy=; cr=
+  if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then cb=$'\e[1m'; cdim=$'\e[2m'; cy=$'\e[1;33m'; cr=$'\e[0m'; fi
+  nkeys=$(jq '.need_keys | length' <<< "$binfo"); ki=0
+  [ "$nkeys" -eq 0 ] || echo "${cb}apod:${cr} the broker needs $nkeys key(s) unlocked; each stays unlocked for ${APOD_SSH_TTL:-4h}." >&2
   while IFS=$'\t' read -r kpath kconfirm kpurpose; do
     [ -n "$kpath" ] || continue
-    echo "apod: the broker needs $kpath${kpurpose:+ for $kpurpose}. Enter its passphrase, or an empty line to skip (those requests will fail)." >&2
+    ki=$((ki + 1))
+    printf '\n%s\n%s\n' "${cb}[$ki/$nkeys]${cr} ${cy}${kpurpose:-a key}${cr}  ${cdim}${kpath/#$HOME/\~}${cr}" \
+      "${cdim}Its passphrase, or an empty line to skip (those requests will fail).${cr}" >&2
     addopts=(-q -t "${APOD_SSH_TTL:-4h}"); [ "$kconfirm" = true ] && addopts+=(-c)
     if [ "$kconfirm" = true ] && [ -z "${SSH_ASKPASS:-}" ] && [ ! -x /usr/libexec/openssh/ssh-askpass ]; then
       echo "apod: $kpath has confirm = true, which needs ssh-askpass to ask you on each use: sudo dnf install openssh-askpass" >&2
