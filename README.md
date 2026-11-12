@@ -132,6 +132,22 @@ allows every action and every target is in the scope (a request with no target n
 role); anything else waits for you. You can approve it once, for the session, or for the role
 (every profile with that role, now and later), so prefer the session for one-offs.
 
+## Built-in extensions
+
+Everything the broker does for a pod is an extension, each with its own guide:
+
+- **gh:** `gh` in the pod, run by the broker as a host `gh` account ([GitHub](docs/guides.md#github)).
+- **github:** git fetch and push to github.com remotes, with that account's token.
+- **rad:** git fetch and push to `rad://` remotes, as the host's Radicle identity
+  ([Radicle](docs/guides.md#radicle)).
+- **sign:** commit and tag signatures with a key the broker holds
+  ([Signing commits](docs/guides.md#signing-commits)).
+- **ssh:** logins to the hosts in scope with the broker's agent ([ssh](docs/guides.md#ssh)).
+- **notify:** desktop notifications from the pod ([Notifications](docs/guides.md#notifications)).
+
+The [overview](docs/guides.md#built-in-extensions) has what each needs to be set up, and how to
+turn one off. Yours go in `~/.agent-pod/broker-extensions/` ([EXTENSIONS.md](EXTENSIONS.md)).
+
 ## Documentation
 
 - **[Guides](docs/guides.md):** [the broker](docs/guides.md#the-broker),

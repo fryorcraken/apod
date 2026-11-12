@@ -31,16 +31,24 @@ A pod uses the broker when its profile has a `broker.toml`, or when the launch p
 `--scope` or `--gh-user`. `--no-broker` turns it off for a run. The broker starts with the first
 pod that uses it and keeps running; its state is in `~/.agent-pod/broker/`.
 
-What the shipped extensions do for a pod:
+### Built-in extensions
+
+Everything the broker does for a pod is an extension. These ship with apod:
 
 | Extension | In the pod | Set up with |
 |---|---|---|
 | `gh` | `gh` is a shim; the broker runs the real `gh` as the host account the profile names. | `[gh] user`: [GitHub](#github) |
 | `github` | git's github.com remotes go through the broker, with that account's token. | `[gh] user` |
-| `rad` | `rad://` remotes go through the broker, which pushes as the host's Radicle identity. | a `rad://` remote, or `[rad]`: [Radicle](#radicle) |
+| `rad` | `rad://` remotes go through the broker, which pushes as the host's Radicle identity. | a `rad://` remote, or a `rad:` scope entry: [Radicle](#radicle) |
 | `sign` | git signs commits and tags with a key the broker holds. | `[sign] key`: [Signing commits](#signing-commits) |
 | `ssh` | `ssh HOST` logs in with the broker's agent, to the hosts in scope, through the host. | `[ssh]`: [SSH](#ssh) |
 | `notify` | `apod-notify TEXT` sends you a desktop notification. | `[notify] enabled`: [Notifications](#notifications) |
+
+`[NAME] enabled = false` in a profile's `broker.toml` turns one off for that profile's pods.
+What each one counts as an action and a target is under
+[How requests are classified](reference.md#how-requests-are-classified); `apod broker roles`
+shows what each role allows, and `apod broker scopes` the scope kinds. To write your own, or
+replace one, see [EXTENSIONS.md](../EXTENSIONS.md).
 
 A full profile `broker.toml` ([reference](reference.md#brokertoml) for every key):
 
