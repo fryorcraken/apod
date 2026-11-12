@@ -2,16 +2,317 @@
 
 The broker's core (`broker/`) handles sessions, roles, scope, approvals and the log. Everything a
 pod can do through it (`gh`, git to GitHub and Radicle, commit signing, ssh, notifications) is an
-**extension**: a Python file that registers providers and scope kinds. This guide is for writing
-one. For using the shipped ones, see the [guides](docs/guides.md#the-broker).
+**extension**: one Python file on the host. This guide builds one, explains what each part does
+(comparing with `gh`, which works the same way), then has the details. For using the shipped
+extensions, see the [guides](docs/guides.md#the-broker).
 
-- [Where extensions live](#where-extensions-live)
-- [How a request is checked](#how-a-request-is-checked)
 - [Tutorial: restart a host service](#tutorial-restart-a-host-service)
+- [What just happened](#what-just-happened)
+- [How the broker decides](#how-the-broker-decides)
+- [Where extensions live](#where-extensions-live)
 - [Testing](#testing)
 - [Reference](#reference)
 - [Security rules](#security-rules)
 - [Debugging](#debugging)
+
+## Tutorial: restart a host service
+
+The goal: an agent working on a web app can check on, or restart, the app's dev server, which
+runs on the host as a systemd user service. In the pod, the agent uses `systemctl` as it always
+would:
+
+```sh
+systemctl --user status web     # runs systemctl --user status web.service on the host
+systemctl --user restart web
+```
+
+You decide which units a pod may touch (`web`, not your others) and what it may do to them (a
+`reader` pod may only ask for the status). Three pieces:
+
+1. **The extension**, on the host: it reads the pod's `systemctl` command line, decides, and runs
+   the host's `systemctl`.
+2. **A client** in the pod, named `systemctl` like the command it stands for: it hands its
+   arguments to the broker and prints the answer. The agent needs nothing new to learn, only
+   what's different (user services only, four commands).
+3. **Settings:** which units a profile's pods may touch (`broker.toml`), and which roles may
+   restart them (`roles.toml`).
+
+### 1. The extension
+
+```python
+# ~/.agent-pod/broker-extensions/systemctl.py
+"""systemctl: pods run the host's systemctl --user, for a few commands on the units in scope.
+Actions: systemctl:status, systemctl:start, systemctl:stop, systemctl:restart. Targets:
+unit:NAME.service."""
+import json
+import re
+import subprocess
+from pathlib import Path
+
+from api import BrokerError, Provider, Request, check, provider, read_body, rejected_msg, scope_kind, send_text
+
+CLIENT = Path(__file__).resolve().with_name("systemctl")  # the pod's client, next to this file
+UNIT = re.compile(r"[A-Za-z0-9][A-Za-z0-9@._-]{0,99}")
+COMMANDS = {"status": ["status", "--no-pager"], "start": ["start"], "stop": ["stop"], "restart": ["restart"]}
+FLAGS = {"--user", "--no-pager"}  # accepted, and implied: it's always the user's services
+
+
+def unit_name(v):
+    """web -> web.service; patterns in scope entries (dev-*) stay as written."""
+    v = v.strip()
+    return v if v.endswith(".service") or "*" in v else v + ".service"
+
+
+def parse(argv):
+    """The part of systemctl's command line this extension handles: [--user] COMMAND UNIT..."""
+    if not isinstance(argv, list) or len(argv) > 32 or not all(isinstance(a, str) for a in argv):
+        raise ValueError("expected a command line")
+    flags = [a for a in argv if a.startswith("-")]
+    words = [a for a in argv if not a.startswith("-")]
+    for f in flags:
+        if f not in FLAGS:
+            raise ValueError(f"{f} isn't available through the apod broker")
+    if not words or words[0] not in COMMANDS:
+        raise ValueError(f"only {', '.join(COMMANDS)} are available through the apod broker")
+    if len(words) < 2 or not all(UNIT.fullmatch(u) for u in words[1:]):
+        raise ValueError(f"name the units to {words[0]}")
+    return words[0], [unit_name(u) for u in words[1:]]
+
+
+def handle(h, sess, method):
+    # 1. What the pod sent: small, the shape we expect, words we'd pass to systemctl.
+    try:
+        command, units = parse(json.loads(read_body(h, limit=4096)).get("argv"))
+    except BrokerError as e:
+        return send_text(h, str(e), 400)
+    except (ValueError, AttributeError) as e:
+        return send_text(h, f"systemctl: {e}", 400)
+    # 2. What it does, and what it touches.
+    req = Request("systemctl", f"systemctl --user {command} {' '.join(units)}")
+    req.actions = [f"systemctl:{command}"]
+    req.targets = [("unit", u) for u in units]
+    # 3. Allowed, approved, or refused.
+    ok, ev = check(sess, req)
+    if not ok:
+        return send_text(h, rejected_msg(req, ev))
+    # 4. Act: a fixed command, no shell, and "--" before the pod's words.
+    try:
+        r = subprocess.run(["systemctl", "--user", *COMMANDS[command], "--", *units], capture_output=True,
+                           text=True, timeout=60, stdin=subprocess.DEVNULL)
+        code, output = r.returncode, r.stdout + r.stderr
+    except (OSError, subprocess.TimeoutExpired) as e:
+        code, output = 1, str(e)
+    ev["exit"] = code  # the TUI shows it
+    return h.send_json({"exit": code, "output": output[-4000:]})
+
+
+class Systemctl(Provider):
+    name = "systemctl"   # [systemctl] in broker.toml, systemctl = [...] in roles, systemctl:... actions
+    routes = [("POST", "/systemctl", handle)]
+
+    def configure(self, sess, cfg, reg, out):
+        if not cfg.get("enabled"):
+            return False
+        for u in cfg.get("units", []):   # the profile's own units are in scope for its pods
+            sess.add_scope(("unit", unit_name(u)))
+        out["mounts"].append([str(CLIENT), "/usr/local/bin/systemctl", "ro"])
+        out["context"].append("systemctl reaches the host's user services: use it as usual, with --user, for "
+                              f"{', '.join(COMMANDS)} (other commands aren't available). Units outside "
+                              "this pod's scope wait for the user's approval.")
+        return True
+
+
+scope_kind("unit", provider="systemctl", parse=unit_name,
+           help="unit:NAME (a systemd user service on the host, e.g. unit:web or unit:dev-*)")
+provider(Systemctl())
+```
+
+The handler follows the same four steps as every extension: read what the pod sent (and
+distrust it), describe it as a request, check it, act. [What just happened](#what-just-happened)
+goes through them after you've tried it.
+
+### 2. The pod's client
+
+Next to the extension (`chmod +x` it). `configure` mounts it in the pod as `systemctl`. It
+doesn't parse anything: it sends its arguments to the pod's broker socket, which decides what
+they mean, and prints the answer.
+
+```python
+#!/usr/bin/env python3
+# ~/.agent-pod/broker-extensions/systemctl
+"""systemctl in the pod: the arguments go to the host's apod broker, which runs systemctl --user."""
+import http.client
+import json
+import os
+import socket
+import sys
+
+
+class UnixHTTP(http.client.HTTPConnection):
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.connect(os.environ["APOD_BROKER_SOCK"])
+
+
+c = UnixHTTP("localhost", timeout=300)  # long enough to wait for the user's approval
+c.request("POST", "/systemctl", json.dumps({"argv": sys.argv[1:]}), {"Content-Type": "application/json"})
+r = c.getresponse()
+body = r.read().decode()
+if r.status != 200:
+    sys.exit(body.strip())
+out = json.loads(body)
+print(out["output"], end="")
+sys.exit(out["exit"])
+```
+
+### 3. Turn it on
+
+For a profile, and say which services its pods may touch:
+
+```toml
+# ~/.agent-pod/work/broker.toml
+[systemctl]
+enabled = true
+units = ["web"]          # in scope for every pod of this profile; --scope unit:db adds one for a launch
+```
+
+And let a role use it. The built-in roles know nothing about `systemctl`, so add its actions:
+
+```toml
+# ~/.agent-pod/roles.toml: adds to the built-in dev role
+[roles.dev]
+systemctl = ["status", "start", "stop", "restart"]
+```
+
+### 4. Try it
+
+`apod broker restart` (it loads extensions when it starts), launch a pod of that profile with
+the `dev` role, and in the pod:
+
+```sh
+systemctl --user status web    # runs: in scope, and dev may
+systemctl --user restart db    # waits for you in apod broker: db isn't in scope
+systemctl --user daemon-reload # refused: not one of the four commands
+apod broker log -n 5           # on the host: the requests, with their actions and targets
+```
+
+## What just happened
+
+**`systemctl --user restart web`** sent its arguments, `{"argv": ["--user", "restart", "web"]}`, to
+the broker. The handler's `parse` checked that they're a command it handles and plausible unit
+names, then described the request:
+
+```python
+req = Request("systemctl", "systemctl --user restart web.service")   # what the TUI and log show
+req.actions = ["systemctl:restart"]                                  # what it does
+req.targets = [("unit", "web.service")]                              # what it touches
+```
+
+`gh` does the same with every command it gets: `gh pr create -R acme/widget` becomes
+
+```python
+req.actions = ["gh:pr create"]
+req.targets = [("gh", "acme/widget")]
+```
+
+These are the README's [concepts](README.md#concepts), seen from the extension's side.
+
+**The action** is what the request does: your provider's name, a colon, then words you choose
+(`systemctl:restart`, `gh:pr create`). The role decides which actions go through without asking. A
+role's list for a provider names actions without the prefix, so
+`systemctl = ["status", "start", "stop", "restart"]` in `[roles.dev]` allows `systemctl:restart`
+and the others, just as the built-in `dev` role's `gh = ["pr create", ...]` allows `gh:pr
+create`. Entries can be shell-style patterns:
+`gh = ["api GET /repos/{repo}/*"]` allows every GET under a repository.
+
+**The target** is what the request touches: a pair of a **kind** and a **value**. The kind says
+what sort of thing it is, and which extension it belongs to; the value says which one.
+
+| Kind | Value | Declared by |
+|---|---|---|
+| `gh` | a GitHub repository or owner: `acme/widget`, `acme` | `gh` |
+| `rad` | a Radicle repository id | `rad` |
+| `ssh` | a host, maybe with a user: `devbox`, `root@nas` | `ssh` |
+| `unit` | a systemd user service: `web.service` | your `systemctl` |
+
+**The scope** is the list of targets a pod may touch, written `kind:value`: `gh:acme/widget`,
+`unit:web`. A target is in scope when an entry of its kind matches its value, with patterns
+(`gh:acme/*` covers every repository of `acme`, `unit:dev-*` every service starting with `dev-`).
+Entries come from the host's side only: `gh` adds the project's GitHub remotes, your `configure`
+added `units` from `broker.toml`, and the user adds others with `scope =` or `--scope unit:db`.
+
+`scope_kind("unit", ...)` is what makes `unit:` something users can write: it declares the kind,
+and its `parse` turns `unit:web` into `web.service`, the form the handler's targets use.
+
+A command can touch several targets: `systemctl --user restart web db` has two, and goes through
+only if both are in scope.
+
+**The check:** `restart web` went through because `dev` allows `systemctl:restart` and `web.service`
+is in scope. `restart db` waited, because `db.service` isn't in scope; a `reader` pod's `restart
+web` would wait too, because `reader` doesn't allow `systemctl:restart`. You can approve a waiting
+request once, for the session (it then adds `unit:db.service` to that pod's scope, and the
+action to what it may do), or for the role (the action, for every profile with that role).
+
+**`configure`** ran when the pod started, before any request. It decided whether `systemctl` is on
+for this pod (only with `enabled = true`), added the profile's units to the scope, and told
+`apod` what the pod needs: the client mounted at `/usr/local/bin/systemctl`, and a sentence for
+the agent's system prompt. That sentence says only what's different from the `systemctl` the
+agent knows (user services, four commands, approval outside the scope), so it can rely on
+what it already knows of the command. `gh` does the same: it puts its own
+`gh` in the pod, and adds the project's GitHub repository to the scope.
+
+## How the broker decides
+
+```
+pod: a client (your script, a shim like gh, git config, ssh)
+  │  HTTP over $APOD_BROKER_SOCK (/run/apod-broker/broker.sock, one socket per pod)
+  ▼
+broker: the route (method, path) → your handler(h, sess, method)
+  1. read and validate what the pod sent: it's untrusted
+  2. describe it: a Request with actions and targets
+  3. check(sess, req):
+       - an action is never allowed (HARD_DENY, the role's deny)  → refused
+       - the role allows every action and every target is in scope → go ahead
+       - otherwise it waits for the user (apod broker, or apod broker allow ID) for up to
+         APOD_BROKER_ASK_TIMEOUT (90 s), then it's refused
+  4. act on the host, reply to the pod
+```
+
+With `gh`, for a `dev` pod working in a clone of `acme/widget` (so its scope is
+`gh:acme/widget`):
+
+| In the pod | Action | Target | Outcome |
+|---|---|---|---|
+| `gh pr create` | `gh:pr create` | `gh` `acme/widget` | goes through: `dev` allows it, in scope |
+| `gh pr create -R acme/other` | `gh:pr create` | `gh` `acme/other` | waits: not in scope |
+| `gh pr merge 12` | `gh:pr merge` | `gh` `acme/widget` | waits: `dev` doesn't allow merging |
+| `gh api /rate_limit` | `gh:api GET /rate_limit` | none | goes through: `reader` (and so `dev`) allows it |
+| `gh search repos broker` | `gh:search repos` | `unscoped` `search repos across GitHub` | waits: can't be scoped |
+
+**A request with no target** touches nothing the scope could name: your own rate limit isn't any
+repository's. It's checked against the role alone. In this extension, a `systemctl:list` action that lists
+every service might be one; give it no target only if any pod with that action may do it
+anywhere.
+
+**A request you can't scope** is different: it does touch things, but you can't tell which. A
+search across all of GitHub reaches any repository. Give it the target `("unscoped", "what it
+is")`: that kind is the core's, never in scope, so the request always waits, whatever the role.
+Approving it for the session remembers that one (`unscoped` `search repos across GitHub`), so
+the same request goes through for the rest of the session.
+
+**Name the extension after the command it stands for.** An extension gives pods limited access
+to a command line tool on the host, so call it what the agent would type: `gh` for `gh`,
+`systemctl` for `systemctl`. Put a client by that name in the pod that passes its command line to the broker
+unchanged (as `gh` and this tutorial do), and parse it on the host as the real command would.
+The agent then uses the command as it already knows it, and the note for its system prompt only
+says what's different: what's missing, what waits for approval. The role lists (`gh = [...]`,
+`systemctl = [...]`) and actions (`gh:pr create`, `systemctl:restart`) then read like the
+command's own.
+Extensions that don't stand for one command (`github` for git's traffic to GitHub, `sign`,
+`notify`) are named for what they do.
+
+The pod side needs no changes to `apod`: at registration a provider says what to set up in the pod
+(mounts, environment, git config, a note for the agent), and `apod` applies it.
 
 ## Where extensions live
 
@@ -34,182 +335,6 @@ changing one; `apod broker scopes` lists the scope kinds and which file each ext
 Import from `api` (the [reference](#reference) lists every name). `api.API_VERSION` changes
 when one of them changes in a way that breaks extensions. Anything else in `core` is the
 broker's own and may change at any time.
-
-## How a request is checked
-
-```
-pod: a client (your script, a shim, git config, ssh)
-  │  HTTP over $APOD_BROKER_SOCK (/run/apod-broker/broker.sock, one socket per pod)
-  ▼
-broker: the route (method, path) → your handler(h, sess, method)
-  1. read and validate what the pod sent: it's untrusted
-  2. classify it: a Request with actions ("svc:restart") and targets (("unit", "web.service"))
-  3. check(sess, req):
-       - an action is never allowed (HARD_DENY, the role's deny)  → refused
-       - the role allows every action and every target is in scope → go ahead
-       - otherwise it waits for the user (apod broker, or apod broker allow ID) for up to
-         APOD_BROKER_ASK_TIMEOUT (90 s), then it's refused
-  4. act on the host, reply to the pod
-```
-
-- **Actions** are `"<provider>:<action>"`. A role's list for the provider (`svc = ["status"]` in
-  `roles.toml`) matches the part after the colon, with shell-style patterns.
-- **Targets** are `(kind, value)` pairs, checked against the session's scope entries of that
-  kind (`unit:web.service`). The kind is a scope kind some extension declared.
-- **Approving** a request once lets that request through; "for the session" also adds its
-  actions and targets to the session; "for the role" saves the actions in
-  `~/.agent-pod/broker/grants.json`.
-- **A request with no targets** is checked against the role only. A target `("unscoped",
-  "what")` is the core's: it's never in scope, and approving it for the session remembers it. Use
-  it for a request you can't scope.
-
-The pod side needs no changes to `apod`: at registration a provider says what to set up in the pod
-(mounts, environment, git config, a note for the agent), and `apod` applies it.
-
-## Tutorial: restart a host service
-
-This extension lets a pod ask about, or restart, a systemd user service on the host, for example
-the dev server it's working on. Pods name the service; the scope says which ones they may touch,
-and the role says what they may do to them.
-
-**The extension:**
-
-```python
-# ~/.agent-pod/broker-extensions/svc.py
-"""svc: pods ask about or restart the host's systemd user services. Actions: svc:status,
-svc:restart. Targets: unit:NAME.service."""
-import json
-import re
-import subprocess
-from pathlib import Path
-
-from api import BrokerError, Provider, Request, check, provider, read_body, rejected_msg, scope_kind, send_text
-
-CLIENT = Path(__file__).resolve().with_name("apod-svc")
-UNIT = re.compile(r"[A-Za-z0-9][A-Za-z0-9@._-]{0,99}")
-COMMANDS = {"status": ["status", "--no-pager"], "restart": ["restart"]}
-
-
-def unit_name(v):
-    """web -> web.service; patterns in scope entries (dev-*) stay as written."""
-    v = v.strip()
-    return v if v.endswith(".service") or "*" in v else v + ".service"
-
-
-def handle(h, sess, method):
-    # 1. What the pod sent: small, the shape we expect, a unit name we'd pass to systemctl.
-    try:
-        body = json.loads(read_body(h, limit=4096))
-        action, unit = body["action"], body["unit"]
-    except (BrokerError, ValueError, KeyError, TypeError):
-        return send_text(h, 'expected {"action": "status" or "restart", "unit": NAME}', 400)
-    if action not in COMMANDS or not isinstance(unit, str) or not UNIT.fullmatch(unit):
-        return send_text(h, "unknown action, or not a unit name", 400)
-    unit = unit_name(unit)
-    # 2. What it does, and what it touches.
-    req = Request("svc", f"systemctl --user {action} {unit}")
-    req.actions = [f"svc:{action}"]
-    req.targets = [("unit", unit)]
-    # 3. Allowed, approved, or refused.
-    ok, ev = check(sess, req)
-    if not ok:
-        return send_text(h, rejected_msg(req, ev))
-    # 4. Act: a fixed command, no shell, and "--" before the pod's word.
-    try:
-        r = subprocess.run(["systemctl", "--user", *COMMANDS[action], "--", unit], capture_output=True,
-                           text=True, timeout=60, stdin=subprocess.DEVNULL)
-        code, output = r.returncode, r.stdout + r.stderr
-    except (OSError, subprocess.TimeoutExpired) as e:
-        code, output = 1, str(e)
-    ev["exit"] = code  # the TUI shows it
-    return h.send_json({"exit": code, "output": output[-4000:]})
-
-
-class Svc(Provider):
-    name = "svc"                         # [svc] in broker.toml, svc = [...] in roles, svc:... actions
-    routes = [("POST", "/svc", handle)]
-
-    def configure(self, sess, cfg, reg, out):
-        if not cfg.get("enabled"):
-            return False
-        for u in cfg.get("units", []):   # the profile's own units are in scope for its pods
-            sess.add_scope(("unit", unit_name(u)))
-        out["mounts"].append([str(CLIENT), "/usr/local/bin/apod-svc", "ro"])
-        out["context"].append("apod-svc status|restart UNIT asks the host about, or restarts, one of its "
-                              "systemd user services (the ones in scope; others wait for the user).")
-        return True
-
-
-scope_kind("unit", provider="svc", parse=unit_name,
-           help="unit:NAME (a systemd user service on the host, e.g. unit:web or unit:dev-*)")
-provider(Svc())
-```
-
-**The pod's client**, next to it (`chmod +x` it):
-
-```python
-#!/usr/bin/env python3
-# ~/.agent-pod/broker-extensions/apod-svc
-"""apod-svc status|restart UNIT: ask the host's apod broker to run systemctl --user on UNIT."""
-import http.client
-import json
-import os
-import socket
-import sys
-
-
-class UnixHTTP(http.client.HTTPConnection):
-    def connect(self):
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.connect(os.environ["APOD_BROKER_SOCK"])
-
-
-if len(sys.argv) != 3:
-    sys.exit("usage: apod-svc status|restart UNIT")
-c = UnixHTTP("localhost", timeout=300)  # long enough to wait for the user's approval
-c.request("POST", "/svc", json.dumps({"action": sys.argv[1], "unit": sys.argv[2]}),
-          {"Content-Type": "application/json"})
-r = c.getresponse()
-body = r.read().decode()
-if r.status != 200:
-    sys.exit(body.strip())
-out = json.loads(body)
-print(out["output"], end="")
-sys.exit(out["exit"])
-```
-
-**Turn it on** for a profile, and let its role use it:
-
-```toml
-# ~/.agent-pod/work/broker.toml
-[svc]
-enabled = true
-units = ["web"]          # in scope for every pod of this profile; --scope unit:db adds one for a launch
-```
-
-```toml
-# ~/.agent-pod/roles.toml: adds to the built-in dev role
-[roles.dev]
-svc = ["status", "restart"]
-```
-
-**Try it:** `apod broker restart`, launch a pod of that profile, and in the pod:
-
-```sh
-apod-svc status web       # runs: in scope, and dev may
-apod-svc restart db       # waits for you in apod broker: db isn't in scope
-apod broker log -n 5      # on the host: both requests, with their actions and targets
-```
-
-What each part does:
-
-- **`scope_kind("unit", ...)`** makes `unit:` a scope kind: users write `unit:web` in `scope` or
-  `--scope`, and `parse` stores it as `web.service`, the form the handler's targets use.
-- **`configure`** runs when a pod registers. It decides whether the provider is on for the pod,
-  widens the session's scope from the host's own config (never from what the pod says), and tells
-  `apod` what to set up in the pod.
-- **The handler** reads, validates, classifies, checks, then acts. It never lets the pod choose
-  the command, only one word that's been validated, and it answers in a form the client prints.
 
 ## Testing
 
@@ -244,7 +369,7 @@ object the same attributes:
 | Attribute | |
 |---|---|
 | `name` | Required: lowercase letters, digits and `-`, unique, not a `roles.toml` key (`allow`, `deny`, `extends`, `description`) or `unscoped`. It names the `broker.toml` table, the role list and the action prefix. |
-| `routes` | `[(method, path, handler)]`. `method` is `GET`, `POST` or `CONNECT`. `path` matches a request's path exactly, or as a prefix that ends at a `/` or `?` (`/svc` takes `/svc` and `/svc/x`, not `/svcx`); `CONNECT` may use `""` for every CONNECT. A route that overlaps another provider's is refused. `/whoami` is the core's. |
+| `routes` | `[(method, path, handler)]`. `method` is `GET`, `POST` or `CONNECT`. `path` matches a request's path exactly, or as a prefix that ends at a `/` or `?` (`/systemctl` takes `/systemctl` and `/systemctl/x`, not `/systemctlx`); `CONNECT` may use `""` for every CONNECT. A route that overlaps another provider's is refused. `/whoami` is the core's. |
 | `requires` | Names of providers this one needs. It's configured after them, and only when they're on for the pod (`github` requires `gh`). |
 | `configure(sess, cfg, reg, out)` | Required. Runs when a pod registers, before its socket exists. Returns whether the provider is on for this pod; requests to its routes from a pod it's off for are refused. See below. |
 | `listen(sess)` | Optional. Start sockets of your own in `sess.dir`, e.g. one that doesn't speak HTTP (`ssh` serves its agent this way). Called for every provider, on or off, at registration and when the broker starts again, so check `sess.cfg` first. Return the servers; the core stops them when the session ends. |

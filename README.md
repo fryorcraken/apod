@@ -116,8 +116,20 @@ A launch combines a **profile**, a **role**, a **scope** and a **project** into 
 | **Project** | The folder the agent works in: mounted read-write; its remotes join the scope. | The folder argument. |
 | **Session** | One running pod, registered with the broker, with what you approve "for the session". It ends with the pod. | Each launch. |
 
-The broker lets a request through when the role allows every action and every target is in the
-scope; anything else waits for you. You can approve it once, for the session, or for the role
+The broker reads each request from a pod as **actions** (what it does) and **targets** (what it
+touches). The role lists actions, the scope lists targets:
+
+| In the pod | Action | Target |
+|---|---|---|
+| `gh pr create` in a clone of `acme/widget` | `gh:pr create` | `gh:acme/widget` |
+| `git push rad HEAD:refs/patches` | `rad:push patch` | `rad:z2CjA…` (the repository) |
+| `ssh devbox` | `ssh:login` | `ssh:you@devbox` (in scope with `ssh:devbox`) |
+| `gh api /rate_limit` | `gh:api GET /rate_limit` | none: it touches no repository |
+
+A target is written like a scope entry, `KIND:VALUE`: the kind says what sort of thing it is (a
+GitHub repository, a host), the value which one. The broker lets a request through when the role
+allows every action and every target is in the scope (a request with no target needs only the
+role); anything else waits for you. You can approve it once, for the session, or for the role
 (every profile with that role, now and later), so prefer the session for one-offs.
 
 ## Documentation

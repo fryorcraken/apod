@@ -517,24 +517,28 @@ class BrokerTest(unittest.TestCase):
         self.assertIn("out of this session's scope: tag:beta", body["error"])
 
     def test_extensions_md_tutorial(self):
-        """The svc extension from EXTENSIONS.md works as the guide says."""
-        (self.root / "roles.toml").write_text('[roles.svcdev]\nextends = ["reader"]\nsvc = ["status"]\n')
+        """The systemctl extension from EXTENSIONS.md works as the guide says."""
+        (self.root / "roles.toml").write_text('[roles.unitdev]\nextends = ["reader"]\nsystemctl = ["status"]\n')
         self.addCleanup((self.root / "roles.toml").unlink)
-        sess = self.register("svcdev", [], toml='[svc]\nenabled = true\nunits = ["web"]\n')
-        self.assertIn("svc", sess["providers"])
+        sess = self.register("unitdev", [], toml='[systemctl]\nenabled = true\nunits = ["web"]\n')
+        self.assertIn("systemctl", sess["providers"])
         self.assertIn("unit:web.service", sess["scope"])
-        self.assertIn("apod-svc status|restart UNIT", sess["context"])
+        self.assertIn("systemctl reaches the host's user services", sess["context"])
         e = dict(self.env, APOD_BROKER_SOCK=str(Path(sess["dir"]) / "broker.sock"))
-        client = [sys.executable, "-I", self.root / "broker-extensions/apod-svc"]  # -I: not its folder's json.py
-        r = subprocess.run([*client, "status", "web"], env=e, capture_output=True, text=True)
+        client = [sys.executable, "-I", self.root / "broker-extensions/systemctl"]  # -I: not its folder's json.py
+        r = subprocess.run([*client, "--user", "status", "web"], env=e, capture_output=True, text=True)
         self.assertEqual((r.returncode, r.stdout), (0, "active\n"), r.stderr)
         self.assertEqual((self.tmp / "systemctl").read_text(), "--user status --no-pager -- web.service ")
         r = subprocess.run([*client, "restart", "web"], env=e, capture_output=True, text=True)
-        self.assertIn("not allowed for role svcdev: svc:restart", r.stderr)
+        self.assertIn("not allowed for role unitdev: systemctl:restart", r.stderr)
         r = subprocess.run([*client, "status", "db"], env=e, capture_output=True, text=True)
         self.assertIn("out of this session's scope: unit:db.service", r.stderr)
-        r = subprocess.run([*client, "status", "--user"], env=e, capture_output=True, text=True)
-        self.assertIn("not a unit name", r.stderr)
+        r = subprocess.run([*client, "status", "--now", "web"], env=e, capture_output=True, text=True)
+        self.assertIn("--now isn't available", r.stderr)
+        r = subprocess.run([*client, "--user", "daemon-reload"], env=e, capture_output=True, text=True)
+        self.assertIn("only status, start, stop, restart", r.stderr)
+        r = subprocess.run([*client, "status", "web", "db"], env=e, capture_output=True, text=True)
+        self.assertIn("unit:db.service", r.stderr)
         self.assertEqual((self.tmp / "systemctl").read_text(), "--user status --no-pager -- web.service ")
 
     def test_extension_api_checks(self):
