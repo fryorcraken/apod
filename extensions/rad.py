@@ -211,6 +211,8 @@ def handle_push(h, sess, req, rid, body):
 
 class RadProvider(Provider):
     name = "rad"
+    description = "git fetch and push to rad:// remotes, as the host's Radicle identity"
+    guide = "docs/guides.md#radicle"
     routes = [("GET", "/git/rad/", handle), ("POST", "/git/rad/", handle)]
 
     def keys(self, cfg):

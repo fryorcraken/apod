@@ -108,6 +108,7 @@ def handle(h, sess, method):
 
 class Systemctl(Provider):
     name = "systemctl"   # [systemctl] in broker.toml, systemctl = [...] in roles, systemctl:... actions
+    description = "systemctl --user on the host, for the units in scope"   # apod broker extensions
     routes = [("POST", "/systemctl", handle)]
 
     def configure(self, sess, cfg, reg, out):
@@ -370,6 +371,8 @@ object the same attributes:
 |---|---|
 | `name` | Required: lowercase letters, digits and `-`, unique, not a `roles.toml` key (`allow`, `deny`, `extends`, `description`) or `unscoped`. It names the `broker.toml` table, the role list and the action prefix. |
 | `routes` | `[(method, path, handler)]`. `method` is `GET`, `POST` or `CONNECT`. `path` matches a request's path exactly, or as a prefix that ends at a `/` or `?` (`/systemctl` takes `/systemctl` and `/systemctl/x`, not `/systemctlx`); `CONNECT` may use `""` for every CONNECT. A route that overlaps another provider's is refused. `/whoami` is the core's. |
+| `description` | One line for `apod broker extensions`: what the extension gives pods. |
+| `guide` | Where its guide is, `"docs/guides.md#anchor"` in the apod checkout (the shipped extensions). Without one, `apod broker extensions NAME` shows your module's docstring, so write it as the extension's guide: what it does, its `broker.toml` settings, its actions. |
 | `requires` | Names of providers this one needs. It's configured after them, and only when they're on for the pod (`github` requires `gh`). |
 | `configure(sess, cfg, reg, out)` | Required. Runs when a pod registers, before its socket exists. Returns whether the provider is on for this pod; requests to its routes from a pod it's off for are refused. See below. |
 | `listen(sess)` | Optional. Start sockets of your own in `sess.dir`, e.g. one that doesn't speak HTTP (`ssh` serves its agent this way). Called for every provider, on or off, at registration and when the broker starts again, so check `sess.cfg` first. Return the servers; the core stops them when the session ends. |
@@ -526,6 +529,8 @@ An extension runs on the host, as you, and handles requests from pods that may b
 
 - `~/.agent-pod/broker/broker.log`: extensions that didn't load, and the tracebacks of handlers
   that failed.
+- `apod broker extensions`: the extensions that loaded, and from where; `apod broker extensions
+  NAME`: its guide (your module's docstring), what each role allows of it, its scope kinds.
 - `apod broker scopes`: the scope kinds, and which file each extension loaded from.
 - `apod broker log -f`, or `apod broker` (the TUI): requests as they come, with their actions,
   targets and decision.

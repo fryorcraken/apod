@@ -83,10 +83,15 @@ class Provider:
     routes     [(method, path, handler(h, sess, method))]: requests from the pod's broker socket
                (GET, POST or CONNECT); path matches the request's path or a "/"-separated prefix
     requires   names of providers this one needs: configured after them, and only if they're on
+    description  one line for apod broker extensions: what it gives pods
+    guide      where its guide is, "docs/guides.md#anchor" in the apod checkout (the shipped ones);
+               else apod broker extensions NAME shows the extension's module docstring
     """
     name = ""
     routes = []
     requires = []
+    description = ""
+    guide = ""
 
     def configure(self, sess, cfg, reg, out):
         """At each pod's registration: set the pod up (out) and say whether the provider is on."""
@@ -1283,8 +1288,85 @@ def print_event(e):
     print(line)
 
 
+def provider_source(p):
+    """The file a provider was loaded from, and whether it's one of the shipped extensions."""
+    f = getattr(sys.modules.get(type(p).__module__), "__file__", None)
+    return f, bool(f) and Path(f).resolve().parent == SHIPPED_EXTENSIONS.resolve()
+
+
+def md_section(text, anchor):
+    """The section of a Markdown text under the heading whose GitHub anchor is ANCHOR."""
+    lines, out, level = text.splitlines(), None, 0
+    for line in lines:
+        m = re.match(r"(#+) (.*)", line)
+        if m and out is not None and len(m.group(1)) <= level:
+            break
+        if m and out is None:
+            slug = re.sub(r"[^\w\- ]", "", m.group(2).strip().lower()).replace(" ", "-")
+            if slug == anchor:
+                out, level = [line], len(m.group(1))
+                continue
+        if out is not None:
+            out.append(line)
+    return "\n".join(out).strip() + "\n" if out else ""
+
+
+def wrap(text, indent="  "):
+    import textwrap
+    return textwrap.fill(text, 100, initial_indent=indent, subsequent_indent=indent + "    ",
+                         break_on_hyphens=False, break_long_words=False)
+
+
+def extension_list():
+    rows = []
+    for name, p in PROVIDERS.items():
+        f, shipped = provider_source(p)
+        rows.append(f"{name:<12} {getattr(p, 'description', '') or '(no description)'}"
+                    + ("" if shipped else f"  [{f}]"))
+    return "\n".join(rows) + "\n\napod broker extensions NAME: its guide, what each role may do with it, its scope kinds.\n"
+
+
+def extension_info(name):
+    p = PROVIDERS.get(name)
+    if p is None:
+        raise BrokerError(f"no extension {name!r} (loaded: {', '.join(PROVIDERS)})")
+    f, shipped = provider_source(p)
+    out = [f"{name}: {getattr(p, 'description', '') or '(no description)'}",
+           f"loaded from {f}" + ("" if shipped else " (yours)")]
+    if getattr(p, "requires", None):
+        out.append(f"needs: {', '.join(p.requires)} (on only when they are)")
+    guide, where = getattr(p, "guide", ""), ""
+    if guide:
+        path, _, anchor = guide.partition("#")
+        try:
+            where = md_section((CHECKOUT / path).read_text(), anchor)
+        except OSError:
+            where = ""
+        where = where and where + f"\n(from {path}; links are relative to it)\n"
+    if not where:
+        where = (getattr(sys.modules.get(type(p).__module__), "__doc__", None) or "").strip() + "\n"
+    out += ["", where.rstrip(), ""]
+    raw, prefix = load_roles(), name + ":"
+    out.append("What each role allows (roles.toml, and approvals saved for roles):")
+    for r in raw:
+        base = list(raw[r].get("extends", []))
+        inherited = {a for b in base if b in raw for a in role_rules(b, raw)[0]}
+        acts = [a[len(prefix):] for a in role_rules(r, raw)[0] if a.startswith(prefix) and a not in inherited]
+        label = f"{r} ({' + '.join(base)}, and)" if base else r
+        out.append(wrap(f"{label}: {', '.join(acts) if acts else '-'}"))
+    never = [a[len(prefix):] for a in HARD_DENY if a.startswith(prefix)]
+    if never:
+        out.append(wrap(f"Never allowed: {', '.join(never)}", ""))
+    kinds = [k for k in SCOPES.values() if k.provider == name and k.entry]
+    if kinds:
+        out.append("Scope kinds:")
+        out += [f"  {k.prefix + ':':<12} {k.help}" for k in kinds]
+    out.append(f"Off for a profile: [{name}] enabled = false in its broker.toml.")
+    return "\n".join(out) + "\n"
+
+
 USAGE = """usage: apod broker [ui]                      approve requests in a terminal UI
-       apod broker log [-f] [-n N] | pending | sessions | roles | scopes
+       apod broker log [-f] [-n N] | pending | sessions | roles | scopes | extensions [NAME]
        apod broker allow ID [--session|--role] | deny ID
        apod broker grants [rm ROLE ACTION] | keys | restart | stop"""
 
@@ -1387,6 +1469,15 @@ def main(argv, script):
                     print(f"{p + ':':<12} {k.help or '(no description)'}  [{k.provider or '?'}]")
             for name, f in extension_files().items():
                 print(f"extension {name}: {f}", file=sys.stderr)
+        elif cmd == "extensions":
+            if len(args) > 1:
+                raise IndexError
+            out = extension_info(args[0]) if args else extension_list()
+            if sys.stdout.isatty() and out.count("\n") > 40:
+                import pydoc
+                pydoc.pager(out)
+            else:
+                print(out, end="")
         elif cmd == "ui":
             import curses
             import tui

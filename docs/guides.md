@@ -46,9 +46,11 @@ Everything the broker does for a pod is an extension. These ship with apod:
 
 `[NAME] enabled = false` in a profile's `broker.toml` turns one off for that profile's pods.
 What each one counts as an action and a target is under
-[How requests are classified](reference.md#how-requests-are-classified); `apod broker roles`
-shows what each role allows, and `apod broker scopes` the scope kinds. To write your own, or
-replace one, see [EXTENSIONS.md](../EXTENSIONS.md).
+[How requests are classified](reference.md#how-requests-are-classified). On the host, `apod
+broker extensions` lists the extensions the broker loaded, yours included, and `apod broker
+extensions NAME` shows one's guide (its section here), what each role allows of it, what's never
+allowed, and its scope kinds. To write your own, or replace one, see
+[EXTENSIONS.md](../EXTENSIONS.md).
 
 A full profile `broker.toml` ([reference](reference.md#brokertoml) for every key):
 

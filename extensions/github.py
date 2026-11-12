@@ -160,6 +160,8 @@ def ssh_aliases():
 
 class GithubProvider(Provider):
     name = "github"
+    description = "git fetch and push to github.com remotes, with the gh account's token"
+    guide = "docs/guides.md#github"
     routes = [("GET", "/git/github/", handle), ("POST", "/git/github/", handle)]
     requires = ["gh"]  # the token is the gh account's: no account, no GitHub remotes
 

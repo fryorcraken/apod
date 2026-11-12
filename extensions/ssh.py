@@ -290,6 +290,8 @@ def handle_connect(h, sess, method):
 
 class SSHProvider(Provider):
     name = "ssh"
+    description = "ssh logins to the hosts in scope, with the broker's agent, through the host"
+    guide = "docs/guides.md#ssh"
     routes = [("CONNECT", "", handle_connect)]
 
     def keys(self, cfg):

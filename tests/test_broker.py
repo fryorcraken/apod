@@ -541,6 +541,23 @@ class BrokerTest(unittest.TestCase):
         self.assertIn("unit:db.service", r.stderr)
         self.assertEqual((self.tmp / "systemctl").read_text(), "--user status --no-pager -- web.service ")
 
+    def test_extensions_command(self):
+        """apod broker extensions: the list, and one extension's guide, roles and scope kinds."""
+        out = self.admin("extensions").stdout
+        self.assertIn("rad          git fetch and push to rad:// remotes", out)
+        self.assertRegex(out, r"systemctl +systemctl --user on the host, for the units in scope  \[.*systemctl.py\]")
+        out = self.admin("extensions", "rad").stdout
+        self.assertIn("## Radicle\n", out)                       # its section of docs/guides.md
+        self.assertNotIn("## Signing commits", out)              # and only that
+        self.assertIn("dev (reader, and): push branch, push patch, push force", out)
+        self.assertIn("rad:         rad:RID", out)
+        out = self.admin("extensions", "systemctl").stdout     # yours: the module's docstring
+        self.assertIn("systemctl: pods run the host's systemctl --user", out)
+        self.assertIn("unit:", out)
+        self.assertIn("Never allowed: auth *", self.admin("extensions", "gh").stdout)
+        r = self.admin("extensions", "nope")
+        self.assertIn("no extension 'nope'", r.stderr)
+
     def test_extension_api_checks(self):
         """What a broken or misdeclared extension registered doesn't stay behind."""
         self.assertNotIn("broken:", self.admin("scopes").stdout)

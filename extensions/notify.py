@@ -63,6 +63,8 @@ def handle(h, sess, method):
 
 class NotifyProvider(Provider):
     name = "notify"  # the [notify] table in broker.toml, the notify list in roles, notify:* actions
+    description = "desktop notifications on the host (apod-notify)"
+    guide = "docs/guides.md#notifications"
     routes = [("POST", "/notify", handle)]
 
     def configure(self, sess, cfg, reg, out):

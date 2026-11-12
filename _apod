@@ -56,10 +56,14 @@ case ${words[2]} in
       sub=('ui:terminal UI to approve requests (also plain apod broker)' 'log:recent requests (-f to follow, -n N)'
            'pending:requests waiting for approval' 'allow:approve a request (--session, --role)'
            'deny:deny a waiting request' 'sessions:sessions with their role and scope'
-           'roles:roles and what they allow' 'scopes:scope kinds the extensions provide' 'grants:approvals saved for roles (rm ROLE ACTION)'
+           'roles:roles and what they allow' 'scopes:scope kinds the extensions provide' 'extensions:the extensions; with NAME, its guide and what roles allow' 'grants:approvals saved for roles (rm ROLE ACTION)'
            'keys:load keys the sessions use into the broker agent (after a restart)'
            'restart:restart the broker (sessions are kept)' 'stop:stop the broker')
       _describe -t commands 'broker command' sub
+    elif [[ ${words[3]} == extensions ]] && (( CURRENT == 4 )); then
+      local -a exts
+      exts=(${(f)"$(apod broker extensions 2>/dev/null | awk 'NF && $1 != "apod" {print $1}')"})
+      _describe -t extensions 'extension' exts
     elif [[ ${words[3]} == allow ]]; then
       _arguments '3:request id:' '4:scope:(--session --role)'
     fi

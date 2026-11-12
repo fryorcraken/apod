@@ -146,7 +146,8 @@ Everything the broker does for a pod is an extension, each with its own guide:
 - **notify:** desktop notifications from the pod ([Notifications](docs/guides.md#notifications)).
 
 The [overview](docs/guides.md#built-in-extensions) has what each needs to be set up, and how to
-turn one off. Yours go in `~/.agent-pod/broker-extensions/` ([EXTENSIONS.md](EXTENSIONS.md)).
+turn one off. On the host, `apod broker extensions NAME` shows an extension's guide and what
+each role may do with it. Yours go in `~/.agent-pod/broker-extensions/` ([EXTENSIONS.md](EXTENSIONS.md)).
 
 ## Documentation
 

@@ -55,6 +55,7 @@ Options for `apod <profile>`:
 | `roles` | Each role's allowed and denied actions. |
 | `grants [rm ROLE ACTION]` | Approvals saved for roles; remove one. |
 | `scopes` | The scope kinds the loaded extensions provide, and which file each extension loaded from. |
+| `extensions [NAME]` | The loaded extensions, with a line each; with NAME, its guide, what each role allows of it (what a role adds to the roles it extends), what's never allowed, its scope kinds. |
 | `keys` | The keys profiles and running pods use; loads the missing ones into the broker's agent. |
 | `restart`, `stop` | Restart or stop the broker. Running pods' sessions come back on restart; reload keys with `keys`. |
 

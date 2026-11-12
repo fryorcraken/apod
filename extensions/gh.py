@@ -948,6 +948,8 @@ def gh_login(user):
 
 class GhProvider(Provider):
     name = "gh"
+    description = "gh in the pod: the broker runs the real gh as the profile's host gh account"
+    guide = "docs/guides.md#github"
     routes = [("POST", "/gh", handle_gh)]
 
     def configure(self, sess, cfg, reg, out):
