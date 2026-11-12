@@ -381,7 +381,7 @@ def _ssh_match(sess, v):
     return False
 
 
-scope_kind("ssh", provider="ssh", match=_ssh_match,
+scope_kind("ssh", provider="ssh", match=_ssh_match, old=("host",),
            grant=lambda v: ("ssh", v[1:] if v.startswith("@") else v),  # a connection: that host, as its configured user
            label=lambda v: f"ssh:{v[1:] if v.startswith('@') else v}",
            help="ssh:HOST (as the user the host's ssh config gives HOST) or ssh:USER@HOST (as USER), "

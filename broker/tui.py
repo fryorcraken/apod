@@ -68,7 +68,7 @@ def tui_rows(view, st):
                          f"{e['decision']:<17} {e['request']}", tui_style(e["decision"]), e))
     elif view == "sessions":
         for s in st["sessions"]:
-            login = (s["cfg"].get("gh") or {}).get("login")
+            login = ", ".join((s.get("accounts") or {}).values())
             rows.append((("s", s["id"]), (f"{s['name']}  ·  " if s.get("name") else "") + f"{s['profile']}  ·  {s['role']}" + (f" as {login}" if login else "")
                          + f"  ·  {s['project']}  ·  {s['id']}", "head", s))
             entries = [(k, fmt_scope(k, v), v) for k, vs in s["scope"].items() for v in vs] + \
@@ -131,7 +131,7 @@ def tui_detail_lines(e, st):
         return []
     name = next((x.get("name") for x in st["sessions"] if x["id"] == e["session"]), None) or e.get("name")
     lines = [f"#{e['id']}  {e['request']}",
-             (f"{name} · " if name else "") + f"{e['profile']} · role {e['role']}" + (f" as {e['login']}" if e.get("login") else "") + f" · {e['project']}",
+             (f"{name} · " if name else "") + f"{e['profile']} · role {e['role']}" + (f" as {', '.join(e['accounts'].values())}" if e.get("accounts") else "") + f" · {e['project']}",
              f"actions: {', '.join(e['actions']) or '-'}",
              f"targets: {', '.join(fmt_target(tuple(t)) for t in e['targets']) or '-'}"]
     if e.get("reason"):

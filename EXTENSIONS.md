@@ -396,6 +396,8 @@ object the same attributes:
 | `configure(sess, cfg, reg, out)` | Required. Runs when a pod registers, before its socket exists, and only when the rules let you on: not `enabled = false`, what you `require` on, and a target of your kinds in scope (unless `needs_target` is `False`). Returns whether you're set up for this pod: return `False` when your table lacks what you need; nothing should be on just because it could be. Requests to your routes from a pod you're off for are refused. See below. |
 | `listen(sess)`                   | Optional. Start sockets of your own in `sess.dir`, e.g. one that doesn't speak HTTP (`ssh` serves its agent this way). Called for every provider, on or off, at registration and when the broker starts again, so check `sess.cfg` first. Return the servers; the core stops them when the session ends.                                                                                                                                          |
 | `close(session_id)`              | Optional. The session ended.                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `account(sess)`                  | Optional. The account it acts as for this pod (`gh`: the GitHub login), shown to the agent, in the TUI and in `/whoami`'s `accounts`.                                                                                                                                                                                                                                                                                                             |
+| `renamed_from`                   | Optional. The extension's earlier names: their `broker.toml` tables, role lists and actions keep working, with a warning (`git-sign` has `["sign"]`).                                                                                                                                                                                                                                                                                             |
 | `keys(cfg)`                      | Optional. `[(key path, confirm)]` named by your `broker.toml` table, for `apod broker keys` to list and load before any pod starts.                                                                                                                                                                                                                                                                                                               |
 
 **`configure(sess, cfg, reg, out)`:**
@@ -453,7 +455,7 @@ A route's handler is `handler(h, sess, method)`:
 ### Scope kinds
 
 **`scope_kind(prefix, *, provider="", parse=None, match=None, grant=None, label=None, entry=True,
-help="", remote=None)`** declares a kind. `prefix` is lowercase letters, digits and `-`, declared
+help="", remote=None, old=(), bare=False)`** declares a kind. `prefix` is lowercase letters, digits and `-`, declared
 once (a second declaration fails that extension's load). Declare kinds before calling
 `provider()`.
 
@@ -471,6 +473,8 @@ arguments change that:
 | `entry=False`        | A target kind users don't write; its `match` looks at other kinds' entries. gh's `gh-projects-of` is in scope with `gh:OWNER` or any `gh-project:OWNER/…`.                                                   |
 | `help`               | The line `apod broker scopes` shows.                                                                                                                                                                         |
 | `remote(url)`        | The value this kind gives a git remote URL, or `None` if it's not one of its own. `gh:` turns `git@github.com:acme/widget.git` into `acme/widget`.                                                           |
+| `old`                | The kind's earlier names, after a rename: saved sessions and logs still read, and entries written with them still work, with a warning (`gh` was `repo:`).                                                   |
+| `bare=True`          | Entries written without a prefix are of this kind (an older form; `gh`'s `OWNER/REPO`). One kind at most should say so.                                                                                      |
 
 **`remote_target(url)`** asks every kind's `remote` and returns the first `(prefix, value)`, or
 `None`. `git-sign` uses it to scope a signature by the repository it's for.
@@ -488,7 +492,7 @@ arguments change that:
 | `add_scope(target)`                           | Add an entry (through the kind's `grant`). Only from host-side facts: your `broker.toml` table, or something the broker created for the pod.                                                       |
 | `grants`                                      | What the user approved for the session: `{"actions": [...], "unscoped": [...]}`.                                                                                                                   |
 | `cfg[name]`                                   | Yours, for per-session state; saved with the session, so it survives a broker restart. Keys starting with `_` are the core's.                                                                      |
-| `login`                                       | The GitHub account's login, when `gh` is on.                                                                                                                                                       |
+| `accounts()`                                  | `{provider: account}`: who each extension that's on acts as for this pod (its `account(sess)`), such as `{"gh": "my-bot"}`.                                                                        |
 | `title()`                                     | The agent session's name, when there is one.                                                                                                                                                       |
 | `dir`                                         | The pod's folder on the host, mounted read-write at `POD_DIR` (`/run/apod-broker`) in the pod. The pod can change anything in it: write files there for tools in the pod, never read back from it. |
 | `save()`                                      | Write the session to disk, after changing it.                                                                                                                                                      |

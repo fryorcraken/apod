@@ -2,7 +2,7 @@
 
 The broker runs on the host and does things for apod pods that would otherwise need credentials
 in the pod. Each pod gets a session (a profile, a role and a scope) and a socket directory
-mounted at /run/apod-broker. Providers (gh, github, rad, sign, ssh) turn what a pod asks for into
+mounted at /run/apod-broker. Providers (gh, github, rad, git-sign, ssh, notify: all extensions) turn what a pod asks for into
 actions ("gh:pr create", "github:push branch", "git-sign:commit", "ssh:login") and targets (a
 repository, a project, a host, a git identity). A request goes ahead when the role allows every
 action and every target is in the session's scope; anything else waits for the user's approval
@@ -52,7 +52,6 @@ if ASK_TIMEOUT.is_integer():
 # scope_kind() (gh:, gh-project:, rad:, ssh:, git-local: are the shipped extensions'). "unscoped"
 # targets are core's: they're in scope only once the user approves them for the session.
 SCOPES = {}
-OLD_TARGET_KINDS = {"repo": "gh", "owner": "gh", "project": "gh-project", "host": "ssh"}
 GLOBAL_CONFIG = ROOT / "broker.toml"   # defaults for every profile's broker.toml
 EXTENSIONS = ROOT / "broker-extensions"  # the user's own extensions, *.py; a name here replaces a shipped one
 SHIPPED_EXTENSIONS = CHECKOUT / "extensions"
@@ -83,6 +82,7 @@ class Provider:
     routes     [(method, path, handler(h, sess, method))]: requests from the pod's broker socket
                (GET, POST or CONNECT); path matches the request's path or a "/"-separated prefix
     requires   names of providers this one needs: configured after them, and only if they're on
+    renamed_from  its earlier names: their broker.toml tables, role lists and actions still work
     needs_target  False for a provider that's on without a target of its own kinds in scope (gh:
                it acts on what isn't known up front, and asks for what's out of scope)
     description  one line for apod broker extensions: what it gives pods
@@ -106,6 +106,10 @@ class Provider:
         provider_off): set the pod up (out) and say whether it's on, False when its broker.toml
         table lacks what it needs."""
         return False
+
+    def account(self, sess):
+        """The account it acts as for this pod, shown to the agent and in the TUI ("" for none)."""
+        return ""
 
     def listen(self, sess):
         """Sockets of the provider's own in the pod's folder, at registration and broker start."""
@@ -194,8 +198,9 @@ class ScopeKind:
     """A scope kind an extension declares (see scope_kind)."""
 
     def __init__(self, prefix, provider="", parse=None, match=None, grant=None, label=None, entry=True, help="",
-                 remote=None):
+                 remote=None, old=(), bare=False):
         self.prefix, self.provider, self.entry, self.help, self.remote = prefix, provider, entry, help, remote
+        self.old, self.bare = tuple(old), bare
         self._parse, self._match, self._grant, self._label = parse, match, grant, label
 
     def parse(self, v):
@@ -217,7 +222,7 @@ class ScopeKind:
 
 
 def scope_kind(prefix, *, parse=None, match=None, grant=None, label=None, entry=True, help="", provider="",
-               remote=None):
+               remote=None, old=(), bare=False):
     """Declare a scope kind, written PREFIX:VALUE in broker.toml's scope list and --scope. A
     request's target (PREFIX, value) is in scope when match(sess, value) says so; by default,
     when it matches one of the session's PREFIX entries (shell-style patterns, case-insensitive).
@@ -227,14 +232,21 @@ def scope_kind(prefix, *, parse=None, match=None, grant=None, label=None, entry=
     how the target is shown (default PREFIX:value); entry=False for a target kind that isn't
     written in the scope (its match looks at other kinds' entries); help is shown in apod
     broker scopes; remote(url) -> value or None says which repository a git remote URL names, for
-    kinds that are repositories (see remote_target). A prefix declared twice is an error, like a
+    kinds that are repositories (see remote_target). old: the kind's earlier names (in saved
+    sessions and logs, and entries written PREFIX:VALUE with them); bare=True: an entry written
+    without a prefix is of this kind (an older form). A prefix declared twice is an error, like a
     provider name."""
     if not re.fullmatch(r"[a-z][a-z0-9-]*", prefix) or prefix == "unscoped":
         raise BrokerError(f"bad scope prefix {prefix!r}: lowercase letters, digits and -")
     if prefix in SCOPES:
         raise BrokerError(f"scope kind {prefix}: is already declared (by {SCOPES[prefix].provider or 'another extension'})")
-    SCOPES[prefix] = k = ScopeKind(prefix, provider, parse, match, grant, label, entry, help, remote)
+    SCOPES[prefix] = k = ScopeKind(prefix, provider, parse, match, grant, label, entry, help, remote, old, bare)
     return k
+
+
+def current_kind(kind):
+    """A kind's name now, for one saved under an earlier name (a kind's old=)."""
+    return next((k.prefix for k in SCOPES.values() if kind in k.old), kind)
 
 
 def remote_target(url):
@@ -344,7 +356,7 @@ def load_roles():
         if f.exists():
             data = tomllib.loads(f.read_text())
             for name, role in {**data.get("personas", {}), **data.get("roles", {})}.items():
-                for old, new in RENAMED.items():  # an old extension name's list: sign = [...]
+                for old, new in renamed().items():  # an old extension name's list: sign = [...]
                     if old in role and isinstance(role[old], list):
                         role = dict(role)
                         role[new] = list(role.get(new, [])) + role.pop(old)
@@ -415,15 +427,15 @@ def parse_scope(entry):
 
 
 def old_scope(entry):
-    """An entry written in an older form (OWNER/REPO, OWNER, project:OWNER/N) -> as it's written
-    now (gh:..., gh-project:...), else None."""
+    """An entry written in an older form -> as it's written now, else None: with a kind's earlier
+    name (its old=), or without a prefix (the kind declared bare=True)."""
     e = entry.strip()
-    for old, new in (("project:", "gh-project:"),):
-        if e.lower().startswith(old):
-            return new + e[len(old):].strip()
-    if ":" not in e:
-        return "gh:" + e
-    return None
+    prefix, colon, v = e.partition(":")
+    if not colon:
+        k = next((k for k in SCOPES.values() if k.bare), None)
+        return f"{k.prefix}:{e}" if k else None
+    new = current_kind(prefix.lower())
+    return f"{new}:{v.strip()}" if new != prefix.lower() else None
 
 
 def fmt_target(t):
@@ -431,7 +443,7 @@ def fmt_target(t):
     kind, v = t[0], t[1]
     if kind == "unscoped":
         return f"unscoped: {v}"
-    kind = OLD_TARGET_KINDS.get(kind, kind)  # in log entries from before scope kinds were prefixes
+    kind = current_kind(kind)  # in log entries from before a kind was renamed
     return SCOPES[kind].label(v) if kind in SCOPES else f"{kind}:{v}"
 
 
@@ -448,7 +460,7 @@ class Session:
         self.role = self.role or d.get("persona") or "reader"  # sessions saved before the rename
         self.scope = {}
         for k, vs in (self.scope or {}).items():  # sessions saved before kinds were prefixes: repo, host, ...
-            lst = self.scope.setdefault(OLD_TARGET_KINDS.get(k, k), [])
+            lst = self.scope.setdefault(current_kind(k), [])
             lst += [v for v in vs if v not in lst]
         self.grants = {k: list((self.grants or {}).get(k, [])) for k in ("actions", "unscoped")}
         self.cfg = self.cfg or {}
@@ -467,10 +479,6 @@ class Session:
     def state(self):
         """The session's saved state, outside the pod's folder."""
         return SDIR / f"{self.id}.json"
-
-    @property
-    def login(self):
-        return (self.cfg.get("gh") or {}).get("login", "")
 
     def save(self):
         tmp = self.state.with_suffix(f".{threading.get_ident()}.tmp")
@@ -507,7 +515,7 @@ class Session:
 
     def summary(self):
         allow, _ = role_rules(self.role)
-        return {"role": self.role, "login": self.login, "scope": self.scope_list(),
+        return {"role": self.role, "accounts": self.accounts(), "scope": self.scope_list(),
                 "allowed": sorted(set(allow)), "identity": self.identity, "grants": self.grants,
                 "name": self.title(), "text": self.describe()}
 
@@ -520,7 +528,8 @@ class Session:
         for a in sorted(set(allow)):
             prov, _, act = a.partition(":")
             by[prov].append(act)
-        lines = [f"apod broker: role {self.role}" + (f", GitHub user {self.login}" if self.login else "") + ".",
+        acc = ", ".join(f"{a} ({n})" for n, a in self.accounts().items())
+        lines = [f"apod broker: role {self.role}" + (f", acting as {acc}" if acc else "") + ".",
                  f"Scope (the repositories, projects, hosts and identities it may touch): "
                  f"{', '.join(self.scope_list()) or 'none'}.",
                  "Allowed without asking, on what's in scope:"]
@@ -533,6 +542,17 @@ class Session:
                      f"ask them to approve it (or widen the scope) and retry once they say it is allowed. "
                      f"gh auth status shows the current permissions, including approvals made since launch.")
         return "\n".join(lines)
+
+    def accounts(self):
+        """{provider: the account it acts as for this pod}, from the providers on for it that
+        say (a provider's account(sess))."""
+        out = {}
+        for name in self.cfg.get("_providers") or []:
+            p = PROVIDERS.get(name)
+            a = p.account(self) if p is not None and hasattr(p, "account") else ""
+            if a:
+                out[name] = a
+        return out
 
     def title(self):
         """The agent session's name (Claude Code's /rename), from the newest transcript for the
@@ -582,7 +602,7 @@ class Request:
 
 def new_event(sess, req):
     ev = {"id": next(COUNTER), "ts": now(), "session": sess.id, "name": sess.title(), "profile": sess.profile,
-          "role": sess.role, "login": sess.login, "project": sess.project, "kind": req.kind,
+          "role": sess.role, "accounts": sess.accounts(), "project": sess.project, "kind": req.kind,
           "request": req.display, "actions": req.actions, "targets": [list(t) for t in req.targets],
           "missing": [], "out": [], "decision": "pending", "reason": "", "exit": None}
     with LOCK:
@@ -974,12 +994,15 @@ def merge_config(base, over):
     return out
 
 
-RENAMED = {"sign": "git-sign"}  # extensions' old names: their broker.toml tables, role lists, actions
+def renamed():
+    """{old name: name} of the extensions' earlier names (a provider's renamed_from): their
+    broker.toml tables, role lists and actions still work, with a warning."""
+    return {o: p.name for p in PROVIDERS.values() for o in getattr(p, "renamed_from", []) or []}
 
 
 def renamed_tables(cfg, where, warnings):
     """Old extension names' tables under their new names (a table with the new name wins)."""
-    for old, new in RENAMED.items():
+    for old, new in renamed().items():
         if isinstance(cfg.get(old), dict):
             t = cfg.pop(old)
             cfg.setdefault(new, t)
@@ -990,7 +1013,7 @@ def renamed_tables(cfg, where, warnings):
 
 def renamed_action(a):
     p, sep, rest = a.partition(":")
-    return f"{RENAMED[p]}:{rest}" if sep and p in RENAMED else a
+    return f"{renamed()[p]}:{rest}" if sep and p in renamed() else a
 
 
 def load_config(pdir, warnings=None):
@@ -1019,8 +1042,6 @@ def register(r):
     pdir = Path(r.get("profile_dir") or ROOT / r.get("profile", ""))
     warnings = []
     cfg = load_config(pdir, warnings)
-    if r.get("gh_user"):  # --gh-user: this launch's GitHub account, over [gh] user
-        cfg["gh"] = dict(cfg.get("gh") or {}, user=r["gh_user"])
     role = r.get("role") or cfg.get("role") or "reader"
     role_rules(role)  # fails on an unknown role
     identity = git_identity(pdir)
@@ -1114,7 +1135,8 @@ def unregister(sid):
 
 def state():
     with LOCK:
-        return {"sessions": [dict(s.data(), scope_list=s.scope_list(), name=s.title()) for s in SESSIONS.values()],
+        return {"sessions": [dict(s.data(), scope_list=s.scope_list(), name=s.title(), accounts=s.accounts())
+                             for s in SESSIONS.values()],
                 "pending": [p.ev for p in PENDING.values()],
                 "events": list(EVENTS)[-200:],
                 "grants": load_grants()["roles"],
@@ -1252,7 +1274,7 @@ def prune_loop(every=300, grace=600):
 
 
 def serve():
-    for d in (BDIR, SDIR, BDIR / "home" / "gh", BDIR / "tmp"):
+    for d in (BDIR, SDIR, BDIR / "home", BDIR / "tmp"):
         d.mkdir(parents=True, exist_ok=True)
     os.chmod(BDIR, 0o700)
     shutil.rmtree(BDIR / "tmp", ignore_errors=True)
@@ -1508,8 +1530,9 @@ def main(argv, script):
             ensure(script)
             r = client("/keys", {})
             if not r["keys"]:
+                tables = ", ".join(f"[{n}]" for n, p in PROVIDERS.items() if hasattr(p, "keys"))
                 print(f"apod broker: no keys to load: neither {GLOBAL_CONFIG} nor a profile's broker.toml names one "
-                      "([ssh] key or keys, [sign] key, [rad] key), and no running pod uses one", file=sys.stderr)
+                      f"(in {tables}), and no running pod uses one", file=sys.stderr)
                 return 0
             home = os.path.expanduser("~")
             short = lambda p: "~" + p[len(home):] if p.startswith(home + "/") else p

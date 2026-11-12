@@ -142,7 +142,7 @@ def local_auth(argv):
             w = whoami()
         except OSError as e:
             sys.exit(f"gh (apod): can't reach the apod broker at {SOCK}: {e}")
-        print(f"github.com\n  ✓ Using the apod broker as {w['login'] or 'the host gh account'} "
+        print(f"github.com\n  ✓ Using the apod broker as {(w.get('accounts') or {}).get('gh') or 'the host gh account'} "
               f"(no token is available in this pod)\n")
         print(w.get("text") or f"role {w['role']}; scope: {', '.join(w['scope'])}; allowed: {', '.join(w['allowed'])}")
         return 0
@@ -164,7 +164,7 @@ def repo_clone(args):
         sys.exit("usage: gh repo clone OWNER/REPO [DIR] [-- git flags]")
     repo = remote_repo(pos[0]) or pos[0]
     if "/" not in repo:
-        repo = f"{whoami()['login']}/{repo}"
+        repo = f"{(whoami().get('accounts') or {}).get('gh', '')}/{repo}"
     return subprocess.call(["git", "clone", *gitargs, f"https://github.com/{repo}.git", *pos[1:2]])
 
 

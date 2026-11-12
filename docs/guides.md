@@ -309,8 +309,8 @@ belongs to the GitHub account that has the key.
 3. **Nothing else, usually.** The role and scope you already have decide the rest:
    - **Role:** `dev`, `maintainer` and `ops` sign every commit and tag. With `reader` or `pm`,
      `git commit -S` waits for your approval, and the launch doesn't ask for the key's
-     passphrase: after approving, `apod broker keys` loads it. Your own roles sign with `git-sign = ["commit",
-     "tag"]`.
+     passphrase: after approving, `apod broker keys` loads it. Your own roles sign with
+     `git-sign = ["commit", "tag"]`.
    - **Scope:** a signature is for the repository the branch pushes to (`gh:OWNER/REPO` or
      `rad:RID`), so the scope you give for pushes covers signing too. The project folder and the
      repositories under it are in scope as `git-local:PATH`, for repositories with no remote,
@@ -318,11 +318,24 @@ belongs to the GitHub account that has the key.
    - **Waits for you:** another repository, or a commit whose author or committer isn't the
      profile's identity (`git-sign:as other`).
 
+**Example.** A `dev` profile with a `[git-sign] key`, launched in a clone of
+`github.com/acme/widget`:
+
+```sh
+cd ~/src/widget && apod work   # scope: gh:acme/widget (its remote), git-local:~/src/widget and below
+```
+
+| In the pod, `git commit` in                               | The broker checks                             | Result                                         |
+| --------------------------------------------------------- | --------------------------------------------- | ---------------------------------------------- |
+| `~/src/widget`                                            | the target `gh:acme/widget` (where it pushes) | signed                                         |
+| `~/src/widget/scratch`, a `git init` with no remote       | the target `git-local:~/src/widget/scratch`   | signed                                         |
+| `~/src/widget/other`, a clone of `acme/other`             | the target `gh:acme/other`, out of scope      | waits (or launch with `--scope gh:acme/other`) |
+| `~/src/widget`, with `--author "Someone <s@example.com>"` | the action `git-sign:as other`, not in `dev`  | waits                                          |
+
 ### Check it
 
 The next launch with a role that signs loads the key into the broker's agent and asks for its
-passphrase. Then, in a
-pod:
+passphrase. Then, in a pod:
 
 ```sh
 git commit --allow-empty -m "signing test" && git log --show-signature -1   # Good "git" signature for the bot's email

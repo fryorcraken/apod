@@ -60,6 +60,7 @@ def gh_env(token=None, tty=0, repo=None):
     """Environment for the real gh: an empty config dir and home of the broker's own (no host
     aliases, extensions or git config), no prompts, editors, pagers or browsers."""
     home = BDIR / "home"
+    (home / "gh").mkdir(parents=True, exist_ok=True)
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(home),
         "LANG": os.environ.get("LANG", "C.UTF-8"), "GH_CONFIG_DIR": str(home / "gh"),
@@ -104,6 +105,11 @@ def token_for(user):
 
 def gh_user(sess):
     return (sess.cfg.get("gh") or {}).get("user", "")
+
+
+def gh_login_of(sess):
+    """The GitHub login a pod acts as."""
+    return (sess.cfg.get("gh") or {}).get("login", "")
 
 
 def gh_query(sess, args, timeout=30):
@@ -324,7 +330,7 @@ def classify_gh(sess, argv, ctx, files, stdin, work):
     cmd = " ".join(path)
     group, sub = path[0], (path[1] if len(path) > 1 else "")
     req.actions = [cmd] + [f"{cmd} --{f}" for f in SENSITIVE.get(cmd, []) if has(flags, f)]
-    login = (sess.login or "").lower()
+    login = gh_login_of(sess).lower()
 
     # Files: flags of type "file", and release assets, come from what the shim sent.
     n = itertools.count()
@@ -951,6 +957,9 @@ class GhProvider(Provider):
     description = "gh in the pod: the broker runs the real gh as the profile's host gh account"
     guide = "docs/guides.md#github"
     routes = [("POST", "/gh", handle_gh)]
+    def account(self, sess):
+        return gh_login_of(sess)
+
     needs_target = False  # gh repo create, gh search...: on in a folder without a GitHub remote too
 
     def targets(self, cfg, reg):
@@ -960,7 +969,7 @@ class GhProvider(Provider):
     def configure(self, sess, cfg, reg, out):
         # The GitHub account is always named: never your active host login by default, which
         # would have a pod act as you.
-        user = cfg.get("user", "")
+        user = reg.get("gh_user") or cfg.get("user", "")  # --gh-user: this launch's account, over [gh] user
         if not user:
             where = Path(reg.get("profile_dir") or "the profile") / "broker.toml"
             out["context"].append("gh and git pushes to GitHub are unavailable: this profile names no GitHub account.")
@@ -999,8 +1008,9 @@ def _gh_owner_entries(sess):
 # gh:OWNER/REPO is a repository (patterns too: gh:OWNER/*); gh:OWNER is the owner itself
 # (owner-level reads, its project list, creating repositories there).
 scope_kind("gh", provider="gh", parse=lambda v: v.strip().lower().removesuffix(".git"), remote=github_repo,
+           old=("repo", "owner"), bare=True,  # earlier forms: repo:, owner:, and OWNER/REPO alone
            help="gh:OWNER/REPO (gh:OWNER/* for every repository of OWNER), gh:OWNER (the owner itself)")
-scope_kind("gh-project", provider="gh", parse=lambda v: v.strip().lower(),
+scope_kind("gh-project", provider="gh", parse=lambda v: v.strip().lower(), old=("project",),
            help="gh-project:OWNER/NUMBER (gh-project:OWNER/* for all of OWNER's projects)")
 # Target kinds that are checked against those entries, not written in the scope themselves.
 scope_kind("gh-projects-of", provider="gh", entry=False,
@@ -1008,5 +1018,5 @@ scope_kind("gh-projects-of", provider="gh", entry=False,
                p.lower().split("/")[0] == v for p in sess.entries("gh-project")),
            grant=lambda v: ("gh-project", f"{v}/*"), label=lambda v: f"gh-project:{v}/*")
 scope_kind("gh-fork-into", provider="gh", entry=False,
-           match=lambda sess, v: v == sess.login.lower() or v in _gh_owner_entries(sess),
+           match=lambda sess, v: v == gh_login_of(sess).lower() or v in _gh_owner_entries(sess),
            grant=lambda v: ("gh", v), label=lambda v: f"gh:{v} (fork into)")

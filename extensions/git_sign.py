@@ -97,6 +97,7 @@ def handle(h, sess, method):
 
 class SignProvider(Provider):
     name = "git-sign"
+    renamed_from = ["sign"]
     description = "commit and tag signatures with a key the broker holds"
     guide = "docs/guides.md#signing-commits"
     routes = [("POST", "/sign", handle)]

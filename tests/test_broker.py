@@ -465,7 +465,7 @@ class BrokerTest(unittest.TestCase):
         self.assertIn("role pm", r.stdout)
         self.assertIn("  gh: ", r.stdout)
         # Claude Code's /rename lands in the transcript, in the profile's home; the TUI shows it.
-        d = sess["_pdir"] / "home/.claude/projects" / str(self.tmp / "proj").replace("/", "-")
+        d = sess["_pdir"] / "home/.claude/projects" / re.sub(r"[^A-Za-z0-9]", "-", str(self.tmp / "proj"))
         d.mkdir(parents=True)
         (d / "s1.jsonl").write_text('{"type":"user"}\n{"type":"custom-title","customTitle":"[eco] boards","sessionId":"s1"}\n')
         names = {s["id"]: s.get("name") for s in self.state()["sessions"]}
@@ -897,7 +897,7 @@ class BrokerTest(unittest.TestCase):
         r = subprocess.run([sys.executable, BROKER, "register", "--profile", "test", "--profile-dir", str(pdir),
                             "--project", "/p", "--gh-user", "octo"], env=self.env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(json.loads(r.stdout)["login"], "octo")
+        self.assertEqual(json.loads(r.stdout)["accounts"]["gh"], "octo")
         # No GitHub remote: no warning (a profile that doesn't use GitHub isn't nagged).
         w = []
         self.register("ops", [], user="", warnings=w)
