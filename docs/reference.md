@@ -92,7 +92,7 @@ every profile; key by key within each table; `role` and `scope` are ignored ther
 | `[git-sign] confirm` | `true`: confirm each signature on the host (needs openssh-askpass). |
 | `[git-sign] auto` | `false`: don't turn on `commit.gpgsign`/`tag.gpgsign`, even for roles that sign. |
 | `[ssh] key`, `[ssh] keys` | The private key (or keys) pods log in with. |
-| `[ssh] hosts` | Hosts in scope, as named in the host's ssh config: `NAME` (any user) or `USER@NAME`. |
+| `[ssh] hosts` | Hosts in scope, as named in the host's ssh config: `NAME` (as the user the host's ssh config gives NAME: its `User`, else your user name) or `USER@NAME` (as USER). |
 | `[ssh] confirm` | `true`: confirm each login on the host. |
 | `[ssh] proxy` | `false`: the pod connects to hosts itself instead of through the broker (default `true`). |
 | `[NAME] enabled` | `false`: the extension NAME is off for the profile's pods, as if it weren't installed (`[rad] enabled = false`). |
@@ -134,7 +134,7 @@ top of [`roles.toml`](../roles.toml) and [below](#how-requests-are-classified).
 | `gh:OWNER` | gh | The owner itself: owner-level reads, its project list, creating repositories there. |
 | `gh-project:OWNER/NUMBER`, `gh-project:OWNER/*` | gh | A project board. |
 | `rad:RID` | rad | A Radicle repository. |
-| `ssh:HOST`, `ssh:USER@HOST` | ssh | A host as named in the host's ssh config, for any user or that user. |
+| `ssh:HOST`, `ssh:USER@HOST` | ssh | A host as named in the host's ssh config: as the user that config gives it (its `User`, else your user name), or as USER. |
 | `git-local:PATH` | sign | Signing in a repository with no GitHub or Radicle remote, by its folder. |
 
 Values take shell-style patterns, case-insensitive. Automatically in scope, each when its

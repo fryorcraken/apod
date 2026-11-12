@@ -447,7 +447,7 @@ arguments change that:
 |---|---|
 | `provider` | The provider the kind belongs to, shown by `apod broker scopes`. |
 | `parse(value)` | Normalizes an entry as written (`gh:` lowercases and drops `.git`). |
-| `match(sess, value)` | Whether a target is in scope, e.g. from `sess.entries(prefix)` or other kinds' entries. `ssh:` uses it so that `ssh:nas` allows any user and `ssh:root@nas` only root. |
+| `match(sess, value)` | Whether a target is in scope, e.g. from `sess.entries(prefix)` or other kinds' entries. `ssh:` uses it so that `ssh:nas` allows only the user the host's ssh config gives nas, and `ssh:root@nas` only root. |
 | `grant(value)` | The entry `(prefix, value)` that approving a target "for the session" adds. Default: the target itself. |
 | `label(value)` | How the TUI and log show a target. Default `prefix:value`. |
 | `entry=False` | A target kind users don't write; its `match` looks at other kinds' entries. gh's `gh-projects-of` is in scope with `gh:OWNER` or any `gh-project:OWNER/…`. |

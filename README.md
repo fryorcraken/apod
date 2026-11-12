@@ -128,7 +128,10 @@ touches). The role lists actions, the scope lists targets:
 | `gh api /rate_limit` | `gh:api GET /rate_limit` | none: it touches no repository |
 
 A target is written like a scope entry, `KIND:VALUE`: the kind says what sort of thing it is (a
-GitHub repository, a host), the value which one. The broker lets a request through when the role
+GitHub repository, a project board, a host), the value which one. Each extension declares its
+own kinds (`gh` declares `gh:` and `gh-project:`); `apod broker scopes` lists them. Roles
+exist because there are too many actions to list one by one per profile: each built-in role
+bundles the actions for a kind of job. The broker lets a request through when the role
 allows every action and every target is in the scope (a request with no target needs only the
 role); anything else waits for you. You can approve it once, for the session, or for the role
 (every profile with that role, now and later), so prefer the session for one-offs.

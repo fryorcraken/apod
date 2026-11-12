@@ -337,10 +337,16 @@ route to them.
    ```toml
    [ssh]
    key = "~/.ssh/id_apod_broker"   # or keys = [...]
-   hosts = ["devbox", "deploy@nas"] # NAME: any user; USER@NAME: that user only
+   hosts = ["devbox", "deploy@nas"] # NAME: as your ssh config's User for it; USER@NAME: as USER
    # confirm = true                 # confirm each login on the host (needs openssh-askpass)
    # proxy = false                  # the pod connects itself (it needs a route to the hosts)
    ```
+
+   **Which user.** `devbox` allows logging in only as the user your ssh config gives `devbox`:
+   its `User`, or your user name on the host if it has none. With `Host devbox` / `User alice`,
+   `ssh devbox` logs in as alice and goes through; `ssh root@devbox` waits for you. To allow
+   another user, name it: `root@devbox` allows root (and only root). In the pod, `ssh devbox`
+   logs in as the same user your ssh would.
 
    `--scope ssh:HOST` adds a host for one launch. `reader` and `ops` (and roles that extend
    `reader`) may log in to the hosts in scope; another host waits for you.
@@ -381,7 +387,13 @@ Or approve the first one "for the role" in the TUI (`r`).
 
 ## Roles and scope
 
-**Choosing a role.** `apod broker roles` lists what each allows.
+A role is a list of **actions**: what a pod may do without asking (`gh:pr create`,
+`github:push branch`, `ssh:login`). There are far too many to pick one by one for each
+profile, `gh` alone has dozens, so apod ships roles that bundle them by job, and a profile
+names one. Pick the closest, then add or remove actions in your own `roles.toml` (below).
+
+**Choosing a role.** `apod broker roles` lists what each allows, and `apod broker extensions
+NAME` what each role allows of one extension.
 
 | Role | For | May |
 |---|---|---|
@@ -408,8 +420,11 @@ gh = ["issue edit", "issue close"]
 deny = ["gh:issue delete"]
 ```
 
-**Scope** is where the actions may happen: `KIND:VALUE` entries, with shell-style patterns
-(`*`). It's built from the project's GitHub and Radicle remotes (and its folder, for signing),
+**Scope** is where the actions may happen: a list of **targets**, the things requests touch,
+each written `KIND:VALUE`. The kind is what sort of thing it is (a GitHub repository, a Radicle
+repository, a host), the value which one. Each kind belongs to an extension, and one extension
+can declare several: `gh` declares `gh:` (repositories and owners) and `gh-project:` (project
+boards). Values take shell-style patterns (`*`). The scope is built from the project's GitHub and Radicle remotes (and its folder, for signing),
 the profile's `scope` and `[ssh] hosts`, and `--scope`. Forks and repositories the session
 creates join it. The kinds:
 
@@ -419,10 +434,11 @@ creates join it. The kinds:
 | `gh:OWNER` | The owner itself: owner-level reads, its project list, creating repositories there. |
 | `gh-project:OWNER/NUMBER`, `gh-project:OWNER/*` | A project board. |
 | `rad:RID` | A Radicle repository. |
-| `ssh:HOST`, `ssh:USER@HOST` | A host as named in your ssh config, for any user or that user. |
+| `ssh:HOST`, `ssh:USER@HOST` | A host as named in your ssh config: as the user that config gives it, or as USER. |
 | `git-local:PATH` | Signing in a repository with no GitHub or Radicle remote, by its folder. |
 
-Extensions add kinds; `apod broker scopes` lists them all. An entry of a kind no extension
+Extensions add kinds (yours too); `apod broker scopes` lists them all, with the extension each
+belongs to. An entry of a kind no extension
 provides is ignored, with a warning at launch. The older forms (`OWNER/REPO`, `OWNER`,
 `project:OWNER/N`) still work, with a warning naming the new form.
 

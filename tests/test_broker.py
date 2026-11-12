@@ -910,7 +910,10 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual(a.identities(), [user])  # the broker's other keys (signing) aren't offered
         sid = os.urandom(32)
         self.assertEqual(self.bind(a, "hostkey", sid), 6)
-        self.assertIsNotNone(a.sign(user, self.login_data(sid, "me", user)))
+        # ssh:devbox covers the user the host's ssh config gives devbox (no User: yours), no other.
+        self.assertIsNotNone(a.sign(user, self.login_data(sid, getpass.getuser(), user)))
+        self.assertIsNone(a.sign(user, self.login_data(sid, "root", user)))
+        self.assertIn(f"ssh login as root to devbox", self.admin("log", "-n", "1").stdout)
         # A forged binding (signature over another session id) is refused by the real agent.
         b = Agent(sock)
         hk = blob_of(self.tmp / "hostkey.pub")

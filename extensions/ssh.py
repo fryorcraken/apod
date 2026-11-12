@@ -7,7 +7,9 @@ in the host's known_hosts. Optionally (the default), the pod's ssh connects thro
 destination before connecting.
 
 Actions: ssh:connect, ssh:login. Targets: ("ssh", "USER@NAME"), NAME as in the scope
-("devbox", "root@nas", "key:SHA256:..."); "@NAME" for a connection (no user yet)."""
+("devbox", "root@nas", "key:SHA256:..."); "@NAME" for a connection (no user yet). A scope entry
+NAME covers logins as the user the host's ssh config gives NAME (its User, else yours) only;
+USER@NAME, as USER only."""
 import base64
 import fnmatch
 import hashlib
@@ -353,18 +355,31 @@ class SSHProvider(Provider):
 provider(SSHProvider())
 
 
+def config_user(name):
+    """The user the host's ssh config logs in to NAME as (its User, else your user name)."""
+    return ssh_conf(name).get("user", "").lower()
+
+
 def _ssh_match(sess, v):
-    # v is USER@NAME (a login) or @NAME (a connection, no user yet). An entry NAME allows any
-    # user, USER@NAME that user only; a connection is allowed to any host with an entry.
+    # v is USER@NAME (a login) or @NAME (a connection, no user yet). An entry USER@NAME allows
+    # that user only; an entry NAME only the user the host's ssh config gives NAME, so that
+    # `ssh root@NAME` isn't covered by it. A connection is allowed to any host with an entry.
     v = v.lower()
     user, _, name = v.rpartition("@")
     pats = [p.lower() for p in sess.entries("ssh")]
     if not user:
         return any(fnmatch.fnmatchcase(name, p.rpartition("@")[2]) for p in pats)
-    return any(fnmatch.fnmatchcase(v if "@" in p else name, p) for p in pats)
+    for p in pats:
+        if "@" in p:
+            if fnmatch.fnmatchcase(v, p):
+                return True
+        elif fnmatch.fnmatchcase(name, p) and user == config_user(name):
+            return True
+    return False
 
 
 scope_kind("ssh", provider="ssh", match=_ssh_match,
-           grant=lambda v: ("ssh", v[1:] if v.startswith("@") else v),  # a connection: that host, any user
+           grant=lambda v: ("ssh", v[1:] if v.startswith("@") else v),  # a connection: that host, as its configured user
            label=lambda v: f"ssh:{v[1:] if v.startswith('@') else v}",
-           help="ssh:HOST (any user) or ssh:USER@HOST, HOST as in the host's ssh config")
+           help="ssh:HOST (as the user the host's ssh config gives HOST) or ssh:USER@HOST (as USER), "
+                "HOST as in the host's ssh config")
