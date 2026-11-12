@@ -103,7 +103,6 @@ the pod.
 ```sh
 gh auth login                         # as the bot; then gh auth switch back to your own account
 mkdir -p ~/.agent-pod/bot
-printf 'GIT_AUTHOR_NAME=my-bot\nGIT_AUTHOR_EMAIL=12345+my-bot@users.noreply.github.com\n' > ~/.agent-pod/bot/env
 cat > ~/.agent-pod/bot/broker.toml <<'TOML'
 role = "dev"                          # PRs, issues, branch pushes; anything else waits for you
 [gh]
@@ -116,7 +115,8 @@ cd ~/src/some-repo && apod bot        # gh and git push work in the pod, within 
 apod broker                           # in another terminal: approve what's out of role or scope
 ```
 
-The noreply email is under the bot's Settings → Emails. The folder's GitHub remote is in scope;
+Commits use your host's git identity; to commit as the bot, set it in the profile's `env` (see
+the [GitHub guide](docs/guides.md#github)). The folder's GitHub remote is in scope;
 `apod bot --role pm` takes another role for one launch. The [GitHub guide](docs/guides.md#github)
 has the details, and the other guides cover Radicle, signing, ssh and the rest.
 

@@ -116,14 +116,7 @@ account can do.
    ```
 
    The broker uses the account the profile names, whichever is active.
-3. **The profile:** the bot's git identity in `env` (without it, pods commit as you, with your
-   host's git identity), and the account in `broker.toml`:
-
-   ```sh
-   # ~/.agent-pod/bot/env
-   GIT_AUTHOR_NAME=my-bot
-   GIT_AUTHOR_EMAIL=12345+my-bot@users.noreply.github.com
-   ```
+3. **The profile:** the account in `broker.toml`:
 
    ```toml
    # ~/.agent-pod/bot/broker.toml
@@ -134,9 +127,19 @@ account can do.
 
    `--gh-user ACCOUNT` names another account for one launch. A profile that names none gets no
    `gh` and no GitHub remotes: the broker never falls back to your active login.
-4. **The scope.** The project's GitHub remotes are in scope automatically. Add more with
+4. **Optional: commit as the bot.** Pods commit with your host's git identity (`git config
+   --global user.name`, `user.email`). To have commits by the bot, override it in the profile's
+   `env`, which passes any variables you put there to the pod:
+
+   ```sh
+   # ~/.agent-pod/bot/env
+   GIT_AUTHOR_NAME=my-bot
+   GIT_AUTHOR_EMAIL=12345+my-bot@users.noreply.github.com
+   ```
+
+5. **The scope.** The project's GitHub remotes are in scope automatically. Add more with
    `scope = ["gh:ORG/*"]` or `--scope gh:ORG/REPO` ([Roles and scope](#roles-and-scope)).
-5. **Check it** in a pod (`apod bot -a bash ~/src/org/repo`): `gh auth status` shows the account,
+6. **Check it** in a pod (`apod bot -a bash ~/src/org/repo`): `gh auth status` shows the account,
    role, scope and what's allowed; then `gh pr list` and a push of a branch.
 
 **In the pod.** GitHub ssh remotes, `github-*` host aliases from the host's `~/.ssh/config`
@@ -232,12 +235,9 @@ broker signs with it on the host, and only for the repositories in the pod's sco
 `git-sign` extension (it was called `sign`; a `[sign]` table and `sign = [...]` role lists still
 work, with a warning).
 
-Two files of the profile take part, both in `~/.agent-pod/<profile>/`:
-
-- `env` says **who the commits are by**: the git name and email (`GIT_AUTHOR_NAME`,
-  `GIT_AUTHOR_EMAIL`). Without them, it's your host's git identity (`git config --global
-  user.name`, `user.email`).
-- `broker.toml` says **which key signs them**, in its `[git-sign]` table.
+The profile's `broker.toml` says **which key signs**, in its `[git-sign]` table. **Whose commits
+they are** is the pod's git identity: your host's (`git config --global user.name`,
+`user.email`), unless the profile's `env` overrides it (`GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`).
 
 A signature vouches for that email: the broker only signs commits whose author and committer
 are the profile's (anything else waits for you), and GitHub only shows "Verified" when the email
@@ -245,8 +245,8 @@ belongs to the GitHub account that has the key.
 
 ### Prerequisites
 
-1. **A GitHub account for the profile, with the email in its `env`** among its verified emails
-   (the bot's Settings → Emails; the `…@users.noreply.github.com` address counts). It's the
+1. **A GitHub account whose verified emails include the commits' email** (its Settings →
+   Emails; the `…@users.noreply.github.com` address counts). It's the
    account the profile already uses with the broker for GitHub; see [GitHub](#github).
 2. **A dedicated SSH key for pods' signatures.** Not your own key: a separate one means a
    "Verified" badge tells your commits apart from a pod's, and you can revoke it alone.
@@ -264,8 +264,8 @@ belongs to the GitHub account that has the key.
 
 ### Setup
 
-1. **The identity**, in the profile's `env`, if the commits shouldn't be yours (most likely
-   there already for a bot):
+1. **Optional: the identity.** Commits are by your host's git identity unless the profile's
+   `env` says otherwise, as for a bot:
 
    ```sh
    # ~/.agent-pod/work/env
