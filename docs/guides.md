@@ -35,14 +35,14 @@ pod that uses it and keeps running; its state is in `~/.agent-pod/broker/`.
 
 Everything the broker does for a pod is an extension. These ship with apod:
 
-| Extension | In the pod | Set up with |
-|---|---|---|
-| `gh` | `gh` is a shim; the broker runs the real `gh` as the host account the profile names. | `[gh] user`: [GitHub](#github) |
-| `github` | git's github.com remotes go through the broker, with that account's token. | `[gh] user` |
-| `rad` | `rad://` remotes go through the broker, which pushes as the host's Radicle identity. | a `rad://` remote, or a `rad:` scope entry: [Radicle](#radicle) |
-| `git-sign` | git signs commits and tags with a key the broker holds. | `[git-sign] key`: [Signing commits](#signing-commits) |
-| `ssh` | `ssh HOST` logs in with the broker's agent, to the hosts in scope, through the host. | `[ssh]`: [SSH](#ssh) |
-| `notify` | `apod-notify TEXT` sends you a desktop notification. | `[notify] enabled`: [Notifications](#notifications) |
+| Extension  | In the pod                                                                           | Set up with                                                     |
+| ---------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------- |
+| `gh`       | `gh` is a shim; the broker runs the real `gh` as the host account the profile names. | `[gh] user`: [GitHub](#github)                                  |
+| `github`   | git's github.com remotes go through the broker, with that account's token.           | `[gh] user`                                                     |
+| `rad`      | `rad://` remotes go through the broker, which pushes as the host's Radicle identity. | a `rad://` remote, or a `rad:` scope entry: [Radicle](#radicle) |
+| `git-sign` | git signs commits and tags with a key the broker holds.                              | `[git-sign] key`: [Signing commits](#signing-commits)           |
+| `ssh`      | `ssh HOST` logs in with the broker's agent, to the hosts in scope, through the host. | `[ssh]`: [SSH](#ssh)                                            |
+| `notify`   | `apod-notify TEXT` sends you a desktop notification.                                 | `[notify] enabled`: [Notifications](#notifications)             |
 
 `[NAME] enabled = false` in a profile's `broker.toml` turns one off for that profile's pods.
 What each one counts as an action and a target is under
@@ -182,11 +182,11 @@ loaded key stays for `APOD_SSH_TTL` (default `4h`).
 
 **What the role allows:**
 
-| Role | Radicle |
-|---|---|
-| `reader`, `pm`, `ops` | `fetch` |
-| `dev` | also `push branch`, `push force`, `push patch` |
-| `maintainer` | also `push tag`, `push delete` |
+| Role                  | Radicle                                        |
+| --------------------- | ---------------------------------------------- |
+| `reader`, `pm`, `ops` | `fetch`                                        |
+| `dev`                 | also `push branch`, `push force`, `push patch` |
+| `maintainer`          | also `push tag`, `push delete`                 |
 
 A push to the default branch (`push default-branch`) waits for you whatever the role.
 
@@ -395,13 +395,13 @@ names one. Pick the closest, then add or remove actions in your own `roles.toml`
 **Choosing a role.** `apod broker roles` lists what each allows, and `apod broker extensions
 NAME` what each role allows of one extension.
 
-| Role | For | May |
-|---|---|---|
-| `reader` | Reviewing, answering questions | View PRs, issues, CI and repositories; read the APIs for what's in scope; fetch; ssh to the hosts in scope. |
-| `dev` | Coding | reader, plus push branches (force pushes too, not the default branch), open Radicle patches, create and edit PRs, comment, create issues; sign commits. |
-| `maintainer` | Landing work | dev, plus merge and review PRs, edit and close issues, re-run CI, fork and create repositories, push tags, delete branches. |
-| `pm` | Project boards | reader, plus project boards (items, fields, templates) and creating, editing and commenting on issues. |
-| `ops` | Hosts | ssh to the hosts in scope, sign commits; fetch only. |
+| Role         | For                            | May                                                                                                                                                     |
+| ------------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `reader`     | Reviewing, answering questions | View PRs, issues, CI and repositories; read the APIs for what's in scope; fetch; ssh to the hosts in scope.                                             |
+| `dev`        | Coding                         | reader, plus push branches (force pushes too, not the default branch), open Radicle patches, create and edit PRs, comment, create issues; sign commits. |
+| `maintainer` | Landing work                   | dev, plus merge and review PRs, edit and close issues, re-run CI, fork and create repositories, push tags, delete branches.                             |
+| `pm`         | Project boards                 | reader, plus project boards (items, fields, templates) and creating, editing and commenting on issues.                                                  |
+| `ops`        | Hosts                          | ssh to the hosts in scope, sign commits; fetch only.                                                                                                    |
 
 A pod's role is `--role`, else its profile's `role =`, else `reader`. One profile can take
 different roles per launch: `apod bot --role pm ~/src/org/planning`.
@@ -428,14 +428,14 @@ boards). Values take shell-style patterns (`*`). The scope is built from the pro
 the profile's `scope` and `[ssh] hosts`, and `--scope`. Forks and repositories the session
 creates join it. The kinds:
 
-| Entry | Covers |
-|---|---|
-| `gh:OWNER/REPO`, `gh:OWNER/*` | A repository: gh commands, API calls, git fetches and pushes. |
-| `gh:OWNER` | The owner itself: owner-level reads, its project list, creating repositories there. |
-| `gh-project:OWNER/NUMBER`, `gh-project:OWNER/*` | A project board. |
-| `rad:RID` | A Radicle repository. |
-| `ssh:HOST`, `ssh:USER@HOST` | A host as named in your ssh config: as the user that config gives it, or as USER. |
-| `git-local:PATH` | Signing in a repository with no GitHub or Radicle remote, by its folder. |
+| Entry                                           | Covers                                                                              |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `gh:OWNER/REPO`, `gh:OWNER/*`                   | A repository: gh commands, API calls, git fetches and pushes.                       |
+| `gh:OWNER`                                      | The owner itself: owner-level reads, its project list, creating repositories there. |
+| `gh-project:OWNER/NUMBER`, `gh-project:OWNER/*` | A project board.                                                                    |
+| `rad:RID`                                       | A Radicle repository.                                                               |
+| `ssh:HOST`, `ssh:USER@HOST`                     | A host as named in your ssh config: as the user that config gives it, or as USER.   |
+| `git-local:PATH`                                | Signing in a repository with no GitHub or Radicle remote, by its folder.            |
 
 Extensions add kinds (yours too); `apod broker scopes` lists them all, with the extension each
 belongs to. An entry of a kind no extension

@@ -229,12 +229,12 @@ create`. Entries can be shell-style patterns:
 **The target** is what the request touches: a pair of a **kind** and a **value**. The kind says
 what sort of thing it is, and which extension it belongs to; the value says which one.
 
-| Kind | Value | Declared by |
-|---|---|---|
-| `gh` | a GitHub repository or owner: `acme/widget`, `acme` | `gh` |
-| `rad` | a Radicle repository id | `rad` |
-| `ssh` | a host, maybe with a user: `devbox`, `root@nas` | `ssh` |
-| `unit` | a systemd user service: `web.service` | your `systemctl` |
+| Kind   | Value                                               | Declared by      |
+| ------ | --------------------------------------------------- | ---------------- |
+| `gh`   | a GitHub repository or owner: `acme/widget`, `acme` | `gh`             |
+| `rad`  | a Radicle repository id                             | `rad`            |
+| `ssh`  | a host, maybe with a user: `devbox`, `root@nas`     | `ssh`            |
+| `unit` | a systemd user service: `web.service`               | your `systemctl` |
 
 **The scope** is the list of targets a pod may touch, written `kind:value`: `gh:acme/widget`,
 `unit:web`. A target is in scope when an entry of its kind matches its value, with patterns
@@ -282,13 +282,13 @@ broker: the route (method, path) → your handler(h, sess, method)
 With `gh`, for a `dev` pod working in a clone of `acme/widget` (so its scope is
 `gh:acme/widget`):
 
-| In the pod | Action | Target | Outcome |
-|---|---|---|---|
-| `gh pr create` | `gh:pr create` | `gh` `acme/widget` | goes through: `dev` allows it, in scope |
-| `gh pr create -R acme/other` | `gh:pr create` | `gh` `acme/other` | waits: not in scope |
-| `gh pr merge 12` | `gh:pr merge` | `gh` `acme/widget` | waits: `dev` doesn't allow merging |
-| `gh api /rate_limit` | `gh:api GET /rate_limit` | none | goes through: `reader` (and so `dev`) allows it |
-| `gh search repos broker` | `gh:search repos` | `unscoped` `search repos across GitHub` | waits: can't be scoped |
+| In the pod                   | Action                   | Target                                  | Outcome                                         |
+| ---------------------------- | ------------------------ | --------------------------------------- | ----------------------------------------------- |
+| `gh pr create`               | `gh:pr create`           | `gh` `acme/widget`                      | goes through: `dev` allows it, in scope         |
+| `gh pr create -R acme/other` | `gh:pr create`           | `gh` `acme/other`                       | waits: not in scope                             |
+| `gh pr merge 12`             | `gh:pr merge`            | `gh` `acme/widget`                      | waits: `dev` doesn't allow merging              |
+| `gh api /rate_limit`         | `gh:api GET /rate_limit` | none                                    | goes through: `reader` (and so `dev`) allows it |
+| `gh search repos broker`     | `gh:search repos`        | `unscoped` `search repos across GitHub` | waits: can't be scoped                          |
 
 **A request with no target** touches nothing the scope could name: your own rate limit isn't any
 repository's. It's checked against the role alone. In this extension, a `systemctl:list` action that lists
@@ -368,17 +368,17 @@ Everything here is imported from `api`.
 **`provider(p)`** registers a provider and returns it. Subclass **`Provider`**, or give any
 object the same attributes:
 
-| Attribute | |
-|---|---|
-| `name` | Required: lowercase letters, digits and `-`, unique, not a `roles.toml` key (`allow`, `deny`, `extends`, `description`) or `unscoped`. It names the `broker.toml` table, the role list and the action prefix. |
-| `routes` | `[(method, path, handler)]`. `method` is `GET`, `POST` or `CONNECT`. `path` matches a request's path exactly, or as a prefix that ends at a `/` or `?` (`/systemctl` takes `/systemctl` and `/systemctl/x`, not `/systemctlx`); `CONNECT` may use `""` for every CONNECT. A route that overlaps another provider's is refused. `/whoami` is the core's. |
-| `description` | One line for `apod broker extensions`: what the extension gives pods. |
-| `guide` | Where its guide is, `"docs/guides.md#anchor"` in the apod checkout (the shipped extensions). Without one, `apod broker extensions NAME` shows your module's docstring, so write it as the extension's guide: what it does, its `broker.toml` settings, its actions. |
-| `requires` | Names of providers this one needs. It's configured after them, and only when they're on for the pod (`github` requires `gh`). |
-| `configure(sess, cfg, reg, out)` | Required. Runs when a pod registers, before its socket exists. Returns whether the provider is on for this pod; requests to its routes from a pod it's off for are refused. See below. |
-| `listen(sess)` | Optional. Start sockets of your own in `sess.dir`, e.g. one that doesn't speak HTTP (`ssh` serves its agent this way). Called for every provider, on or off, at registration and when the broker starts again, so check `sess.cfg` first. Return the servers; the core stops them when the session ends. |
-| `close(session_id)` | Optional. The session ended. |
-| `keys(cfg)` | Optional. `[(key path, confirm)]` named by your `broker.toml` table, for `apod broker keys` to list and load before any pod starts. |
+| Attribute                        |                                                                                                                                                                                                                                                                                                                                                         |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`                           | Required: lowercase letters, digits and `-`, unique, not a `roles.toml` key (`allow`, `deny`, `extends`, `description`) or `unscoped`. It names the `broker.toml` table, the role list and the action prefix.                                                                                                                                           |
+| `routes`                         | `[(method, path, handler)]`. `method` is `GET`, `POST` or `CONNECT`. `path` matches a request's path exactly, or as a prefix that ends at a `/` or `?` (`/systemctl` takes `/systemctl` and `/systemctl/x`, not `/systemctlx`); `CONNECT` may use `""` for every CONNECT. A route that overlaps another provider's is refused. `/whoami` is the core's. |
+| `description`                    | One line for `apod broker extensions`: what the extension gives pods.                                                                                                                                                                                                                                                                                   |
+| `guide`                          | Where its guide is, `"docs/guides.md#anchor"` in the apod checkout (the shipped extensions). Without one, `apod broker extensions NAME` shows your module's docstring, so write it as the extension's guide: what it does, its `broker.toml` settings, its actions.                                                                                     |
+| `requires`                       | Names of providers this one needs. It's configured after them, and only when they're on for the pod (`github` requires `gh`).                                                                                                                                                                                                                           |
+| `configure(sess, cfg, reg, out)` | Required. Runs when a pod registers, before its socket exists. Returns whether the provider is on for this pod; requests to its routes from a pod it's off for are refused. See below.                                                                                                                                                                  |
+| `listen(sess)`                   | Optional. Start sockets of your own in `sess.dir`, e.g. one that doesn't speak HTTP (`ssh` serves its agent this way). Called for every provider, on or off, at registration and when the broker starts again, so check `sess.cfg` first. Return the servers; the core stops them when the session ends.                                                |
+| `close(session_id)`              | Optional. The session ended.                                                                                                                                                                                                                                                                                                                            |
+| `keys(cfg)`                      | Optional. `[(key path, confirm)]` named by your `broker.toml` table, for `apod broker keys` to list and load before any pod starts.                                                                                                                                                                                                                     |
 
 **`configure(sess, cfg, reg, out)`:**
 
@@ -396,13 +396,13 @@ object the same attributes:
 
 What `configure` can add to `out`, which `apod` applies to the pod:
 
-| Key | |
-|---|---|
-| `out["mounts"]` | `[host path, pod path, mode]`, mode `"ro"` or `"rw"`. Paths can't contain `:`, tabs or newlines, and the host path must exist. |
-| `out["env"]` | `{name: value}` for the pod's environment, single-line values. `APOD_BROKER_SOCK` is set already. |
-| `out["git_config"]` | `[[key, value]]`, passed as `GIT_CONFIG_*`, so they override the pod's git config files. `{forward}` in a key becomes the pod's git forwarder URL (`github`, `rad`). |
-| `out["context"]` | Sentences for the agent's system prompt: what's available and how to use it. |
-| `out["warnings"]` | Lines `apod` prints at launch, for the user. |
+| Key                                                    |                                                                                                                                                                                                                                                                                       |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `out["mounts"]`                                        | `[host path, pod path, mode]`, mode `"ro"` or `"rw"`. Paths can't contain `:`, tabs or newlines, and the host path must exist.                                                                                                                                                        |
+| `out["env"]`                                           | `{name: value}` for the pod's environment, single-line values. `APOD_BROKER_SOCK` is set already.                                                                                                                                                                                     |
+| `out["git_config"]`                                    | `[[key, value]]`, passed as `GIT_CONFIG_*`, so they override the pod's git config files. `{forward}` in a key becomes the pod's git forwarder URL (`github`, `rad`).                                                                                                                  |
+| `out["context"]`                                       | Sentences for the agent's system prompt: what's available and how to use it.                                                                                                                                                                                                          |
+| `out["warnings"]`                                      | Lines `apod` prints at launch, for the user.                                                                                                                                                                                                                                          |
 | `need_key(sess, out, path, confirm=False, purpose="")` | A function, not a key: the broker's ssh-agent must hold this key, and `apod` runs `ssh-add` at launch if it doesn't, after telling the user what it's for (`purpose`, such as `"signing commits"`). Returns `(public key line, blob)`; raises `BrokerError` if `path.pub` is missing. |
 
 ### Handlers
@@ -414,23 +414,23 @@ A route's handler is `handler(h, sess, method)`:
 - `sess` is the pod's session (below).
 - An exception is logged to `broker.log`, and the pod gets a 500.
 
-| Name | |
-|---|---|
+| Name                             |                                                                                                                                                                                     |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `read_body(h, limit=BODY_LIMIT)` | The request's body (Content-Length or chunked), at most `limit` bytes: `BrokerError` beyond. `BODY_LIMIT` is 64 MiB, `GIT_BODY_LIMIT` 2 GiB. Pass a small limit for small requests. |
-| `h.send_json(obj, status=200)` | Reply with JSON. |
-| `send_text(h, text, status=403)` | Reply with a line of text, prefixed `apod broker: `. |
+| `h.send_json(obj, status=200)`   | Reply with JSON.                                                                                                                                                                    |
+| `send_text(h, text, status=403)` | Reply with a line of text, prefixed `apod broker: `.                                                                                                                                |
 
 ### Requests and decisions
 
-| Name | |
-|---|---|
-| `Request(kind, display)` | `kind` is your provider's name; `display` is how the TUI and log show the request, so make it say what will happen. Fill in `.actions` and `.targets`. |
-| `check(sess, req, waiting=None, extra=None)` | `(ok, event)`. Removes duplicate actions and targets, decides, and logs. If the request has to wait, `waiting(event)` is called first (to tell the pod), then it blocks until the user answers or `ASK_TIMEOUT`. `extra` is merged into the event; `{"once_window": N}` makes approving it once also cover the same targets for `N` seconds (a git push's ref advertisement, then the push). Set `event["exit"]` after acting, for the TUI. |
-| `evaluate(sess, req)` | `(verdict, missing actions, targets out of scope, reason)` with `verdict` `"allow"`, `"ask"` or `"deny"`, without logging or waiting. |
-| `allowed(sess, action)` | Whether the role (with its approvals) allows an action outright. For setting a pod up (`git-sign` turns on `commit.gpgsign` only for roles that sign); the request itself still goes through `check`. |
-| `recently_allowed(sess, req, within=600)` | Whether the same request (by `display`) went through for this session in the last `within` seconds: for the later rounds of one operation (a git fetch's negotiation), checked and logged once. |
-| `rejected_msg(req, ev)`, `waiting_msg(req, ev)` | Messages for the pod, telling the agent how the user can approve. |
-| `HARD_DENY` | A list of action patterns that are never allowed, whatever the role or approvals say. Append your provider's; don't add patterns that cover other providers' actions. |
+| Name                                            |                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Request(kind, display)`                        | `kind` is your provider's name; `display` is how the TUI and log show the request, so make it say what will happen. Fill in `.actions` and `.targets`.                                                                                                                                                                                                                                                                                      |
+| `check(sess, req, waiting=None, extra=None)`    | `(ok, event)`. Removes duplicate actions and targets, decides, and logs. If the request has to wait, `waiting(event)` is called first (to tell the pod), then it blocks until the user answers or `ASK_TIMEOUT`. `extra` is merged into the event; `{"once_window": N}` makes approving it once also cover the same targets for `N` seconds (a git push's ref advertisement, then the push). Set `event["exit"]` after acting, for the TUI. |
+| `evaluate(sess, req)`                           | `(verdict, missing actions, targets out of scope, reason)` with `verdict` `"allow"`, `"ask"` or `"deny"`, without logging or waiting.                                                                                                                                                                                                                                                                                                       |
+| `allowed(sess, action)`                         | Whether the role (with its approvals) allows an action outright. For setting a pod up (`git-sign` turns on `commit.gpgsign` only for roles that sign); the request itself still goes through `check`.                                                                                                                                                                                                                                       |
+| `recently_allowed(sess, req, within=600)`       | Whether the same request (by `display`) went through for this session in the last `within` seconds: for the later rounds of one operation (a git fetch's negotiation), checked and logged once.                                                                                                                                                                                                                                             |
+| `rejected_msg(req, ev)`, `waiting_msg(req, ev)` | Messages for the pod, telling the agent how the user can approve.                                                                                                                                                                                                                                                                                                                                                                           |
+| `HARD_DENY`                                     | A list of action patterns that are never allowed, whatever the role or approvals say. Append your provider's; don't add patterns that cover other providers' actions.                                                                                                                                                                                                                                                                       |
 
 ### Scope kinds
 
@@ -443,16 +443,16 @@ By default, a target `(prefix, value)` is in scope when it matches one of the se
 `prefix:` entries, with shell-style patterns, case-insensitive (`*` also matches `/`). The
 arguments change that:
 
-| Argument | |
-|---|---|
-| `provider` | The provider the kind belongs to, shown by `apod broker scopes`. |
-| `parse(value)` | Normalizes an entry as written (`gh:` lowercases and drops `.git`). |
+| Argument             |                                                                                                                                                                                                              |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `provider`           | The provider the kind belongs to, shown by `apod broker scopes`.                                                                                                                                             |
+| `parse(value)`       | Normalizes an entry as written (`gh:` lowercases and drops `.git`).                                                                                                                                          |
 | `match(sess, value)` | Whether a target is in scope, e.g. from `sess.entries(prefix)` or other kinds' entries. `ssh:` uses it so that `ssh:nas` allows only the user the host's ssh config gives nas, and `ssh:root@nas` only root. |
-| `grant(value)` | The entry `(prefix, value)` that approving a target "for the session" adds. Default: the target itself. |
-| `label(value)` | How the TUI and log show a target. Default `prefix:value`. |
-| `entry=False` | A target kind users don't write; its `match` looks at other kinds' entries. gh's `gh-projects-of` is in scope with `gh:OWNER` or any `gh-project:OWNER/…`. |
-| `help` | The line `apod broker scopes` shows. |
-| `remote(url)` | The value this kind gives a git remote URL, or `None` if it's not one of its own. `gh:` turns `git@github.com:acme/widget.git` into `acme/widget`. |
+| `grant(value)`       | The entry `(prefix, value)` that approving a target "for the session" adds. Default: the target itself.                                                                                                      |
+| `label(value)`       | How the TUI and log show a target. Default `prefix:value`.                                                                                                                                                   |
+| `entry=False`        | A target kind users don't write; its `match` looks at other kinds' entries. gh's `gh-projects-of` is in scope with `gh:OWNER` or any `gh-project:OWNER/…`.                                                   |
+| `help`               | The line `apod broker scopes` shows.                                                                                                                                                                         |
+| `remote(url)`        | The value this kind gives a git remote URL, or `None` if it's not one of its own. `gh:` turns `git@github.com:acme/widget.git` into `acme/widget`.                                                           |
 
 **`remote_target(url)`** asks every kind's `remote` and returns the first `(prefix, value)`, or
 `None`. `git-sign` uses it to scope a signature by the repository it's for.
@@ -461,38 +461,38 @@ arguments change that:
 
 `sess` is one pod's session:
 
-| Member | |
-|---|---|
-| `id`, `profile`, `role`, `project`, `created` | The registration. |
-| `identity` | `{"name", "emails"}`: the profile's git identity, from its `env`. |
-| `scope`, `entries(prefix)` | The scope entries, `{prefix: [values]}`; one kind's list. |
-| `in_scope(target)` | Whether a `(kind, value)` target is in scope. |
-| `add_scope(target)` | Add an entry (through the kind's `grant`). Only from host-side facts: your `broker.toml` table, or something the broker created for the pod. |
-| `grants` | What the user approved for the session: `{"actions": [...], "unscoped": [...]}`. |
-| `cfg[name]` | Yours, for per-session state; saved with the session, so it survives a broker restart. Keys starting with `_` are the core's. |
-| `login` | The GitHub account's login, when `gh` is on. |
-| `title()` | The agent session's name, when there is one. |
-| `dir` | The pod's folder on the host, mounted read-write at `POD_DIR` (`/run/apod-broker`) in the pod. The pod can change anything in it: write files there for tools in the pod, never read back from it. |
-| `save()` | Write the session to disk, after changing it. |
+| Member                                        |                                                                                                                                                                                                    |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`, `profile`, `role`, `project`, `created` | The registration.                                                                                                                                                                                  |
+| `identity`                                    | `{"name", "emails"}`: the profile's git identity, from its `env`.                                                                                                                                  |
+| `scope`, `entries(prefix)`                    | The scope entries, `{prefix: [values]}`; one kind's list.                                                                                                                                          |
+| `in_scope(target)`                            | Whether a `(kind, value)` target is in scope.                                                                                                                                                      |
+| `add_scope(target)`                           | Add an entry (through the kind's `grant`). Only from host-side facts: your `broker.toml` table, or something the broker created for the pod.                                                       |
+| `grants`                                      | What the user approved for the session: `{"actions": [...], "unscoped": [...]}`.                                                                                                                   |
+| `cfg[name]`                                   | Yours, for per-session state; saved with the session, so it survives a broker restart. Keys starting with `_` are the core's.                                                                      |
+| `login`                                       | The GitHub account's login, when `gh` is on.                                                                                                                                                       |
+| `title()`                                     | The agent session's name, when there is one.                                                                                                                                                       |
+| `dir`                                         | The pod's folder on the host, mounted read-write at `POD_DIR` (`/run/apod-broker`) in the pod. The pod can change anything in it: write files there for tools in the pod, never read back from it. |
+| `save()`                                      | Write the session to disk, after changing it.                                                                                                                                                      |
 
 Hold **`LOCK`** while changing `scope`, `grants` or `cfg` from a handler, then call `save()`;
 other requests of the same pod run at the same time, in other threads.
 
 ### Sockets, keys, files and utilities
 
-| Name | |
-|---|---|
-| `unix_listen(path, handler, session_id=None)` | Serve a unix socket (mode 0600) in a thread, with a `socketserver` handler class; the handler sees `self.server.session_id`. For `listen`. |
-| `live_session(session_id)` | The session while it lasts, `None` once it ended: look it up on each connection. |
-| `pubkey_of(path)` | `(public key line, base64 blob)` for a private key, from its `.pub` file (`BrokerError` if missing). |
-| `AGENT` | The broker's ssh-agent socket (for `SSH_AUTH_SOCK` when you sign with a key it holds). |
-| `BDIR`, `ROOT` | The broker's state folder (`~/.agent-pod/broker`) and `~/.agent-pod`. Use `BDIR / "tmp"` for scratch files; it's emptied when the broker starts. |
-| `POD_DIR`, `SHIM` | Where `sess.dir` is in the pod; the shipped pod-side script (`broker/pod-shim`). |
-| `ASK_TIMEOUT` | How long a request waits for approval, in seconds (`0`: refused at once). |
-| `BrokerError` | The error to raise for anything the pod or the user should see as a message. |
-| `run_quiet(cmd, timeout=30, **kw)` | `subprocess.run` with output captured, stdin closed and a timeout; failures to start return exit code 127. |
-| `expand(path)` | `~` expanded, as a `Path`. |
-| `now()` | `time.time()`. |
+| Name                                          |                                                                                                                                                  |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `unix_listen(path, handler, session_id=None)` | Serve a unix socket (mode 0600) in a thread, with a `socketserver` handler class; the handler sees `self.server.session_id`. For `listen`.       |
+| `live_session(session_id)`                    | The session while it lasts, `None` once it ended: look it up on each connection.                                                                 |
+| `pubkey_of(path)`                             | `(public key line, base64 blob)` for a private key, from its `.pub` file (`BrokerError` if missing).                                             |
+| `AGENT`                                       | The broker's ssh-agent socket (for `SSH_AUTH_SOCK` when you sign with a key it holds).                                                           |
+| `BDIR`, `ROOT`                                | The broker's state folder (`~/.agent-pod/broker`) and `~/.agent-pod`. Use `BDIR / "tmp"` for scratch files; it's emptied when the broker starts. |
+| `POD_DIR`, `SHIM`                             | Where `sess.dir` is in the pod; the shipped pod-side script (`broker/pod-shim`).                                                                 |
+| `ASK_TIMEOUT`                                 | How long a request waits for approval, in seconds (`0`: refused at once).                                                                        |
+| `BrokerError`                                 | The error to raise for anything the pod or the user should see as a message.                                                                     |
+| `run_quiet(cmd, timeout=30, **kw)`            | `subprocess.run` with output captured, stdin closed and a timeout; failures to start return exit code 127.                                       |
+| `expand(path)`                                | `~` expanded, as a `Path`.                                                                                                                       |
+| `now()`                                       | `time.time()`.                                                                                                                                   |
 
 `gitwire` (in `broker/`) has the git smart-HTTP pieces `github` and `rad` share: pkt-lines,
 parsing a push's ref updates, reading the commits in its pack, and replying to git while a push

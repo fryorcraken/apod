@@ -65,13 +65,13 @@ ln -s "$PWD/apod/apod" ~/.local/bin/apod
 
 The rest is needed only for what uses it:
 
-| For | On the host |
-|---|---|
-| The [broker](docs/guides.md#the-broker) (GitHub, Radicle, signing, ssh for pods) | Python 3.11 or later, OpenSSH 8.9 or later (the pods' image has both) |
-| GitHub through the broker (the `gh` and `github` extensions) | `gh`, logged in as the agent's GitHub account |
-| Radicle through the broker (`rad`) | `rad`, with an identity (`rad auth`) |
-| `apod google-auth` (Google Docs for Claude) | `node` |
-| zsh completion | From the same folder: `ln -s "$PWD/apod/_apod" ~/.oh-my-zsh/custom/completions/_apod`, then `rm -f ~/.zcompdump*; exec zsh` (oh-my-zsh puts that folder on `$fpath`) |
+| For                                                                              | On the host                                                                                                                                                          |
+| -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The [broker](docs/guides.md#the-broker) (GitHub, Radicle, signing, ssh for pods) | Python 3.11 or later, OpenSSH 8.9 or later (the pods' image has both)                                                                                                |
+| GitHub through the broker (the `gh` and `github` extensions)                     | `gh`, logged in as the agent's GitHub account                                                                                                                        |
+| Radicle through the broker (`rad`)                                               | `rad`, with an identity (`rad auth`)                                                                                                                                 |
+| `apod google-auth` (Google Docs for Claude)                                      | `node`                                                                                                                                                               |
+| zsh completion                                                                   | From the same folder: `ln -s "$PWD/apod/_apod" ~/.oh-my-zsh/custom/completions/_apod`, then `rm -f ~/.zcompdump*; exec zsh` (oh-my-zsh puts that folder on `$fpath`) |
 
 ## Quick start
 
@@ -137,23 +137,23 @@ A launch combines a **profile**, a **role**, a **scope** and a **project** into 
 `apod <profile> [--role ROLE] [--scope SCOPE]... <project>`. The profile is *who*, the role is
 *what*, the scope is *where*.
 
-| Term | What it is | Where it's set |
-|---|---|---|
-| **Profile** | *Who* acts: the git identity (name and email, only in `env`), the GitHub account (`[gh] user`), the keys it signs and logs in with, its home (agent login, history, settings), mounts, image and network. One per identity or kind of job. | `~/.agent-pod/<profile>/` |
-| **Role** | *What* a pod may do without asking: a preset list of actions per provider (`gh` commands, git pushes, signing, ssh logins). No identity, credentials or targets. | Built in: `reader`, `dev`, `maintainer`, `pm`, `ops`; `~/.agent-pod/roles.toml` adds to them. A profile's `role =`, or `--role`; default `reader`. |
-| **Scope** | *Where* those actions may happen: `KIND:VALUE` entries such as `gh:OWNER/REPO`, `gh-project:OWNER/N`, `rad:RID`, `ssh:HOST`. Extensions declare the kinds. | The project's remotes and folder, automatically (when the extension for them is set up); the profile's `scope` and `[ssh] hosts`; `--scope`. |
-| **Project** | The folder the agent works in: mounted read-write; its remotes join the scope. | The folder argument. |
-| **Session** | One running pod, registered with the broker, with what you approve "for the session". It ends with the pod. | Each launch. |
+| Term        | What it is                                                                                                                                                                                                                                 | Where it's set                                                                                                                                     |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Profile** | *Who* acts: the git identity (name and email, only in `env`), the GitHub account (`[gh] user`), the keys it signs and logs in with, its home (agent login, history, settings), mounts, image and network. One per identity or kind of job. | `~/.agent-pod/<profile>/`                                                                                                                          |
+| **Role**    | *What* a pod may do without asking: a preset list of actions per provider (`gh` commands, git pushes, signing, ssh logins). No identity, credentials or targets.                                                                           | Built in: `reader`, `dev`, `maintainer`, `pm`, `ops`; `~/.agent-pod/roles.toml` adds to them. A profile's `role =`, or `--role`; default `reader`. |
+| **Scope**   | *Where* those actions may happen: `KIND:VALUE` entries such as `gh:OWNER/REPO`, `gh-project:OWNER/N`, `rad:RID`, `ssh:HOST`. Extensions declare the kinds.                                                                                 | The project's remotes and folder, automatically (when the extension for them is set up); the profile's `scope` and `[ssh] hosts`; `--scope`.       |
+| **Project** | The folder the agent works in: mounted read-write; its remotes join the scope.                                                                                                                                                             | The folder argument.                                                                                                                               |
+| **Session** | One running pod, registered with the broker, with what you approve "for the session". It ends with the pod.                                                                                                                                | Each launch.                                                                                                                                       |
 
 The broker reads each request from a pod as **actions** (what it does) and **targets** (what it
 touches). The role lists actions, the scope lists targets:
 
-| In the pod | Action | Target |
-|---|---|---|
-| `gh pr create` in a clone of `acme/widget` | `gh:pr create` | `gh:acme/widget` |
-| `git push rad HEAD:refs/patches` | `rad:push patch` | `rad:z2CjA…` (the repository) |
-| `ssh devbox` | `ssh:login` | `ssh:you@devbox` (in scope with `ssh:devbox`) |
-| `gh api /rate_limit` | `gh:api GET /rate_limit` | none: it touches no repository |
+| In the pod                                 | Action                   | Target                                        |
+| ------------------------------------------ | ------------------------ | --------------------------------------------- |
+| `gh pr create` in a clone of `acme/widget` | `gh:pr create`           | `gh:acme/widget`                              |
+| `git push rad HEAD:refs/patches`           | `rad:push patch`         | `rad:z2CjA…` (the repository)                 |
+| `ssh devbox`                               | `ssh:login`              | `ssh:you@devbox` (in scope with `ssh:devbox`) |
+| `gh api /rate_limit`                       | `gh:api GET /rate_limit` | none: it touches no repository                |
 
 A target is written like a scope entry, `KIND:VALUE`: the kind says what sort of thing it is (a
 GitHub repository, a project board, a host), the value which one. Each extension declares its
