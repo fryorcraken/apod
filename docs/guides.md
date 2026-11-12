@@ -402,7 +402,7 @@ NAME` what each role allows of one extension.
 
 | Role         | For                            | May                                                                                                                                                     |
 | ------------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `reader`     | Reviewing, answering questions | View PRs, issues, CI and repositories; read the APIs for what's in scope; fetch.                                             |
+| `reader`     | Reviewing, answering questions | View PRs, issues, CI and repositories; read the APIs for what's in scope; fetch.                                                                        |
 | `dev`        | Coding                         | reader, plus push branches (force pushes too, not the default branch), open Radicle patches, create and edit PRs, comment, create issues; sign commits. |
 | `maintainer` | Landing work                   | dev, plus merge and review PRs, edit and close issues, re-run CI, fork and create repositories, push tags, delete branches.                             |
 | `pm`         | Project boards                 | reader, plus project boards (items, fields, templates) and creating, editing and commenting on issues.                                                  |
@@ -411,8 +411,14 @@ NAME` what each role allows of one extension.
 A pod's role is `--role`, else its profile's `role =`, else `reader`. One profile can take
 different roles per launch: `apod bot --role pm ~/src/org/planning`.
 
-**Your own roles**, in `~/.agent-pod/roles.toml`. A role with a built-in's name adds to it; a new
-name is a new role ([format](reference.md#rolestoml)):
+**Your own roles**, in `~/.agent-pod/roles.toml`. The built-in roles aren't copied there: they're
+read from `roles.toml` in the apod checkout, so they change when you update apod. Don't edit that
+file, add to it from yours ([format](reference.md#rolestoml)):
+
+- a role with a built-in's name adds actions to it;
+- `deny = [...]` takes actions away, from a built-in role or your own;
+- a new name is a new role.
+
 
 ```toml
 [roles.dev]                 # adds to the built-in dev
