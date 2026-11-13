@@ -78,7 +78,7 @@ The rest is needed only for what uses it:
 A profile is a folder:
 
 ```sh
-mkdir -p ~/.agent-pod/me
+mkdir -p ~/.agent-pod/me     # or apod new: asks for GitHub, identity, signing, ssh, role and scope
 cd ~/src/some-repo
 apod me                    # Claude Code in a pod; the first run asks you to log in to Claude once
 ```

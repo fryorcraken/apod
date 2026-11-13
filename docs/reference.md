@@ -16,6 +16,7 @@ Every command, file, setting and variable. For how to set things up, see the
 
 ```
 apod <profile> [options] [dir] [-- agent args]   run an agent in a pod, in dir (default: the current folder)
+apod new [profile]                               create a profile, step by step
 apod resume [--list|--latest|--claude] [dir]     resume a stopped Claude session started in dir
 apod history                                     folders and profiles launched, most recent first
 apod ps                                          running pods: profile, session, status, folder

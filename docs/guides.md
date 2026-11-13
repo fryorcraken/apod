@@ -31,6 +31,12 @@ A pod uses the broker when its profile has a `broker.toml`, or when the launch p
 `--scope` or `--gh-user`. `--no-broker` turns it off for a run. The broker starts with the first
 pod that uses it and keeps running; its state is in `~/.agent-pod/broker/`.
 
+`apod new` writes a profile for you: it asks for the GitHub account, the git identity (offering
+the account's noreply address), a signing key (or creates one), ssh hosts, Radicle,
+notifications, the role and more scope, shows the `broker.toml` and `env` it would write, and
+writes nothing until you confirm. The guides below say what each part does; edit the files
+afterwards for the rest.
+
 ### Built-in extensions
 
 Everything the broker does for a pod is an extension. These ship with apod:
