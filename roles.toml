@@ -46,7 +46,8 @@ gh = [
   "api POST /repos/{repo}/issues/*/comments", "api POST /repos/{repo}/pulls/*/comments",
   "api POST /repos/{repo}/pulls/*/comments/*/replies", "api PATCH /repos/{repo}/issues/comments/*",
   "graphql mutation addComment", "graphql mutation addPullRequestReviewComment",
-  "graphql mutation addPullRequestReviewThreadReply", "graphql mutation resolveReviewThread",
+  "graphql mutation addPullRequestReviewThread", "graphql mutation addPullRequestReviewThreadReply",
+  "graphql mutation resolveReviewThread",
 ]
 github = ["push branch", "push force"]
 rad = ["push branch", "push patch", "push force"]
