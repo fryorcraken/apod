@@ -684,7 +684,10 @@ in its panes:
   (`HERDR_PANE_ID`, or `HC_SCOPE`, which survives a herdr server restart), so it goes straight back
   to that tab's session.
 - **Many agents side by side.** Claude's agent view and background sessions are off inside pods (a
-  pod lives only as long as its main process). Run several pods in herdr panes instead.
+  pod lives only as long as its main process). Run several pods in herdr panes instead. Each pod
+  has its own `~/.claude/sessions` (Claude's list of running sessions, by process id, which pods
+  of a profile would otherwise overwrite); conversations, `/rename` titles and the work log are
+  kept as before.
 
 ## Checking a setup in a real pod
 

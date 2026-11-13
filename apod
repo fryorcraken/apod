@@ -399,6 +399,9 @@ mounts+=("${filemounts[@]}" -v "$proj:$proj:z")
 # Share global agent instructions and skills read-only.
 [ -f "$HOME/.claude/CLAUDE.md" ] && mounts+=(-v "$HOME/.claude/CLAUDE.md:/home/agent/.claude/CLAUDE.md:ro,z")
 [ -d "$HOME/.claude/skills" ] && mounts+=(-v "$HOME/.claude/skills:/home/agent/.claude/skills:ro,z")
+# Claude's registry of running sessions is one file per process id, and pods of a profile share a
+# home and the same low pids: each pod keeps its own, so /rename and the like don't hit another's.
+[ "$agent" = claude ] && mounts+=(--tmpfs "/home/agent/.claude/sessions:rw,mode=1777,size=1m")
 
 # Broker session: the broker reads the profile's broker.toml and env, and the project's remotes
 # (GitHub and Radicle remotes join the scope), and answers with what the pod needs: mounts,
