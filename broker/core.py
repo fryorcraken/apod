@@ -459,7 +459,7 @@ class Session:
             setattr(self, k, d.get(k))
         self.role = self.role or d.get("persona") or "reader"  # sessions saved before the rename
         self.scope = {}
-        for k, vs in (self.scope or {}).items():  # sessions saved before kinds were prefixes: repo, host, ...
+        for k, vs in (d.get("scope") or {}).items():  # sessions saved before kinds were prefixes: repo, host, ...
             lst = self.scope.setdefault(current_kind(k), [])
             lst += [v for v in vs if v not in lst]
         self.grants = {k: list((self.grants or {}).get(k, [])) for k in ("actions", "unscoped")}

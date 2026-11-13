@@ -769,6 +769,26 @@ class BrokerTest(unittest.TestCase):
         state = json.loads((d.parent / f"{self.sess['id']}.json").read_text())
         self.assertEqual(state["role"], "dev")
 
+    def test_saved_session_keeps_its_scope(self):
+        # A restarted broker reloads each session from its state file: its scope must come back,
+        # also from a session saved with the old kind names (repo, host).
+        state = Path(self.sess["dir"]).parent / f"{self.sess['id']}.json"
+        code = textwrap.dedent(f"""\
+            import json, sys
+            sys.path.insert(0, {str(HERE / "broker")!r})
+            import core
+            core.load_extensions()
+            d = json.loads(open({str(state)!r}).read())
+            s = core.Session(d)
+            assert s.scope == d["scope"], (s.scope, d["scope"])
+            assert s.in_scope(("gh", "acme/widget")), s.scope
+            old = core.Session(dict(d, scope={{"repo": ["fryorcraken/x"], "host": ["devbox"]}}))
+            assert old.scope == {{"gh": ["fryorcraken/x"], "ssh": ["devbox"]}}, old.scope
+            """)
+        p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                           env=dict(os.environ, APOD_ROOT=str(self.root)))
+        self.assertEqual(p.returncode, 0, p.stderr)
+
     def test_sign_commits(self):
         # The profile holds the key, the role the actions, the scope the repositories.
         toml = f'[git-sign]\nkey = "{self.tmp}/signkey"\n'
