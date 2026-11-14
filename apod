@@ -257,7 +257,7 @@ case ${1:-} in
     section "SSH"
     note "Hosts the agent may reach, through the broker, by their names in your ~/.ssh/config."
     note "Only the ops role logs in; others ask you first."
-    h=""; ask h "Hosts, space-separated (empty: none):"; read -ra hosts <<< "$h"
+    h=""; ask h "Hosts, separated by spaces or commas (empty: none):"; read -ra hosts <<< "${h//,/ }"
     sshkey=
     [ ${#hosts[@]} -eq 0 ] || while [ -z "$sshkey" ]; do keypath sshkey "Key it logs in with (a private key):"; done
 
@@ -285,11 +285,13 @@ case ${1:-} in
         warn "No role $role."
       done
       note "The scope is where: the launch folder's remotes are in it already; add more here."
-      kinds=$(python3 "$apoddir/apod-broker" scopes 2>/dev/null | sed -n 's/^\([a-z][a-z0-9-]*\): .*/\1/p' | paste -sd ' ')
-      note "Kinds: $kinds (e.g. gh:ORG/* for every repository of ORG)"
+      # Not ssh (the hosts above are its scope) nor git-local (the launch folder is in already).
+      kinds=$(python3 "$apoddir/apod-broker" scopes 2>/dev/null | sed -n 's/^\([a-z][a-z0-9-]*\): .*/\1/p' |
+        grep -vx 'ssh\|git-local' | paste -sd ' ')
+      note "Kinds: $kinds (e.g. gh:ORG/* for every repository of ORG); ssh hosts are the ones above."
       while :; do
-        s=""; ask s "More scope, space-separated (empty: none):"
-        read -ra scope <<< "$s"; bad=
+        s=""; ask s "More scope, separated by spaces or commas (empty: none):"
+        read -ra scope <<< "${s//,/ }"; bad=
         for e in "${scope[@]}"; do [[ " $kinds " == *" ${e%%:*} "* && $e == *:?* ]] || bad+=" $e"; done
         [ -z "$bad" ] && break
         warn "Not KIND:VALUE with a kind above:$bad"
