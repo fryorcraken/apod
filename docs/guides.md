@@ -6,6 +6,7 @@ variable.
 
 - [The broker](#the-broker)
 - [GitHub](#github)
+- [GitHub API from the pod](#github-api-from-the-pod)
 - [Radicle](#radicle)
 - [Signing commits](#signing-commits)
 - [SSH](#ssh)
@@ -41,14 +42,15 @@ afterwards for the rest.
 
 Everything the broker does for a pod is an extension. These ship with apod:
 
-| Extension  | In the pod                                                                           | Set up with                                           |
-| ---------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------- |
-| `gh`       | `gh` is a shim; the broker runs the real `gh` as the host account the profile names. | `[gh] user`: [GitHub](#github)                        |
-| `github`   | git's github.com remotes go through the broker, with that account's token.           | `[gh] user`                                           |
-| `rad`      | `rad://` remotes go through the broker, which pushes as the host's Radicle identity. | `[rad] autodetect` or `enabled`: [Radicle](#radicle)  |
-| `git-sign` | git signs commits and tags with a key the broker holds.                              | `[git-sign] key`: [Signing commits](#signing-commits) |
-| `ssh`      | `ssh HOST` logs in with the broker's agent, to the hosts in scope, through the host. | an `[ssh]` key, and hosts in scope: [SSH](#ssh)       |
-| `notify`   | `apod-notify TEXT` sends you a desktop notification.                                 | `[notify] enabled`: [Notifications](#notifications)   |
+| Extension  | In the pod                                                                           | Set up with                                                             |
+| ---------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| `gh`       | `gh` is a shim; the broker runs the real `gh` as the host account the profile names. | `[gh] user`: [GitHub](#github)                                          |
+| `github`   | git's github.com remotes go through the broker, with that account's token.           | `[gh] user`                                                             |
+| `rad`      | `rad://` remotes go through the broker, which pushes as the host's Radicle identity. | `[rad] autodetect` or `enabled`: [Radicle](#radicle)                    |
+| `git-sign` | git signs commits and tags with a key the broker holds.                              | `[git-sign] key`: [Signing commits](#signing-commits)                   |
+| `ssh`      | `ssh HOST` logs in with the broker's agent, to the hosts in scope, through the host. | an `[ssh]` key, and hosts in scope: [SSH](#ssh)                         |
+| `notify`   | `apod-notify TEXT` sends you a desktop notification.                                 | `[notify] enabled`: [Notifications](#notifications)                     |
+| `gh-api`   | `https://api.github.com` goes through the broker (Claude Code's PR status).          | `[gh-api] enabled`: [GitHub API from the pod](#github-api-from-the-pod) |
 
 **Loaded, then on per pod.** The broker loads every extension when it starts: each one
 registers its actions, its kinds of target and its routes, and that's all. Whether it does
@@ -173,6 +175,53 @@ repository and branch and the contents of files a command names (`--body-file`, 
 `--input`, release assets). Arguments that name host paths are refused. `gh repo clone` and
 `gh pr checkout` run locally through git; `gh pr create --fill` isn't available (pass `--title`
 and `--body`).
+
+## GitHub API from the pod
+
+Some tools call GitHub's API themselves, with the token `gh auth token` gives them, rather than
+through `gh`. Claude Code's PR status (the PR number, link, checks and review state under the
+prompt) is one: in a pod, where there's no token, it stays empty. The `gh-api` extension sends
+those calls through the broker, which checks them and adds the token. It's off unless you turn it
+on, and needs [GitHub](#github) set up:
+
+```toml
+# ~/.agent-pod/bot/broker.toml
+[gh]
+user = "my-bot"
+[gh-api]
+enabled = true
+```
+
+**How it works.**
+
+- In the pod, `api.github.com` resolves to `127.0.0.1`, where a relay (`apod-gh-api-relay`,
+  started before the agent) passes each connection to the broker.
+- The broker ends TLS with a certificate for `api.github.com` from a CA of its own. The CA is
+  made once, with `openssl`, in `~/.agent-pod/broker/gh-api/`. Its key never leaves the host,
+  and it can only vouch for `api.github.com` (a name constraint). The pod trusts it through
+  `NODE_EXTRA_CA_CERTS`, which Claude Code, Node and Bun read; `curl` needs
+  `--cacert /run/apod-gh-api/ca.pem`.
+- Each request is checked as `gh api` would be: REST by method and path
+  (`gh:api GET /repos/{repo}/pulls`), GraphQL by top-level field, against the role and the scope.
+  What isn't allowed outright is refused at once, with a 403: these requests come from tools on
+  their own, with nobody there to approve them, so they never wait.
+- What's allowed goes to GitHub with the profile's account's token. `gh auth token` in the pod
+  prints a placeholder that works only through the broker, so the token never enters the pod.
+- They're logged like any request, marked `(direct)`: `apod broker log` shows them. Claude
+  Code's PR status polls, so expect a few lines a minute while a branch has a PR.
+
+**Limits.** It's off with `network = host`: the pod then shares the host's network, where
+`api.github.com` can't point at the pod's relay. Only `api.github.com` is covered; `github.com`
+itself (git, web pages) goes the usual ways. The `reader` role's REST and GraphQL reads cover
+Claude Code's PR status, for the repositories in scope.
+
+**Check it** after a launch: `apod broker log` shows `GET https://api.github.com/repos/...
+(direct)` lines once Claude Code is on a branch with a PR. In the pod (`apod bot -a bash`):
+
+```sh
+gh auth token                                    # apod-gh-api-placeholder-token
+curl -s --cacert /run/apod-gh-api/ca.pem https://api.github.com/repos/OWNER/REPO | head
+```
 
 ## Radicle
 

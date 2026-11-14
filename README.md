@@ -182,6 +182,9 @@ Everything the broker does for a pod is an extension, each with its own guide:
   ([Signing commits](docs/guides.md#signing-commits)).
 - **ssh:** logins to the hosts in scope with the broker's agent ([ssh](docs/guides.md#ssh)).
 - **notify:** desktop notifications from the pod ([Notifications](docs/guides.md#notifications)).
+- **gh-api:** `api.github.com` from the pod through the broker, for tools that call GitHub's API
+  themselves, like Claude Code's PR status; off until `[gh-api] enabled = true`
+  ([GitHub API from the pod](docs/guides.md#github-api-from-the-pod)).
 
 The broker loads them all, but each is on for a pod only when it's set up and has something in
 the pod's scope to act on. The [overview](docs/guides.md#built-in-extensions) has the rules,

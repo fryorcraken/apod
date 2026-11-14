@@ -148,6 +148,18 @@ def local_auth(argv):
         return 0
     if sub == "setup-git":
         return 0  # git's github.com remotes already go through the broker
+    if sub == "token":
+        # With the broker's gh-api extension, a placeholder that its proxy for api.github.com swaps
+        # for the real token; without it, nothing (the route isn't there).
+        try:
+            c = UnixHTTP()
+            c.request("GET", "/gh-api/token")
+            r = c.getresponse()
+            if r.status == 200:
+                print(json.loads(r.read())["token"])
+                return 0
+        except (OSError, ValueError, KeyError):
+            pass
     print("gh (apod): gh auth isn't available here: requests go through the host's apod broker, "
           "and no token is available in the pod.", file=sys.stderr)
     return 1

@@ -568,6 +568,7 @@ mounts+=("${filemounts[@]}" -v "$proj:$proj:z")
 # (GitHub and Radicle remotes join the scope), and answers with what the pod needs: mounts,
 # environment, git config, keys to load into its agent, and a note for the agent.
 bsid=; binfo=; bproviders=; agentpid=
+podopts=(); startcmds=  # from the broker's extensions: podman options, commands run in the pod first
 # Set before registering, so that a Ctrl-C at a passphrase prompt doesn't leave the session behind.
 cleanup() {
   [ -z "$agentpid" ] || kill "$agentpid" 2>/dev/null
@@ -580,6 +581,7 @@ if [ -n "$usebroker" ]; then
   regargs=(--id "$(uuidgen | tr -d - | cut -c1-12)" --profile "$profile" --profile-dir "$root/$profile" --project "$proj")
   [ -z "$role" ] || regargs+=(--role "$role")
   [ -z "$ghuser" ] || regargs+=(--gh-user "$ghuser")
+  [ -z "$network" ] || regargs+=(--network "$network")
   for s in "${scopes[@]}"; do regargs+=(--scope "$s"); done
   while read -r _ url; do regargs+=(--remote "$url"); done < <(git -C "$proj" config --get-regexp '^remote\..*\.(url|pushurl)$' 2>/dev/null || true)
   bsid=${regargs[1]}
@@ -608,6 +610,14 @@ if [ -n "$usebroker" ]; then
   mounts+=(-v "$(jq -r .dir <<< "$binfo"):$(jq -r .pod_dir <<< "$binfo"):z"
     -v "$apoddir/broker/pod-shim:/usr/local/bin/apod-git-forward:ro,z")
   while IFS=$'\t' read -r src dst mode; do mounts+=(-v "$src:$dst:$mode,z"); done < <(jq -r '.mounts[] | @tsv' <<< "$binfo")
+  # Host names, network sysctls and commands to start before the agent, from extensions (gh-api:
+  # api.github.com through the broker).
+  while IFS=$'\t' read -r n a; do podopts+=(--add-host "$n:$a"); done < <(jq -r '(.hosts // {}) | to_entries[] | [.key, .value] | @tsv' <<< "$binfo")
+  while IFS=$'\t' read -r k v; do podopts+=(--sysctl "$k=$v"); done < <(jq -r '(.sysctls // {}) | to_entries[] | [.key, .value] | @tsv' <<< "$binfo")
+  while IFS= read -r c; do
+    mapfile -t argv < <(jq -r '.[]' <<< "$c")
+    startcmds+="$(printf '%q ' "${argv[@]}")|| echo \"apod: ${argv[0]} did not start\" >&2"$'\n'
+  done < <(jq -c '(.start // [])[]' <<< "$binfo")
   if [[ $bproviders == *" ssh "* ]] && [ -n "$sshkey" ]; then
     echo "apod: broker.toml has [ssh], so the profile's ssh-key file is ignored" >&2; sshkey=
   fi
@@ -715,7 +725,7 @@ run=(podman run --rm "${tty[@]}" --userns=keep-id
   -e APOD_PROFILE="$profile"
   -e CLAUDE_CODE_DISABLE_AGENT_VIEW=1
   "${gitenv[@]}" "${idenv[@]}" "${benv[@]}"
-  "${mounts[@]}" -w "$proj")
+  "${mounts[@]}" "${podopts[@]}" -w "$proj")
 [ -z "$network" ] || run+=(--network "$network")
 run+=("${volumes[@]}" --label apod.profile="$profile" --label apod.project="$proj" --label apod.session="$session")
 
@@ -730,7 +740,7 @@ if [ -n "$bsid" ]; then
   # Start the git forwarder and put its URL where the broker's git config says {forward}, so
   # GitHub and Radicle remotes go through the broker.
   # shellcheck disable=SC2016 # expanded in the pod
-  wrap='u=$(apod-git-forward) || { echo "apod: the git forwarder did not start; git cannot reach the broker" >&2; exec "$@"; }
+  wrap=$startcmds'u=$(apod-git-forward) || { echo "apod: the git forwarder did not start; git cannot reach the broker" >&2; exec "$@"; }
 for ((i = 0; i < ${GIT_CONFIG_COUNT:-0}; i++)); do k=GIT_CONFIG_KEY_$i; v=${!k}; [[ $v == *"{forward}"* ]] && export "$k=${v//"{forward}"/$u}"; done
 exec "$@"'
   cmdline=("$image" bash -lc "$wrap" _ "${cmd[@]}" "$@")

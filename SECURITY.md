@@ -60,6 +60,13 @@ With a `broker.toml`, a pod holds no GitHub token and no ssh, signing or Radicle
 - **GitHub:** `gh` and git's github.com remotes go to the host's broker, which uses the host
   `gh` login the profile names (`[gh] user`). The token never enters the pod. A profile that names
   no account gets no GitHub access through the broker; it never falls back to your active login.
+- **gh-api** (off unless `[gh-api] enabled`): the pod's `api.github.com` resolves to a relay in
+  the pod, and the broker ends TLS with a certificate from its own CA, which the pod trusts
+  (`NODE_EXTRA_CA_CERTS`). The CA's key stays in `~/.agent-pod/broker/gh-api/` (mode 0700), and
+  the CA is name-constrained to `api.github.com`, so even a leaked CA key can't impersonate
+  another site to a client that checks constraints. `gh auth token` in the pod prints a
+  placeholder; the broker adds the real token to requests it allows, checked like `gh api`, and
+  refuses the rest without asking.
 - **Keys** (ssh, commit signing, Radicle) are held by the broker's own ssh-agent on the host. The
   pod gets a filtering agent that offers only the session's ssh keys. It signs only ssh login
   requests, never arbitrary data, and pods can't add, remove or lock its keys.

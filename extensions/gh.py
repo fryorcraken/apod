@@ -529,6 +529,12 @@ def classify_api(sess, req, flags, pos, ctx, files, stdin, work, n):
     path = path.replace("{owner}", owner).replace("{repo}", rname).replace("{branch}", ctx.get("branch") or "{branch}")
     if "{" in path and ("{owner}" in endpoint or "{repo}" in endpoint) and not ctx.get("repo"):
         raise BrokerError("{owner}/{repo} need a current repository: run in a clone or use the full path")
+    return classify_rest(req, method, path)
+
+
+def classify_rest(req, method, path):
+    """A REST call (METHOD, path without the leading / or query): its action, "api METHOD
+    /repos/{repo}/...", and its target, the repository or owner it names."""
     m = re.match(r"repos/([^/]+)/([^/]+)(/.*)?$", path)
     if m and "%" in m.group(1) + m.group(2):
         raise BrokerError("an encoded owner or repository name in an API path isn't supported")

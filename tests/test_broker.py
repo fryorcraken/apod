@@ -15,6 +15,7 @@ import re
 import os
 import shutil
 import socketserver
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -243,6 +244,70 @@ def unix_post(sock, path, body):
     return r.status, json.loads(r.read() or b"{}")
 
 
+class FakeAPI(http.server.BaseHTTPRequestHandler):
+    """api.github.com for the gh-api extension: records each request, answers with what it got."""
+    protocol_version = "HTTP/1.1"
+    seen = []
+
+    def log_message(self, *a):
+        pass
+
+    def answer(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(n).decode() if n else ""
+        FakeAPI.seen.append({"method": self.command, "path": self.path, "auth": self.headers.get("Authorization"),
+                             "host": self.headers.get("Host"), "body": body})
+        out = json.dumps({"ok": True, "path": self.path}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    do_GET = do_POST = answer
+
+
+def make_gh_api_certs(d):
+    """The broker's CA and api.github.com certificate, as the gh-api extension would make them
+    with openssl; made here with the cryptography module where there's no openssl. False when
+    neither is there."""
+    d.mkdir(parents=True, exist_ok=True)
+    if shutil.which("openssl"):
+        return None  # the extension makes them itself
+    try:
+        import datetime
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+    except ImportError:
+        return False
+    now_ = datetime.datetime.now(datetime.timezone.utc)
+    cakey, key = ec.generate_private_key(ec.SECP256R1()), ec.generate_private_key(ec.SECP256R1())
+    caname = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "apod broker gh-api CA")])
+    ca = (x509.CertificateBuilder().subject_name(caname).issuer_name(caname).public_key(cakey.public_key())
+          .serial_number(x509.random_serial_number()).not_valid_before(now_).not_valid_after(now_ + datetime.timedelta(days=30))
+          .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+          .add_extension(x509.KeyUsage(False, False, False, False, False, True, True, False, False), critical=True)
+          .add_extension(x509.NameConstraints([x509.DNSName("api.github.com")], None), critical=True)
+          .add_extension(x509.SubjectKeyIdentifier.from_public_key(cakey.public_key()), critical=False)
+          .sign(cakey, hashes.SHA256()))
+    leaf = (x509.CertificateBuilder().subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "api.github.com")]))
+            .issuer_name(caname).public_key(key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(now_).not_valid_after(now_ + datetime.timedelta(days=30))
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName("api.github.com")]), critical=False)
+            .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(cakey.public_key()), critical=False)
+            .sign(cakey, hashes.SHA256()))
+    pem = lambda c: c.public_bytes(serialization.Encoding.PEM)
+    keypem = lambda k: k.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                       serialization.NoEncryption())
+    (d / "ca.pem").write_bytes(pem(ca)), (d / "ca.key").write_bytes(keypem(cakey))
+    (d / "leaf.pem").write_bytes(pem(leaf)), (d / "leaf.key").write_bytes(keypem(key))
+    return True
+
+
 class BrokerTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -333,7 +398,11 @@ class BrokerTest(unittest.TestCase):
         CGIUpstream.root = up
         cls.upstream = socketserver.ThreadingTCPServer(("127.0.0.1", 0), CGIUpstream)
         threading.Thread(target=cls.upstream.serve_forever, daemon=True).start()
+        cls.api = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeAPI)
+        threading.Thread(target=cls.api.serve_forever, daemon=True).start()
+        cls.gh_api_certs = make_gh_api_certs(cls.root / "broker/gh-api")
         cls.env = dict(os.environ, APOD_ROOT=str(cls.root), APOD_GH_BIN=str(bin_ / "gh"),
+                       APOD_GH_API_UPSTREAM=f"http://127.0.0.1:{cls.api.server_address[1]}",
                        APOD_BROKER_ASK_TIMEOUT="4", HOME=str(home), APOD_SSH_CONFIG=str(home / ".ssh/config"),
                        APOD_GH_GIT_UPSTREAM=f"http://127.0.0.1:{cls.upstream.server_address[1]}",
                        FAKE_RAD_ONWARD=str(cls.tmp / "radstore"), FAKE_RAD_NID=NID,
@@ -360,6 +429,7 @@ class BrokerTest(unittest.TestCase):
         cls.broker.terminate()
         cls.broker.wait()
         cls.upstream.shutdown()
+        cls.api.shutdown()
         if not os.environ.get("KEEP"):
             shutil.rmtree(cls.tmp, ignore_errors=True)
 
@@ -788,6 +858,130 @@ class BrokerTest(unittest.TestCase):
         p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                            env=dict(os.environ, APOD_ROOT=str(self.root)))
         self.assertEqual(p.returncode, 0, p.stderr)
+
+    def gh_api_session(self):
+        if self.gh_api_certs is False:
+            self.skipTest("no openssl and no cryptography module to make the gh-api certificates")
+        return self.register("dev", ["gh:acme/widget"], toml="[gh-api]\nenabled = true\n")
+
+    def gh_api_tls(self, sess, sock=None):
+        """A TLS connection to api.github.com as the pod has it: through the relay's socket (or
+        straight to the broker's tunnel), checking the broker's certificate against its CA."""
+        if sock is None:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.connect(str(Path(sess["dir"]) / "broker.sock"))
+            sock.sendall(b"POST /gh-api/tunnel HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n")
+            buf = b""
+            while b"\r\n\r\n" not in buf:
+                buf += sock.recv(4096)
+            self.assertTrue(buf.startswith(b"HTTP/1.1 200"), buf)
+        ctx = ssl.create_default_context(cafile=str(self.root / "broker/gh-api/ca.pem"))
+        tls = ctx.wrap_socket(sock, server_hostname="api.github.com")
+        return tls, tls.makefile("rb")
+
+    @staticmethod
+    def gh_api_call(tls, f, method, path, body=None):
+        data = json.dumps(body).encode() if body is not None else b""
+        tls.sendall(f"{method} {path} HTTP/1.1\r\nHost: api.github.com\r\nAuthorization: Bearer apod-gh-api-placeholder-token"
+                    f"\r\nAccept: application/vnd.github+json\r\nContent-Length: {len(data)}\r\n\r\n".encode() + data)
+        status = int(f.readline().split()[1])
+        n = 0
+        while (line := f.readline()) not in (b"\r\n", b""):
+            if line.lower().startswith(b"content-length:"):
+                n = int(line.split(b":")[1])
+        return status, json.loads(f.read(n))
+
+    def test_gh_api(self):
+        sess = self.gh_api_session()
+        self.assertIn("gh-api", sess["providers"])
+        self.assertEqual(sess["hosts"], {"api.github.com": "127.0.0.1"})
+        self.assertEqual(sess["sysctls"], {"net.ipv4.ip_unprivileged_port_start": "443"})
+        self.assertEqual(sess["start"], [["apod-gh-api-relay"]])
+        self.assertEqual(sess["env"]["NODE_EXTRA_CA_CERTS"], "/run/apod-gh-api/ca.pem")
+        self.assertIn([str(self.root / "broker/gh-api/ca.pem"), "/run/apod-gh-api/ca.pem", "ro"], sess["mounts"])
+        self.assertFalse(any("key" in m[0] for m in sess["mounts"]))  # the CA's key stays on the host
+        # gh auth token: a placeholder with gh-api, nothing without it.
+        e = self.pod_env(sess)
+        r = subprocess.run([sys.executable, SHIM, "auth", "token"], env=e, capture_output=True, text=True)
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "apod-gh-api-placeholder-token"))
+        r = subprocess.run([sys.executable, SHIM, "auth", "token"], env=self.pod_env(self.sess), capture_output=True, text=True)
+        self.assertEqual((r.returncode, r.stdout), (1, ""))
+        FakeAPI.seen.clear()
+        tls, f = self.gh_api_tls(sess)
+        # REST in scope and role: sent on with the account's token, not the placeholder.
+        st, out = self.gh_api_call(tls, f, "GET", "/repos/acme/widget/pulls?head=acme:feature&state=open&per_page=1")
+        self.assertEqual((st, out["path"]), (200, "/repos/acme/widget/pulls?head=acme:feature&state=open&per_page=1"))
+        self.assertEqual(FakeAPI.seen[-1]["auth"], "Bearer tok-agentbot")
+        self.assertEqual(FakeAPI.seen[-1]["host"], "api.github.com")
+        # GraphQL on the same connection, with an alias, as Claude Code's batch.
+        q = 'query { rateLimit { remaining } a0: repository(owner:"acme",name:"widget"){ pullRequest(number:1){ reviewDecision } } }'
+        st, out = self.gh_api_call(tls, f, "POST", "/graphql", {"query": q})
+        self.assertEqual(st, 200)
+        self.assertEqual(json.loads(FakeAPI.seen[-1]["body"])["query"], q)
+        # Out of scope, or beyond the role: refused at once (no waiting for approval), never sent.
+        n = len(FakeAPI.seen)
+        t0 = time.time()
+        st, out = self.gh_api_call(tls, f, "GET", "/repos/other/thing/pulls")
+        self.assertEqual(st, 403)
+        self.assertIn("out of this session's scope: gh:other/thing", out["message"])
+        st, out = self.gh_api_call(tls, f, "DELETE", "/repos/acme/widget")
+        self.assertEqual(st, 403)
+        self.assertIn("not allowed for role dev", out["message"])
+        st, out = self.gh_api_call(tls, f, "POST", "/graphql", {"query": 'mutation { deleteRepository(input:{}) { clientMutationId } }'})
+        self.assertEqual(st, 403)
+        self.assertLess(time.time() - t0, 3)  # APOD_BROKER_ASK_TIMEOUT is 4
+        self.assertEqual(len(FakeAPI.seen), n)
+        tls.close()
+        # In the broker's log like any request, marked direct.
+        log = [json.loads(x) for x in (self.root / "broker/log.jsonl").read_text().splitlines()]
+        mine = [(e["request"], e["decision"]) for e in log if e["session"] == sess["id"]]
+        self.assertIn(("GET https://api.github.com/repos/acme/widget/pulls?head=acme:feature&state=open&per_page=1 (direct)",
+                       "allowed"), mine)
+        self.assertIn(("GET https://api.github.com/repos/other/thing/pulls (direct)", "rejected"), mine)
+
+    def test_gh_api_relay(self):
+        # The pod's relay: a TCP port (443 in the pod) passed through to the broker's tunnel.
+        sess = self.gh_api_session()
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        e = dict(self.pod_env(sess), APOD_GH_API_PORT=str(port))
+        r = subprocess.run([HERE / "extensions/apod-gh-api-relay"], env=e, capture_output=True, text=True, timeout=10)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+        def kill_relay():
+            for d in Path("/proc").iterdir():
+                try:
+                    if d.name.isdigit() and f"APOD_GH_API_PORT={port}".encode() in (d / "environ").read_bytes():
+                        os.kill(int(d.name), 9)
+                except OSError:
+                    pass
+        self.addCleanup(kill_relay)
+        tls, f = self.gh_api_tls(sess, socket.create_connection(("127.0.0.1", port)))
+        st, out = self.gh_api_call(tls, f, "GET", "/repos/acme/widget")
+        self.assertEqual((st, out["path"]), (200, "/repos/acme/widget"))
+        tls.close()
+
+    def test_gh_api_off_by_default_and_on_host_network(self):
+        self.assertNotIn("gh-api", self.sess["providers"])
+        self.assertEqual(self.sess["hosts"], {})
+        if self.gh_api_certs is False:
+            return
+        warnings = []
+        pdir_toml = "[gh-api]\nenabled = true\n"
+        sess = self.register("dev", [], toml=pdir_toml, warnings=warnings)
+        self.assertIn("gh-api", sess["providers"])
+        # --network host: off, with a warning.
+        pdir = self.tmp / "profiles" / "hostnet"
+        pdir.mkdir(parents=True)
+        (pdir / "broker.toml").write_text(pdir_toml + '[gh]\nuser = "agentbot"\n')
+        r = subprocess.run([sys.executable, BROKER, "register", "--profile", "test", "--profile-dir", str(pdir),
+                            "--project", str(self.tmp / "proj"), "--network", "host"], env=self.env,
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("gh-api", json.loads(r.stdout)["providers"])
+        self.assertIn("shares the host's network", r.stderr)
 
     def test_sign_commits(self):
         # The profile holds the key, the role the actions, the scope the repositories.

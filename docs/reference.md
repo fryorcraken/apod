@@ -84,28 +84,29 @@ Everything lives in `~/.agent-pod/<profile>/` (`APOD_ROOT` overrides `~/.agent-p
 A profile's `~/.agent-pod/<profile>/broker.toml`, over `~/.agent-pod/broker.toml` (shared by
 every profile; key by key within each table; `role` and `scope` are ignored there).
 
-| Key                          |                                                                                                                                                                     |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `role`                       | The default role (`--role` overrides; default `reader`).                                                                                                            |
-| `scope`                      | Scope entries, `["gh:ORG/*", "ssh:devbox"]`, added to the project's remotes and `--scope`.                                                                          |
-| `[gh] user`                  | The host `gh` account the broker acts as. Required for `gh` and GitHub remotes.                                                                                     |
-| `[git-sign] key`             | The private key pods sign commits and tags with (its `.pub` next to it).                                                                                            |
-| `[git-sign] confirm`         | `true`: confirm each signature on the host (needs openssh-askpass).                                                                                                 |
-| `[git-sign] auto`            | `false`: don't turn on `commit.gpgsign`/`tag.gpgsign`, even for roles that sign.                                                                                    |
-| `[ssh] key`, `[ssh] keys`    | The private key (or keys) pods log in with. The ssh extension is on only for a pod with hosts in scope (`[ssh] hosts` or `--scope ssh:`).                           |
-| `[ssh] hosts`                | Hosts in scope, as named in the host's ssh config: `NAME` (as the user the host's ssh config gives NAME: its `User`, else your user name) or `USER@NAME` (as USER). |
-| `[ssh] confirm`              | `true`: confirm each login on the host.                                                                                                                             |
-| `[ssh] proxy`                | `false`: the pod connects to hosts itself instead of through the broker (default `true`).                                                                           |
-| `[NAME] enabled`             | `false`: the extension NAME is off for the profile's pods, as if it weren't installed (`[rad] enabled = false`).                                                    |
-| `[rad] autodetect`           | `true`: Radicle is on, and the project's `rad://` remotes join the scope. Off by default.                                                                           |
-| `[rad] enabled`              | `true`: Radicle is on, for the `rad:RID` entries in the scope only. `false` wins over `autodetect`.                                                                 |
-| `[rad] home`                 | `RAD_HOME` of the identity pushes land as (default `$RAD_HOME` or `~/.radicle`).                                                                                    |
-| `[rad] key`                  | The Radicle signing key (default `home/keys/radicle`).                                                                                                              |
-| `[rad] confirm`              | `true`: confirm each use of the Radicle key.                                                                                                                        |
-| `[rad] nid`, `[rad] storage` | The node id and storage folder, when `rad` can't tell (default: `rad self --nid`, `home/storage`).                                                                  |
-| `[notify] enabled`           | `true`: pods may send desktop notifications (`apod-notify`).                                                                                                        |
-| `[notify] command`           | The command, called with TITLE TEXT (default `["notify-send", "-a", "apod"]`).                                                                                      |
-| `[notify] urgent`            | Arguments added for `apod-notify --urgent` (default `["-u", "critical"]`).                                                                                          |
+| Key                          |                                                                                                                                                                                                        |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `role`                       | The default role (`--role` overrides; default `reader`).                                                                                                                                               |
+| `scope`                      | Scope entries, `["gh:ORG/*", "ssh:devbox"]`, added to the project's remotes and `--scope`.                                                                                                             |
+| `[gh] user`                  | The host `gh` account the broker acts as. Required for `gh` and GitHub remotes.                                                                                                                        |
+| `[git-sign] key`             | The private key pods sign commits and tags with (its `.pub` next to it).                                                                                                                               |
+| `[git-sign] confirm`         | `true`: confirm each signature on the host (needs openssh-askpass).                                                                                                                                    |
+| `[git-sign] auto`            | `false`: don't turn on `commit.gpgsign`/`tag.gpgsign`, even for roles that sign.                                                                                                                       |
+| `[ssh] key`, `[ssh] keys`    | The private key (or keys) pods log in with. The ssh extension is on only for a pod with hosts in scope (`[ssh] hosts` or `--scope ssh:`).                                                              |
+| `[ssh] hosts`                | Hosts in scope, as named in the host's ssh config: `NAME` (as the user the host's ssh config gives NAME: its `User`, else your user name) or `USER@NAME` (as USER).                                    |
+| `[ssh] confirm`              | `true`: confirm each login on the host.                                                                                                                                                                |
+| `[ssh] proxy`                | `false`: the pod connects to hosts itself instead of through the broker (default `true`).                                                                                                              |
+| `[NAME] enabled`             | `false`: the extension NAME is off for the profile's pods, as if it weren't installed (`[rad] enabled = false`).                                                                                       |
+| `[rad] autodetect`           | `true`: Radicle is on, and the project's `rad://` remotes join the scope. Off by default.                                                                                                              |
+| `[rad] enabled`              | `true`: Radicle is on, for the `rad:RID` entries in the scope only. `false` wins over `autodetect`.                                                                                                    |
+| `[rad] home`                 | `RAD_HOME` of the identity pushes land as (default `$RAD_HOME` or `~/.radicle`).                                                                                                                       |
+| `[rad] key`                  | The Radicle signing key (default `home/keys/radicle`).                                                                                                                                                 |
+| `[rad] confirm`              | `true`: confirm each use of the Radicle key.                                                                                                                                                           |
+| `[rad] nid`, `[rad] storage` | The node id and storage folder, when `rad` can't tell (default: `rad self --nid`, `home/storage`).                                                                                                     |
+| `[gh-api] enabled`           | `true`: `https://api.github.com` from the pod goes through the broker, checked and with the account's token ([guide](guides.md#github-api-from-the-pod)). Needs `[gh] user` and `openssl` on the host. |
+| `[notify] enabled`           | `true`: pods may send desktop notifications (`apod-notify`).                                                                                                                                           |
+| `[notify] command`           | The command, called with TITLE TEXT (default `["notify-send", "-a", "apod"]`).                                                                                                                         |
+| `[notify] urgent`            | Arguments added for `apod-notify --urgent` (default `["-u", "critical"]`).                                                                                                                             |
 
 Extensions read their own `[NAME]` table.
 
@@ -165,6 +166,9 @@ The broker turns each request into actions (what it does) and targets (what it t
   add`, and GraphQL subscriptions; `repo set-default`, `run download`, `release download` and
   `gist clone` (they need the pod's files); `pr checkout` and `repo clone` run in the pod
   instead, through git. Links in titles and bodies aren't targets.
+- **gh-api** (`gh:` actions, as for `gh api`): a request to `https://api.github.com` by method
+  and path, or GraphQL by top-level field; shown as `METHOD https://api.github.com/... (direct)`.
+  It never waits for approval: what the role and scope don't allow is refused at once.
 - **github** and **rad** (git): `fetch`, `fetch public` (a public GitHub repository outside the
   scope), and pushes by ref: `push branch`, `push default-branch`, `push tag`, `push delete`,
   `push force` (a branch update that isn't a fast-forward, on top of the ref's own action),
@@ -187,17 +191,17 @@ The broker turns each request into actions (what it does) and targets (what it t
 
 On the host:
 
-| Variable                                                 |                                                                                                 |
-| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `APOD_ROOT`                                              | Where profiles and the broker's state live (default `~/.agent-pod`).                            |
-| `APOD_IMAGE`                                             | The default image (default `apod`).                                                             |
-| `APOD_SSH_TTL`                                           | How long keys stay in the broker's agent and per-run agents (default `4h`).                     |
-| `APOD_BROKER_ASK_TIMEOUT`                                | Seconds a request waits for approval (default `90`; `0` rejects at once).                       |
-| `APOD_BROKER_NOTIFY`                                     | How the TUI notifies you: `osc9`, `osc99`, `osc777`, `bell`, `none`.                            |
-| `APOD_PANE_ENV`                                          | Variables that identify the terminal tab, for `apod resume` (default `HERDR_PANE_ID HC_SCOPE`). |
-| `APOD_GDOCS_MCP`                                         | The google-docs-mcp checkout (default `~/src/fryorcraken/google-docs-mcp`).                     |
-| `APOD_GDOCS_SCOPES`                                      | Its Google scopes (default `docs,sheets,slides,drive`).                                         |
-| `APOD_GH_BIN`, `APOD_GH_GIT_UPSTREAM`, `APOD_SSH_CONFIG` | For the tests: the `gh` binary, the git server and the ssh config the broker uses.              |
+| Variable                                                                         |                                                                                                               |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `APOD_ROOT`                                                                      | Where profiles and the broker's state live (default `~/.agent-pod`).                                          |
+| `APOD_IMAGE`                                                                     | The default image (default `apod`).                                                                           |
+| `APOD_SSH_TTL`                                                                   | How long keys stay in the broker's agent and per-run agents (default `4h`).                                   |
+| `APOD_BROKER_ASK_TIMEOUT`                                                        | Seconds a request waits for approval (default `90`; `0` rejects at once).                                     |
+| `APOD_BROKER_NOTIFY`                                                             | How the TUI notifies you: `osc9`, `osc99`, `osc777`, `bell`, `none`.                                          |
+| `APOD_PANE_ENV`                                                                  | Variables that identify the terminal tab, for `apod resume` (default `HERDR_PANE_ID HC_SCOPE`).               |
+| `APOD_GDOCS_MCP`                                                                 | The google-docs-mcp checkout (default `~/src/fryorcraken/google-docs-mcp`).                                   |
+| `APOD_GDOCS_SCOPES`                                                              | Its Google scopes (default `docs,sheets,slides,drive`).                                                       |
+| `APOD_GH_BIN`, `APOD_GH_GIT_UPSTREAM`, `APOD_GH_API_UPSTREAM`, `APOD_SSH_CONFIG` | For the tests: the `gh` binary, the git server, the API server (`gh-api`) and the ssh config the broker uses. |
 
 In the pod: `APOD_PROFILE` (the profile), `APOD_BROKER_SOCK` (the broker's socket), and the
 variables from the profile's `env`.

@@ -675,14 +675,15 @@ def desktop_notify(ev):
         pass
 
 
-def authorize(sess, req, ev, waiting=None):
-    """True if the request may go ahead: allowed outright, or approved while it waits."""
+def authorize(sess, req, ev, waiting=None, ask=True):
+    """True if the request may go ahead: allowed outright, or approved while it waits (only
+    when ask: otherwise what isn't allowed outright is rejected at once)."""
     verdict, missing, out, reason = evaluate(sess, req)
     ev.update(missing=missing, out=out, reason=reason)
     if verdict == "allow":
         ev["decision"] = "allowed"
         return True
-    if verdict == "deny" or ASK_TIMEOUT <= 0:
+    if verdict == "deny" or ASK_TIMEOUT <= 0 or not ask:
         ev["decision"] = "denied" if verdict == "deny" else "rejected"
         return False
     p = Pending(ev)
@@ -704,15 +705,16 @@ def authorize(sess, req, ev, waiting=None):
     return True
 
 
-def check(sess, req, waiting=None, extra=None):
-    """authorize() with the event logged: (ok, event)."""
+def check(sess, req, waiting=None, extra=None, ask=True):
+    """authorize() with the event logged: (ok, event). ask=False: never wait for the user (for
+    requests a tool makes on its own, which nobody would be there to approve)."""
     # The same action or target twice (a GraphQL request with 20 identical mutations) is one.
     req.actions = list(dict.fromkeys(req.actions))
     req.targets = list(dict.fromkeys(tuple(t) for t in req.targets))
     ev = new_event(sess, req)
     ev.update(extra or {})
     try:
-        ok = authorize(sess, req, ev, waiting)
+        ok = authorize(sess, req, ev, waiting, ask)
     except BrokerError as e:
         ev.update(decision="error", reason=str(e))
         ok = False
@@ -1061,6 +1063,7 @@ def register(r):
     if old:
         warnings.append(f"scope entries in the old form; write them as {', '.join(old)}")
     out = {"env": {"APOD_BROKER_SOCK": f"{POD_DIR}/broker.sock"}, "git_config": [], "mounts": [],
+           "hosts": {}, "sysctls": {}, "start": [],
            "context": [], "need_keys": [], "providers": [], "warnings": warnings}
     start_agent()
     # The scope first, so the rules below see all of it: the profile's and the launch's entries
@@ -1100,6 +1103,7 @@ def register(r):
             print(f"apod-broker: {p.name}.configure: {e!r}", file=sys.stderr, flush=True)
             out["warnings"].append(f"broker extension {p.name} failed ({e}); it's off for this pod")
             off[p.name] = "failed to set up"
+    check_pod_setup(out)
     sess.cfg["_providers"] = out["providers"]
     sess.cfg["_off"] = off
     for name in off:  # the scope lists only what the pod can act on
@@ -1118,6 +1122,22 @@ def register(r):
     return {"id": sid, "dir": str(sess.dir), "pod_dir": POD_DIR, "ask_timeout": ASK_TIMEOUT,
             "agent": str(AGENT), **out, "context": "\n".join([head] + out["context"]), **sess.summary(),
             "warnings": out["warnings"]}
+
+
+def check_pod_setup(out):
+    """What extensions ask of the pod beyond mounts and env, before apod passes it to podman:
+    host names (--add-host), network sysctls (--sysctl, net.* only: the pod's own network
+    namespace) and commands the pod runs before the agent."""
+    line = re.compile(r"[^\t\n\r]+")
+    for name, addr in out["hosts"].items():
+        if not re.fullmatch(r"[A-Za-z0-9.-]+", name) or not re.fullmatch(r"[0-9.]+|[0-9A-Fa-f:]+", addr):
+            raise BrokerError(f"bad pod host entry {name} {addr}")
+    for k, v in out["sysctls"].items():
+        if not re.fullmatch(r"net\.[a-z0-9_.]+", k) or not re.fullmatch(r"[0-9 ]+", str(v)):
+            raise BrokerError(f"bad pod sysctl {k}={v}")
+    for argv in out["start"]:
+        if not argv or not all(isinstance(a, str) and line.fullmatch(a) for a in argv):
+            raise BrokerError(f"bad pod start command {argv!r}")
 
 
 def unregister(sid):
