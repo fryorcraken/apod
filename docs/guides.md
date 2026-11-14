@@ -92,8 +92,10 @@ key = "~/.ssh/id_apod_broker_sign"
 
 [ssh]
 key = "~/.ssh/id_apod_broker"
-hosts = ["devbox", "root@nas"]
 ```
+
+with the hosts in its `scope`, next to the rest: `scope = ["gh:fryorcraken/*", "ssh:devbox", "ssh:root@nas"]`
+(before the first table).
 
 ```sh
 apod work ~/src/org/repo                                        # as broker.toml says
@@ -410,7 +412,7 @@ work rather than stopping a hostile one; pushing the commit is checked separatel
 > account: the broker decides *whether* it logs in, not what it does once logged in. On those
 > hosts, roles and approvals no longer limit the damage a pod can do: only that account's own
 > rights do. What the broker does limit is *where*: a pod logs in only to the hosts you
-> configured (`[ssh] hosts`, or `--scope ssh:HOST`), as the users you allow, and any other host
+> put in scope (`scope = ["ssh:HOST"]`, or `--scope ssh:HOST`), as the users you allow, and any other host
 > waits for your approval. Give pods an unprivileged account on each host, never root unless
 > the job needs it, and only the hosts the job needs.
 
@@ -432,9 +434,10 @@ route to them.
 3. **The profile:**
 
    ```toml
+   scope = ["ssh:devbox", "ssh:deploy@nas"]  # NAME: as your ssh config's User for it; USER@NAME: as USER
+
    [ssh]
    key = "~/.ssh/id_apod_broker"   # or keys = [...]
-   hosts = ["devbox", "deploy@nas"] # NAME: as your ssh config's User for it; USER@NAME: as USER
    # confirm = true                 # confirm each login on the host (needs openssh-askpass)
    # proxy = false                  # the pod connects itself (it needs a route to the hosts)
    ```
@@ -450,7 +453,7 @@ route to them.
    (or add `ssh = ["connect", "login"]` to a role in your `roles.toml`). Another host waits
    for you whatever the role.
 
-   **No hosts, no ssh.** A pod with no hosts in scope (no `hosts` here, no `--scope ssh:`) gets
+   **No hosts, no ssh.** A pod with no hosts in scope (no `ssh:` entry in its `scope`, no `--scope ssh:`) gets
    no ssh from the broker, so an `[ssh]` key in `~/.agent-pod/broker.toml` costs nothing to the
    profiles that don't name hosts. The launch asks for the key's passphrase only when the role
    logs in without asking (`ops`).
@@ -535,7 +538,7 @@ each written `KIND:VALUE`. The kind is what sort of thing it is (a GitHub reposi
 repository, a host), the value which one. Each kind belongs to an extension, and one extension
 can declare several: `gh` declares `gh:` (repositories and owners) and `gh-project:` (project
 boards). Values take shell-style patterns (`*`). The scope is built from the project's GitHub and Radicle remotes (and its folder, for signing),
-the profile's `scope` and `[ssh] hosts`, and `--scope`. Forks and repositories the session
+the profile's `scope`, and `--scope`. Forks and repositories the session
 creates join it. The kinds:
 
 | Entry                                           | Covers                                                                              |

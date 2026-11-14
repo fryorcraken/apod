@@ -649,7 +649,7 @@ class BrokerTest(unittest.TestCase):
         subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "pk", "-f", key], check=True)
         (self.root / "keyprof").mkdir()
         self.addCleanup(shutil.rmtree, self.root / "keyprof")
-        (self.root / "keyprof/broker.toml").write_text(f'[ssh]\nkey = "{key}"\nhosts = ["devbox"]\n')
+        (self.root / "keyprof/broker.toml").write_text(f'scope = ["ssh:devbox"]\n[ssh]\nkey = "{key}"\n')
         r = self.admin("keys")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertRegex(r.stdout, rf"to load +{key} +keyprof \[ssh\]")
@@ -983,6 +983,14 @@ class BrokerTest(unittest.TestCase):
         self.assertNotIn("gh-api", json.loads(r.stdout)["providers"])
         self.assertIn("shares the host's network", r.stderr)
 
+    def test_ssh_hosts_old_form(self):
+        # [ssh] hosts, before hosts were scope entries: still in scope, with a warning.
+        warnings = []
+        sess = self.register("ops", [], toml=f'[ssh]\nkey = "{self.tmp}/userkey"\nhosts = ["devbox"]\n', warnings=warnings)
+        self.assertIn("ssh", sess["providers"])
+        self.assertIn("ssh:devbox", sess["scope"])
+        self.assertIn('scope = ["ssh:devbox"]', warnings[0])
+
     def test_sign_commits(self):
         # The profile holds the key, the role the actions, the scope the repositories.
         toml = f'[git-sign]\nkey = "{self.tmp}/signkey"\n'
@@ -1078,11 +1086,11 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual([s for s in sess["scope"] if s.startswith("ssh:")], ["ssh:devbox", "ssh:root@nas"])
         self.assertEqual(sess["env"]["SSH_AUTH_SOCK"], f"{sess['pod_dir']}/agent.sock")
         # A role that can't log in (dev: each login waits for you): on, its key not asked for.
-        sess = self.register("dev", [], toml='[ssh]\nhosts = ["devbox"]\n')
+        sess = self.register("dev", ["ssh:devbox"], toml='[ssh]\n')
         self.assertIn("ssh", sess["providers"])
         self.assertFalse([k for k in sess["need_keys"] if k["path"].endswith("userkey")])
         # A profile's table merges over the global one: its hosts, the global key.
-        sess = self.register("ops", [], toml='[ssh]\nhosts = ["devbox"]\n')
+        sess = self.register("ops", ["ssh:devbox"], toml='[ssh]\n')
         self.assertEqual(sess["role"], "ops")
         self.assertIn("ssh:devbox", sess["scope"])
         self.assertEqual(Agent(Path(sess["dir"]) / "agent.sock").identities(), [blob_of(self.tmp / "userkey.pub")])
@@ -1137,7 +1145,7 @@ class BrokerTest(unittest.TestCase):
         self.assertIn("gh:pr create", dev)
 
     def test_ssh_agent_signs_only_for_hosts_in_scope(self):
-        sess = self.register("ops", [], toml=f'[ssh]\nkey = "{self.tmp}/userkey"\nhosts = ["devbox"]\n')
+        sess = self.register("ops", ["ssh:devbox"], toml=f'[ssh]\nkey = "{self.tmp}/userkey"\n')
         sock = Path(sess["dir"]) / "agent.sock"
         user = blob_of(self.tmp / "userkey.pub")
         a = Agent(sock)
@@ -1169,7 +1177,7 @@ class BrokerTest(unittest.TestCase):
         self.assertIsNone(a.sign(user, b"some other data"))
 
     def test_ssh_connect_through_broker(self):
-        sess = self.register("ops", [], toml=f'[ssh]\nkey = "{self.tmp}/userkey"\nhosts = ["devbox"]\n')
+        sess = self.register("ops", ["ssh:devbox"], toml=f'[ssh]\nkey = "{self.tmp}/userkey"\n')
         e = self.pod_env(sess)
         r = subprocess.run([str(self.shim_bin / "apod-ssh-connect"), "devbox", "22"], input=b"hello", env=e,
                            capture_output=True, timeout=20)
@@ -1189,7 +1197,7 @@ class BrokerTest(unittest.TestCase):
         self.assertIn("ProxyCommand", conf)
         # ssh devbox in the pod logs in as the host's ssh would, not as the pod's user.
         self.assertIn(f"Host devbox\n    User {getpass.getuser()}\n", conf)
-        sess = self.register("ops", [], toml=f'[ssh]\nkey = "{self.tmp}/userkey"\nhosts = ["deploy@nas"]\n')
+        sess = self.register("ops", ["ssh:deploy@nas"], toml=f'[ssh]\nkey = "{self.tmp}/userkey"\n')
         self.assertIn("Host nas\n    User deploy\n", (Path(sess["dir"]) / "ssh_config").read_text())
 
     # --- rad -------------------------------------------------------------------------------

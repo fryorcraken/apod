@@ -92,8 +92,8 @@ every profile; key by key within each table; `role` and `scope` are ignored ther
 | `[git-sign] key`             | The private key pods sign commits and tags with (its `.pub` next to it).                                                                                                                               |
 | `[git-sign] confirm`         | `true`: confirm each signature on the host (needs openssh-askpass).                                                                                                                                    |
 | `[git-sign] auto`            | `false`: don't turn on `commit.gpgsign`/`tag.gpgsign`, even for roles that sign.                                                                                                                       |
-| `[ssh] key`, `[ssh] keys`    | The private key (or keys) pods log in with. The ssh extension is on only for a pod with hosts in scope (`[ssh] hosts` or `--scope ssh:`).                                                              |
-| `[ssh] hosts`                | Hosts in scope, as named in the host's ssh config: `NAME` (as the user the host's ssh config gives NAME: its `User`, else your user name) or `USER@NAME` (as USER).                                    |
+| `[ssh] key`, `[ssh] keys`    | The private key (or keys) pods log in with. The ssh extension is on only for a pod with hosts in scope (`scope = ["ssh:NAME"]` or `--scope ssh:NAME`).                                                 |
+| `[ssh] hosts`                | The old way to put hosts in scope, still read with a launch warning: write `scope = ["ssh:NAME"]` instead.                                                                                             |
 | `[ssh] confirm`              | `true`: confirm each login on the host.                                                                                                                                                                |
 | `[ssh] proxy`                | `false`: the pod connects to hosts itself instead of through the broker (default `true`).                                                                                                              |
 | `[NAME] enabled`             | `false`: the extension NAME is off for the profile's pods, as if it weren't installed (`[rad] enabled = false`).                                                                                       |
@@ -148,7 +148,7 @@ top of [`roles.toml`](../roles.toml) and [below](#how-requests-are-classified).
 Values take shell-style patterns, case-insensitive. Automatically in scope, each when its
 extension is on for the pod: the project's GitHub remotes (with `[gh] user`), its Radicle
 remotes (with `[rad] autodetect`), the project folder, when it's a git repository, and the repositories under it (`git-local:`, with a `[git-sign]`
-key), `[ssh] hosts` (with an `[ssh]` key), and forks and repositories the session creates. `apod broker scopes` lists every kind,
+key), and forks and repositories the session creates. `apod broker scopes` lists every kind,
 your extensions' included. Entries of a kind whose extension is off for the pod are dropped from its
 scope.
 

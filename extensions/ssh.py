@@ -9,8 +9,9 @@ destination before connecting.
 Actions: ssh:connect, ssh:login. Targets: ("ssh", "USER@NAME"), NAME as in the scope
 ("devbox", "root@nas", "key:SHA256:..."); "@NAME" for a connection (no user yet). A scope entry
 NAME covers logins as the user the host's ssh config gives NAME (its User, else yours) only;
-USER@NAME, as USER only. On for a pod with an [ssh] key and hosts in scope ([ssh] hosts or --scope ssh:); the key is
-asked for at launch only when the role allows ssh:login."""
+USER@NAME, as USER only. On for a pod with an [ssh] key and hosts in scope (scope = ["ssh:NAME"] or
+--scope ssh:NAME); the key is asked for at launch only when the role allows ssh:login. [ssh] hosts,
+the old way to name them, still adds to the scope, with a warning."""
 import base64
 import fnmatch
 import hashlib
@@ -301,6 +302,7 @@ class SSHProvider(Provider):
         return [(k, cfg.get("confirm", False)) for k in cfg.get("keys") or ([cfg["key"]] if cfg.get("key") else [])]
 
     def targets(self, cfg, reg):
+        # [ssh] hosts: the old form of scope = ["ssh:NAME"], still read (configure warns).
         return [("ssh", h) for h in cfg.get("hosts", [])]
 
     def configure(self, sess, cfg, reg, out):
@@ -317,6 +319,9 @@ class SSHProvider(Provider):
         if not blobs:
             return False
         sess.cfg["ssh"] = {"blobs": blobs}
+        if cfg.get("hosts"):
+            out["warnings"].append("[ssh] hosts is the old form: write them in the profile's scope instead, "
+                                   "scope = [" + ", ".join(f'"ssh:{h}"' for h in cfg["hosts"]) + "]")
         out["env"]["SSH_AUTH_SOCK"] = f"{POD_DIR}/agent.sock"
         hosts = ", ".join(sess.entries("ssh")) or "none yet"
         if cfg.get("proxy", True):

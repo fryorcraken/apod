@@ -301,10 +301,11 @@ case ${1:-} in
     toml=; envf=
     if [ -n "$broker" ]; then
       toml+="role = $(tq "$role")"$'\n'
+      for h in "${hosts[@]}"; do scope+=("ssh:$h"); done  # the ssh hosts are scope entries too
       [ ${#scope[@]} -eq 0 ] || toml+="scope = $(tlist "${scope[@]}")"$'\n'
       [ -z "$ghuser" ] || toml+=$'\n[gh]\n'"user = $(tq "$ghuser")"$'\n'
       [ -z "$signkey" ] || toml+=$'\n[git-sign]\n'"key = $(tq "$(tilde "$signkey")")"$'\n'
-      [ -z "$sshkey" ] || toml+=$'\n[ssh]\n'"key = $(tq "$(tilde "$sshkey")")"$'\n'"hosts = $(tlist "${hosts[@]}")"$'\n'
+      [ -z "$sshkey" ] || toml+=$'\n[ssh]\n'"key = $(tq "$(tilde "$sshkey")")"$'\n'
       [ -z "$rad" ] || toml+=$'\n[rad]\nautodetect = true\n'
       [ -z "$notify" ] || toml+=$'\n[notify]\nenabled = true\n'
     fi
