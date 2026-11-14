@@ -991,6 +991,32 @@ class BrokerTest(unittest.TestCase):
         self.assertIn("ssh:devbox", sess["scope"])
         self.assertIn('scope = ["ssh:devbox"]', warnings[0])
 
+    def test_profile_adds_to_role(self):
+        # allow = [...] in a profile's broker.toml adds to its role, deny takes away; a scope entry
+        # the role can't use at all gets a warning.
+        w = []
+        sess = self.register("dev", [], toml=f'scope = ["ssh:devbox"]\n[ssh]\nkey = "{self.tmp}/userkey"\n', warnings=w)
+        self.assertIn("ssh:devbox in scope, but role dev allows nothing of ssh", w[0])
+        w = []
+        sess = self.register("dev", [], toml=f'scope = ["ssh:devbox"]\nallow = ["ssh:connect", "ssh:login"]\n'
+                                             f'deny = ["gh:pr create"]\n[ssh]\nkey = "{self.tmp}/userkey"\n', warnings=w)
+        self.assertNotIn("allows nothing of ssh", w[0])
+        self.assertIn("ssh:login", sess["allowed"])
+        self.assertIn("this profile allows ssh:connect, ssh:login", sess["text"])
+        r = self.gh("pr", "create", "--title", "t", "--body", "b", sess=sess, cwd=self.work, expect=1)
+        self.assertIn("never allowed", r.stderr)
+        # Kept across a broker restart, like the role and scope.
+        state = json.loads((Path(sess["dir"]).parent / f"{sess['id']}.json").read_text())
+        self.assertEqual(state["extra"], {"allow": ["ssh:connect", "ssh:login"], "deny": ["gh:pr create"]})
+        # Not a list of PROVIDER:ACTION: the launch fails, rather than run with a role it didn't mean.
+        pdir = self.tmp / "profiles" / "badallow"
+        pdir.mkdir(parents=True)
+        (pdir / "broker.toml").write_text('allow = "ssh:login"\n')
+        r = subprocess.run([sys.executable, BROKER, "register", "--profile", "t", "--profile-dir", str(pdir),
+                            "--project", str(self.tmp / "proj")], env=self.env, capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('allow is a list of "PROVIDER:ACTION" patterns', r.stderr)
+
     def test_sign_commits(self):
         # The profile holds the key, the role the actions, the scope the repositories.
         toml = f'[git-sign]\nkey = "{self.tmp}/signkey"\n'

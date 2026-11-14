@@ -32,9 +32,10 @@ A pod uses the broker when its profile has a `broker.toml`, or when the launch p
 `--scope` or `--gh-user`. `--no-broker` turns it off for a run. The broker starts with the first
 pod that uses it and keeps running; its state is in `~/.agent-pod/broker/`.
 
-`apod new` writes a profile for you: it asks for the GitHub account, the git identity (offering
-the account's noreply address), a signing key (or creates one), ssh hosts, Radicle,
-notifications, the role and more scope, shows the `broker.toml` and `env` it would write, and
+`apod new` writes a profile for you: it asks for the role first, then the GitHub account, the
+git identity (offering the account's noreply address), a signing key (or creates one), ssh
+hosts, Radicle, notifications and more scope, offering to add to the role what it lacks for what
+you set up (`allow`, for that profile only), shows the `broker.toml` and `env` it would write, and
 writes nothing until you confirm. The guides below say what each part does; edit the files
 afterwards for the rest.
 
@@ -512,6 +513,28 @@ NAME` what each role allows of one extension.
 
 A pod's role is `--role`, else its profile's `role =`, else `reader`. One profile can take
 different roles per launch: `apod bot --role pm ~/src/org/planning`.
+
+**Adding to the role, for one profile.** `allow` and `deny` in the profile's `broker.toml` add
+actions to its role or take them away, for that profile's pods only, whatever role they launch
+with. For a `dev` profile that also logs in to hosts:
+
+```toml
+# ~/.agent-pod/work/broker.toml
+role = "dev"
+allow = ["ssh:connect", "ssh:login"]   # on top of dev: logins to the hosts in scope
+deny = ["github:push force"]           # never, for this profile
+scope = ["ssh:nuc"]
+
+[ssh]
+key = "~/.ssh/id_apod_broker"
+```
+
+The scope says *where* and the role *what*: an `ssh:` entry alone doesn't let a pod log in. A
+launch warns when a scope entry you wrote can't be used because the role allows nothing of its
+extension (`ssh:nuc in scope, but role dev allows nothing of ssh`), with what to add. `apod new`
+asks for the role first, and offers these additions as you set up ssh, signing, Radicle or
+notifications. `allow` and `deny` are ignored in `~/.agent-pod/broker.toml`, like `role` and
+`scope`.
 
 **Your own roles**, in `~/.agent-pod/roles.toml`. The built-in roles aren't copied there: they're
 read from `roles.toml` in the apod checkout, so they change when you update apod. Don't edit that

@@ -82,11 +82,13 @@ Everything lives in `~/.agent-pod/<profile>/` (`APOD_ROOT` overrides `~/.agent-p
 ## broker.toml
 
 A profile's `~/.agent-pod/<profile>/broker.toml`, over `~/.agent-pod/broker.toml` (shared by
-every profile; key by key within each table; `role` and `scope` are ignored there).
+every profile; key by key within each table; `role`, `scope`, `allow` and `deny` are ignored there).
 
 | Key                          |                                                                                                                                                                                                        |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `role`                       | The default role (`--role` overrides; default `reader`).                                                                                                                                               |
+| `allow`                      | Actions added to the role for this profile's pods, as `PROVIDER:ACTION` patterns: `["ssh:connect", "ssh:login"]`.                                                                                      |
+| `deny`                       | Actions this profile's pods never get, whatever the role allows: `["gh:pr create"]`.                                                                                                                   |
 | `scope`                      | Scope entries, `["gh:ORG/*", "ssh:devbox"]`, added to the project's remotes and `--scope`.                                                                                                             |
 | `[gh] user`                  | The host `gh` account the broker acts as. Required for `gh` and GitHub remotes.                                                                                                                        |
 | `[git-sign] key`             | The private key pods sign commits and tags with (its `.pub` next to it).                                                                                                                               |

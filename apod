@@ -219,6 +219,31 @@ case ${1:-} in
       name=
     done
 
+    section "Role"
+    note "What the agent may do without asking; anything else waits for your approval. The steps"
+    note "below offer to add what it lacks for what you set up, for this profile only (allow = [...])."
+    declare -A roleallow=(); roles=()
+    while IFS= read -r l; do
+      if [[ $l =~ ^([^\ :]+):\ (.*)$ ]]; then
+        r=${BASH_REMATCH[1]}; roles+=("$r"); printf '  %s%-12s%s %s\n' "$cb" "$r" "$cr" "${BASH_REMATCH[2]}" >&2
+      elif [[ $l =~ ^\ +allow:\ (.*)$ ]]; then roleallow[$r]=${BASH_REMATCH[1]}; fi
+    done < <(python3 "$apoddir/apod-broker" roles 2>/dev/null)
+    role=""
+    while :; do ask role "Role:" dev; [[ " ${roles[*]} " == *" $role "* ]] && break; warn "No role $role."; done
+    extra=()  # the profile's additions to the role
+    role_has() {  # role_has ACTION: the role, or what this profile adds, allows it
+      local p pats; IFS=, read -ra pats <<< "${roleallow[$role]:-}"
+      # shellcheck disable=SC2053 # the role's entries are patterns
+      for p in "${pats[@]}" "${extra[@]}"; do p=${p# }; [[ $1 == $p ]] && return 0; done
+      return 1
+    }
+    offer() {  # offer WHAT ACTION...: when the role lacks the first action, add them for this profile?
+      local what=$1; shift
+      role_has "$1" && return 0
+      if confirm "Role $role doesn't $what without asking. Allow it for this profile ($*)?" y; then extra+=("$@")
+      else note "Then each one waits for your approval."; fi
+    }
+
     section "GitHub"
     note "The broker runs gh and git pushes for the pod as a host gh login; its token never enters"
     note "the pod. Use a separate account for the agent (a bot), with access to its repositories."
@@ -262,37 +287,31 @@ case ${1:-} in
       signkey=${signkey/#\~/$HOME}
       [ -f "$signkey" ] && [ -f "$signkey.pub" ] || keypath signkey "No key there (with its .pub). Signing key (empty: none):"
     fi
+    [ -z "$signkey" ] || offer "sign commits" git-sign:commit git-sign:tag
 
     section "SSH"
     note "Hosts the agent may reach, through the broker, by their names in your ~/.ssh/config."
-    note "Only the ops role logs in; others ask you first."
     h=""; ask h "Hosts, separated by spaces or commas (empty: none):"; read -ra hosts <<< "${h//,/ }"
     sshkey=
     [ ${#hosts[@]} -eq 0 ] || while [ -z "$sshkey" ]; do keypath sshkey "Key it logs in with (a private key):"; done
+    [ -z "$sshkey" ] || offer "log in over ssh" ssh:connect ssh:login
 
     rad=
     if command -v rad >/dev/null; then
       section "Radicle"
       confirm "Push to the project's rad:// remotes (autodetect)?" n && rad=1
+      [ -z "$rad" ] || offer "push to Radicle" "rad:push branch" "rad:push patch"
     fi
 
     section "Notifications"
     notify=
     confirm "May the agent send you desktop notifications?" n && notify=1
+    [ -z "$notify" ] || offer "send notifications" notify:send
 
     broker=; [ -z "$ghuser$signkey$sshkey$rad$notify" ] || broker=1
-    role=""; scope=()
+    scope=()
     if [ -n "$broker" ]; then
-      section "Role and scope"
-      note "The role is what the agent may do without asking; anything else waits for your approval."
-      mapfile -t roles < <(python3 "$apoddir/apod-broker" roles 2>/dev/null | sed -n 's/^\([^ :]*\): \(.*\)/\1\t\2/p')
-      for r in "${roles[@]}"; do printf '  %s%-12s%s %s\n' "$cb" "${r%%$'\t'*}" "$cr" "${r#*$'\t'}" >&2; done
-      def=reader; [ -z "$ghuser" ] || def=dev; [ -n "$ghuser" ] || [ ${#hosts[@]} -eq 0 ] || def=ops
-      while :; do
-        ask role "Role:" "$def"
-        printf '%s\n' "${roles[@]%%$'\t'*}" | grep -qxF "$role" && break
-        warn "No role $role."
-      done
+      section "Scope"
       note "The scope is where: the launch folder's remotes are in it already; add more here."
       # Not ssh (the hosts above are its scope) nor git-local (the launch folder is in already).
       kinds=$(python3 "$apoddir/apod-broker" scopes 2>/dev/null | sed -n 's/^\([a-z][a-z0-9-]*\): .*/\1/p' |
@@ -310,6 +329,7 @@ case ${1:-} in
     toml=; envf=
     if [ -n "$broker" ]; then
       toml+="role = $(tq "$role")"$'\n'
+      [ ${#extra[@]} -eq 0 ] || toml+="allow = $(tlist "${extra[@]}")   # on top of the role, for this profile"$'\n'
       for h in "${hosts[@]}"; do scope+=("ssh:$h"); done  # the ssh hosts are scope entries too
       [ ${#scope[@]} -eq 0 ] || toml+="scope = $(tlist "${scope[@]}")"$'\n'
       [ -z "$ghuser" ] || toml+=$'\n[gh]\n'"user = $(tq "$ghuser")"$'\n'

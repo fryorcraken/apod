@@ -452,7 +452,7 @@ def fmt_scope(kind, v):
 
 
 class Session:
-    FIELDS = ("id", "profile", "role", "project", "scope", "grants", "cfg", "identity", "created")
+    FIELDS = ("id", "profile", "role", "project", "scope", "grants", "cfg", "identity", "created", "extra")
 
     def __init__(self, d):
         for k in self.FIELDS:
@@ -465,6 +465,8 @@ class Session:
         self.grants = {k: list((self.grants or {}).get(k, [])) for k in ("actions", "unscoped")}
         self.cfg = self.cfg or {}
         self.identity = self.identity or {}
+        # The profile's additions to its role (broker.toml allow, deny).
+        self.extra = {k: list((self.extra or {}).get(k, [])) for k in ("allow", "deny")}
         self.temp = {}  # (kind, value) -> expiry, from a one-off approval that spans two requests
 
     def data(self):
@@ -513,8 +515,13 @@ class Session:
     def scope_list(self):
         return [fmt_scope(k, v) for k in self.scope for v in self.scope[k]]
 
+    def rules(self):
+        """(allow, deny): the role's, then the profile's own (broker.toml allow and deny)."""
+        allow, deny = role_rules(self.role)
+        return allow + self.extra["allow"], deny + self.extra["deny"]
+
     def summary(self):
-        allow, _ = role_rules(self.role)
+        allow, _ = self.rules()
         return {"role": self.role, "accounts": self.accounts(), "scope": self.scope_list(),
                 "allowed": sorted(set(allow)), "identity": self.identity, "grants": self.grants,
                 "name": self.title(), "text": self.describe()}
@@ -522,14 +529,15 @@ class Session:
     def describe(self):
         """What this pod may do, for the agent: its system prompt at launch, gh auth status later
         (which also shows what the user approved since)."""
-        allow, _ = role_rules(self.role)
+        allow, _ = self.rules()
         active = self.cfg.get("_providers") or []
         by = collections.defaultdict(list)
         for a in sorted(set(allow)):
             prov, _, act = a.partition(":")
             by[prov].append(act)
         acc = ", ".join(f"{a} ({n})" for n, a in self.accounts().items())
-        lines = [f"apod broker: role {self.role}" + (f", acting as {acc}" if acc else "") + ".",
+        plus = "".join(f"; this profile {k}s {', '.join(v)}" for k, v in self.extra.items() if v)
+        lines = [f"apod broker: role {self.role}{plus}" + (f", acting as {acc}" if acc else "") + ".",
                  f"Scope (the repositories, projects, hosts and identities it may touch): "
                  f"{', '.join(self.scope_list()) or 'none'}.",
                  "Allowed without asking, on what's in scope:"]
@@ -627,7 +635,7 @@ HARD_DENY = []  # extended by providers: never allowed, whatever the role or gra
 
 
 def evaluate(sess, req):
-    allow, deny = role_rules(sess.role)
+    allow, deny = sess.rules()
     allow = allow + sess.grants["actions"]
     hard = [a for a in req.actions if matches(a, HARD_DENY + deny)]
     if hard:
@@ -1050,11 +1058,22 @@ def register(r):
     sess = Session({"id": sid, "profile": r.get("profile", ""), "role": role,
                     "project": r.get("project", ""), "created": now(), "identity": identity,
                     "cfg": {"_home": str(pdir / "home")}})
-    old = []
+    # The profile's additions to its role: allow = [...], deny = [...], as in roles.toml.
+    toml = Path(pdir) / "broker.toml"
+    for k in ("allow", "deny"):
+        v = cfg.get(k, [])
+        if not isinstance(v, list) or not all(isinstance(a, str) and ":" in a for a in v):
+            raise BrokerError(f'{toml}: {k} is a list of "PROVIDER:ACTION" patterns')
+        sess.extra[k] = [renamed_action(a) for a in v]
+        for prov in {a.split(":")[0] for a in sess.extra[k]}:
+            if prov not in PROVIDERS and not any(c in prov for c in "*?["):
+                warnings.append(f"{toml}: {k}: no extension {prov} is loaded")
+    old, written = [], set()  # written: the kinds of the scope entries the user wrote
     for e in list(cfg.get("scope", [])) + list(r.get("scope", [])):
         if e.strip():
             try:
                 sess.add_scope(parse_scope(e))
+                written.add(parse_scope(e)[0])
             except BrokerError as ex:
                 warnings.append(f"{ex}; ignored")
                 continue
@@ -1109,6 +1128,17 @@ def register(r):
     for name in off:  # the scope lists only what the pod can act on
         for k in own_kinds(name):
             sess.scope.pop(k, None)
+    # A scope entry you wrote that the role can't use: say so, rather than have every request wait.
+    allow = sess.rules()[0]
+    for kind in sorted(written):
+        owner = SCOPES[kind].provider if kind in SCOPES else ""
+        if owner in out["providers"] and sess.scope.get(kind) and \
+                not any(fnmatch.fnmatchcase(owner, a.split(":")[0]) for a in allow):
+            entries = ", ".join(fmt_scope(kind, v) for v in sess.scope[kind])
+            out["warnings"].append(
+                f"{entries} in scope, but role {role} allows nothing of {owner}: each request will wait for you. "
+                f'To allow it for this profile, add allow = ["{owner}:ACTION", ...] to {toml} '
+                f"(apod broker extensions {owner} lists its actions), or use a role that has them")
     if off:
         out["context"].append("Broker extensions off for this pod: "
                               + "; ".join(f"{n} ({why})" for n, why in off.items()) + ".")
