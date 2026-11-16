@@ -1,0 +1,63 @@
+run
+--rm
+-i
+--userns=keep-id
+--name
+apod-tokenother-proj-@PID@
+--hostname
+apod-tokenother
+--secret
+gh-other,type=env,target=GH_TOKEN
+-v
+@TMP@/apod/tokenother/home:/home/agent:z
+-v
+@TMP@/apod/worklog/00000000-0000-4000-8000-000000000005:/run/apod-worklog:z
+-v
+@TMP@/proj:@TMP@/proj:z
+--tmpfs
+/home/agent/.claude/sessions:rw,mode=1777,size=1m
+-w
+@TMP@/proj
+--label
+apod.profile=tokenother
+--label
+apod.project=@TMP@/proj
+--label
+apod.session=00000000-0000-4000-8000-000000000005
+apod
+bash
+-lc
+gh auth setup-git >/dev/null 2>&1 || true; exec "$@"
+_
+claude
+--permission-mode
+bypassPermissions
+--settings
+{"disableClaudeAiConnectors":true}
+--session-id
+00000000-0000-4000-8000-000000000005
+--append-system-prompt
+You are running inside an apod container (podman), profile "tokenother". Only these host paths are mounted:
+- @TMP@/proj (read-write, the project)
+Nothing else from the host is available. There are no permission prompts: the container is the isolation boundary.
+gh and git push over HTTPS use this profile's GitHub token.
+claude.ai connectors (Notion, Google Docs, etc.) are disabled for this run; they can be enabled at launch with apod -c.
+Work log: keep /run/apod-worklog/worklog.md up to date. It is kept on the host after this pod ends, and the user reviews it, across sessions, for work reports. After each meaningful step, append a few lines under a heading with today's date (## YYYY-MM-DD, a new one when the day changes): what you did, decided or found, what's blocked, what's next. Link PRs, issues and commits; facts, not narration; never secrets. Don't rewrite earlier entries.
+-e APOD_PROFILE=tokenother
+-e CLAUDE_CODE_DISABLE_AGENT_VIEW=1
+-e GIT_COMMITTER_EMAIL=host@example.com
+-e GIT_COMMITTER_NAME=Host User
+-e GIT_CONFIG_COUNT=6
+-e GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf
+-e GIT_CONFIG_KEY_1=url.https://github.com/.insteadOf
+-e GIT_CONFIG_KEY_2=url.https://github.com/.insteadOf
+-e GIT_CONFIG_KEY_3=user.name
+-e GIT_CONFIG_KEY_4=user.email
+-e GIT_CONFIG_KEY_5=gc.worktreePruneExpire
+-e GIT_CONFIG_VALUE_0=git@github.com:
+-e GIT_CONFIG_VALUE_1=github.com:
+-e GIT_CONFIG_VALUE_2=ssh://git@github.com/
+-e GIT_CONFIG_VALUE_3=Host User
+-e GIT_CONFIG_VALUE_4=host@example.com
+-e GIT_CONFIG_VALUE_5=never
+-e HOME=/home/agent

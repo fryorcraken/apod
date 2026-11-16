@@ -2,7 +2,8 @@
 """End-to-end tests for apod-broker and its pod shim, without GitHub, Radicle or sshd: a fake gh
 (the real gh for --help, canned answers otherwise), a local git upstream (git http-backend), a
 plain repository standing in for Radicle storage, real ssh-agents and ssh-keygen.
-Run: python3 tests/test_broker.py (KEEP=1 keeps the temporary directory)
+Run: python3 tests/test_broker.py (KEEP=1 keeps the temporary directory; APOD_TEST_TMP=DIR puts it
+there instead of tmp/, when the checkout's path is too long for a unix socket)
 """
 import base64
 import itertools
@@ -311,8 +312,9 @@ def make_gh_api_certs(d):
 class BrokerTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        (HERE / "tmp").mkdir(exist_ok=True)
-        cls.tmp = Path(tempfile.mkdtemp(dir=HERE / "tmp", prefix="broker-test-"))
+        base = Path(os.environ.get("APOD_TEST_TMP") or HERE / "tmp")  # short enough for unix socket paths
+        base.mkdir(exist_ok=True)
+        cls.tmp = Path(tempfile.mkdtemp(dir=base, prefix="broker-test-"))
         cls.root = cls.tmp / "apod"
         cls.root.mkdir()
         bin_ = cls.tmp / "bin"

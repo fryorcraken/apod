@@ -1,0 +1,93 @@
+run
+--rm
+-i
+--userns=keep-id
+--name
+apod-brk-proj-@PID@
+--hostname
+apod-brk
+-v
+@TMP@/apod/brk/home:/home/agent
+-v
+@TMP@/apod/worklog/00000000-0000-4000-8000-000000000008:/run/apod-worklog
+-v
+@TMP@/mounts/ro1:@TMP@/mounts/ro1:ro
+-v
+@TMP@/mounts/rw1:@TMP@/mounts/rw1
+-v
+@TMP@/proj:@TMP@/proj
+--tmpfs
+/home/agent/.claude/sessions:rw,mode=1777,size=1m
+-v
+@TMP@/apod/broker/sessions/000000000000:/run/apod-broker
+-v
+@REPO@/broker/pod-shim:/usr/local/bin/apod-git-forward:ro
+-v
+@REPO@/broker/pod-shim:/usr/local/bin/gh:ro
+-w
+@TMP@/proj
+--label
+apod.profile=brk
+--label
+apod.project=@TMP@/proj
+--label
+apod.session=00000000-0000-4000-8000-000000000008
+--security-opt
+label=disable
+--label
+apod.broker=000000000000
+brkimage
+bash
+-lc
+u=$(apod-git-forward) || { echo "apod: the git forwarder did not start; git cannot reach the broker" >&2; exec "$@"; }
+for ((i = 0; i < ${GIT_CONFIG_COUNT:-0}; i++)); do k=GIT_CONFIG_KEY_$i; v=${!k}; [[ $v == *"{forward}"* ]] && export "$k=${v//"{forward}"/$u}"; done
+exec "$@"
+_
+claude
+--permission-mode
+bypassPermissions
+--settings
+{"disableClaudeAiConnectors":true}
+--session-id
+00000000-0000-4000-8000-000000000008
+--append-system-prompt
+You are running inside an apod container (podman), profile "brk". Only these host paths are mounted:
+- @TMP@/proj (read-write, the project)
+- @TMP@/mounts/rw1 (read-write)
+- @TMP@/mounts/ro1 (read-only)
+Nothing else from the host is available. There are no permission prompts: the container is the isolation boundary.
+The host's apod broker acts for this pod.
+apod broker: role dev; this profile allows clipboard:image; this profile denys gh:pr merge, acting as agentbot (gh).
+Scope (the repositories, projects, hosts and identities it may touch): gh:acme/*, gh:acme/widget.
+Allowed without asking, on what's in scope:
+  gh: api GET /rate_limit, api GET /repos/{repo}, api GET /repos/{repo}/*, api PATCH /repos/{repo}/issues/comments/*, api POST /repos/{repo}/issues/*/comments, api POST /repos/{repo}/pulls/*/comments, api POST /repos/{repo}/pulls/*/comments/*/replies, cache list, graphql mutation addComment, graphql mutation addPullRequestReviewComment, graphql mutation addPullRequestReviewThread, graphql mutation addPullRequestReviewThreadReply, graphql mutation resolveReviewThread, graphql query node, graphql query nodes, graphql query rateLimit, graphql query repository, issue comment, issue create, issue list, issue status, issue view, label list, pr checks, pr comment, pr create, pr diff, pr edit, pr list, pr ready, pr status, pr view, release list, release view, repo gitignore *, repo license *, repo view, ruleset list, ruleset view, run list, run view, run watch, search code, search commits, search issues, search prs, search repos, workflow list, workflow view
+  github: fetch, fetch public, push branch, push force
+Anything else, or outside the scope, waits up to 3s for the user to approve it on the host, then fails. Before such a step, tell the user what you need and why; if it fails, ask them to approve it (or widen the scope) and retry once they say it is allowed. gh auth status shows the current permissions, including approvals made since launch.
+gh is a shim: commands run on the host as GitHub user agentbot. gh auth token and pr create --fill (pass --title and --body) are unavailable; gh repo clone and gh pr checkout run locally through git. Searches and lists across an owner (--owner X) need X itself in scope, and searches across GitHub (no --repo or --owner) a gh-search: entry: narrow them with --repo OWNER/REPO.
+git fetch and push to github.com go through the broker (no token in the pod); pushes are checked per ref (e.g. branches but not the default branch).
+Broker extensions off for this pod: clipboard (not set up for this profile (see apod broker extensions clipboard)); gh-api (not set up for this profile (see apod broker extensions gh-api)); git-sign (not set up for this profile (see apod broker extensions git-sign)); notify (not set up for this profile (see apod broker extensions notify)); rad (nothing in scope to act on (no rad: entry)); ssh (nothing in scope to act on (no ssh: entry)).
+claude.ai connectors (Notion, Google Docs, etc.) are disabled for this run; they can be enabled at launch with apod -c.
+Work log: keep /run/apod-worklog/worklog.md up to date. It is kept on the host after this pod ends, and the user reviews it, across sessions, for work reports. After each meaningful step, append a few lines under a heading with today's date (## YYYY-MM-DD, a new one when the day changes): what you did, decided or found, what's blocked, what's next. Link PRs, issues and commits; facts, not narration; never secrets. Don't rewrite earlier entries.
+-e APOD_BROKER_SOCK=/run/apod-broker/broker.sock
+-e APOD_PROFILE=brk
+-e CLAUDE_CODE_DISABLE_AGENT_VIEW=1
+-e GIT_AUTHOR_EMAIL=agent@example.com
+-e GIT_AUTHOR_NAME=Agent
+-e GIT_COMMITTER_EMAIL=committer@example.com
+-e GIT_COMMITTER_NAME=Committer
+-e GIT_CONFIG_COUNT=7
+-e GIT_CONFIG_KEY_0=url.{forward}github/.insteadOf
+-e GIT_CONFIG_KEY_1=url.{forward}github/.insteadOf
+-e GIT_CONFIG_KEY_2=url.{forward}github/.insteadOf
+-e GIT_CONFIG_KEY_3=url.{forward}github/.insteadOf
+-e GIT_CONFIG_KEY_4=user.name
+-e GIT_CONFIG_KEY_5=user.email
+-e GIT_CONFIG_KEY_6=gc.worktreePruneExpire
+-e GIT_CONFIG_VALUE_0=https://github.com/
+-e GIT_CONFIG_VALUE_1=git@github.com:
+-e GIT_CONFIG_VALUE_2=github.com:
+-e GIT_CONFIG_VALUE_3=ssh://git@github.com/
+-e GIT_CONFIG_VALUE_4=Agent
+-e GIT_CONFIG_VALUE_5=agent@example.com
+-e GIT_CONFIG_VALUE_6=never
+-e HOME=/home/agent

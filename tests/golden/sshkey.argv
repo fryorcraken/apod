@@ -1,0 +1,52 @@
+run
+--rm
+-i
+--userns=keep-id
+--name
+apod-sshkey-proj-@PID@
+--hostname
+apod-sshkey
+-v
+@TMP@/apod/sshkey/home:/home/agent
+-v
+@TMP@/apod/worklog/00000000-0000-4000-8000-000000000007:/run/apod-worklog
+-v
+@TMP@/proj:@TMP@/proj
+-w
+@TMP@/proj
+--label
+apod.profile=sshkey
+--label
+apod.project=@TMP@/proj
+--label
+apod.session=
+-v
+@TMP@/apod/sshkey/agent:@TMP@/apod/sshkey/agent
+--security-opt
+label=disable
+apod
+bash
+-lc
+gh auth setup-git >/dev/null 2>&1 || true; exec "$@"
+_
+bash
+-l
+-e APOD_PROFILE=sshkey
+-e CLAUDE_CODE_DISABLE_AGENT_VIEW=1
+-e GIT_COMMITTER_EMAIL=host@example.com
+-e GIT_COMMITTER_NAME=Host User
+-e GIT_CONFIG_COUNT=6
+-e GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf
+-e GIT_CONFIG_KEY_1=url.https://github.com/.insteadOf
+-e GIT_CONFIG_KEY_2=url.https://github.com/.insteadOf
+-e GIT_CONFIG_KEY_3=user.name
+-e GIT_CONFIG_KEY_4=user.email
+-e GIT_CONFIG_KEY_5=gc.worktreePruneExpire
+-e GIT_CONFIG_VALUE_0=git@github.com:
+-e GIT_CONFIG_VALUE_1=github.com:
+-e GIT_CONFIG_VALUE_2=ssh://git@github.com/
+-e GIT_CONFIG_VALUE_3=Host User
+-e GIT_CONFIG_VALUE_4=host@example.com
+-e GIT_CONFIG_VALUE_5=never
+-e HOME=/home/agent
+-e SSH_AUTH_SOCK=@TMP@/apod/sshkey/agent/ssh-@PID@.sock

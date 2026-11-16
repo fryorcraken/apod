@@ -1,0 +1,85 @@
+run
+--rm
+-i
+--userns=keep-id
+--name
+apod-plain-proj-@PID@
+--hostname
+apod-plain
+--secret
+gh-plain,type=env,target=GH_TOKEN
+-v
+@TMP@/apod/plain/home:/home/agent:z
+-v
+@TMP@/apod/worklog/00000000-0000-4000-8000-000000000002:/run/apod-worklog:z
+-v
+@TMP@/mounts/ro1:@TMP@/mounts/ro1:z
+-v
+@TMP@/mounts/rw1:@TMP@/mounts/rw1:z
+-v
+@TMP@/mounts/cli-ro:@TMP@/mounts/cli-ro:ro,z
+-v
+@TMP@/mounts/cli-rw:@TMP@/mounts/cli-rw:z
+-v
+@TMP@/proj:@TMP@/proj:z
+--tmpfs
+/home/agent/.claude/sessions:rw,mode=1777,size=1m
+-w
+@TMP@/proj
+--network
+host
+-v
+apod-plain-nix:/nix
+--label
+apod.profile=plain
+--label
+apod.project=@TMP@/proj
+--label
+apod.session=00000000-0000-4000-8000-000000000002
+other-img
+bash
+-lc
+gh auth setup-git >/dev/null 2>&1 || true; exec "$@"
+_
+claude
+--permission-mode
+bypassPermissions
+--settings
+{"permissions":{"deny":["mcp__claude_ai_Claude_Docs__*","mcp__claude_ai_UTS_Jitsu__*","mcp__claude_ai_Google_Docs__*","mcp__claude_ai_Google_Drive__*","mcp__claude_ai_Google_Sheets__*","mcp__claude_ai_Canva__*","mcp__claude_ai_Lovable__*","mcp__claude_ai_Notion__*"]},"hooks":{"PreToolUse":[{"matcher":"mcp__claude_ai_.*","hooks":[{"type":"command","command":"t=$(jq -r .tool_name); case $t in mcp__claude_ai_*) echo \"$t\" | grep -qE '^mcp__claude_ai_(Todoist)__' || { echo 'apod: connector not enabled for this run (apod -c)' >&2; exit 2; } ;; esac"}]}]}}
+--session-id
+00000000-0000-4000-8000-000000000002
+--append-system-prompt
+You are running inside an apod container (podman), profile "plain". Only these host paths are mounted:
+- @TMP@/proj (read-write, the project)
+- @TMP@/mounts/ro1 (read-write)
+- @TMP@/mounts/rw1 (read-write)
+- @TMP@/mounts/cli-rw (read-write)
+- @TMP@/mounts/cli-ro (read-only)
+Nothing else from the host is available. There are no permission prompts: the container is the isolation boundary.
+gh and git push over HTTPS use this profile's GitHub token.
+Persistent volumes (kept between runs, not on the host filesystem): /nix.
+Network: this pod shares the host's network (including Tailscale and services on the host's localhost).
+claude.ai connectors enabled for this run: todoist. Others are blocked.
+Work log: keep /run/apod-worklog/worklog.md up to date. It is kept on the host after this pod ends, and the user reviews it, across sessions, for work reports. After each meaningful step, append a few lines under a heading with today's date (## YYYY-MM-DD, a new one when the day changes): what you did, decided or found, what's blocked, what's next. Link PRs, issues and commits; facts, not narration; never secrets. Don't rewrite earlier entries.
+-e APOD_PROFILE=plain
+-e CLAUDE_CODE_DISABLE_AGENT_VIEW=1
+-e GIT_AUTHOR_EMAIL=bot@example.com
+-e GIT_AUTHOR_NAME=Bot Agent
+-e GIT_COMMITTER_EMAIL=bot@example.com
+-e GIT_COMMITTER_NAME=Bot Agent
+-e GIT_CONFIG_COUNT=6
+-e GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf
+-e GIT_CONFIG_KEY_1=url.https://github.com/.insteadOf
+-e GIT_CONFIG_KEY_2=url.https://github.com/.insteadOf
+-e GIT_CONFIG_KEY_3=user.name
+-e GIT_CONFIG_KEY_4=user.email
+-e GIT_CONFIG_KEY_5=gc.worktreePruneExpire
+-e GIT_CONFIG_VALUE_0=git@github.com:
+-e GIT_CONFIG_VALUE_1=github.com:
+-e GIT_CONFIG_VALUE_2=ssh://git@github.com/
+-e GIT_CONFIG_VALUE_3=Bot Agent
+-e GIT_CONFIG_VALUE_4=bot@example.com
+-e GIT_CONFIG_VALUE_5=never
+-e HOME=/home/agent
+-e PLAIN=value
+-e SOME_VAR=a b
