@@ -7,8 +7,8 @@ standard library only and imports nothing of apod's.
 The layout follows the XDG Base Directory specification, on macOS too:
 
     config   $APOD_CONFIG_DIR, else ${XDG_CONFIG_HOME:-~/.config}/apod       what you write; versionable
-             config.toml, roles.toml, extensions/, profiles/NAME/ (profile.toml,
-             google-credentials.json)
+             config.toml, roles.toml, extensions/, profiles/NAME.toml,
+             profiles/NAME.google-credentials.json
     data     $APOD_DATA_DIR, else ${XDG_DATA_HOME:-~/.local/share}/apod      what you'd back up
              profiles/NAME/home/ (a pod's $HOME), worklog/<session>/
     state    $APOD_STATE_DIR, else ${XDG_STATE_HOME:-~/.local/state}/apod    what the tools write
@@ -146,11 +146,11 @@ class Layout:
             self.guarded = [("apod's config folder", self.config), ("apod's data folder", self.data),
                             ("apod's state folder", self.state), ("apod's runtime folder", self.runtime)]
             p = self.profiles
-            self._names = lambda: [d.name for d in sorted(p.iterdir()) if d.is_dir()] if p.is_dir() else []
+            self._names = lambda: [f.name[:-5] for f in sorted(p.glob("*.toml")) if f.is_file()]
             self._profile = lambda n, pid: {
-                "dir": p / n, "file": p / n / "profile.toml", "home": self.data / "profiles" / n / "home",
-                "google_credentials": p / n / "google-credentials.json",
-                "exists": (p / n).is_dir(), "ssh_agent_dir": self.runtime,
+                "dir": None, "file": p / f"{n}.toml", "home": self.data / "profiles" / n / "home",
+                "google_credentials": p / f"{n}.google-credentials.json",
+                "exists": (p / f"{n}.toml").is_file(), "ssh_agent_dir": self.runtime,
                 **({"ssh_agent_sock": self.runtime / f"ssh-{n}-{pid}.sock",
                     "ssh_agent_mount": self.runtime / f"ssh-{n}-{pid}.sock"} if pid else {})}
         self.roles = self.config / "roles.toml"
@@ -178,9 +178,9 @@ class Layout:
         return [n for n in self._names() if not name_error(n)]
 
     def profile(self, name, pid=None):
-        """A profile's paths (whether or not it exists): its folder and settings file, its home,
-        its Google OAuth client, its per-run ssh-agent socket (with pid). Raises PathError for a
-        name that can't be a profile's."""
+        """A profile's paths (whether or not it exists): its settings file, its folder (the
+        legacy layout; None otherwise), its home, its Google OAuth client, its per-run ssh-agent
+        socket (with pid). Raises PathError for a name that can't be a profile's."""
         why = name_error(name)
         if why:
             raise PathError(why)

@@ -1606,8 +1606,8 @@ class PathsTest(unittest.TestCase):
                                   Path(state) / "broker/sessions", Path(state) / "selinux"))
                 prof = p.profile("work", pid=42)
                 self.assertEqual((prof["dir"], prof["file"], prof["home"], prof["google_credentials"]),
-                                 (Path(config) / "profiles/work", Path(config) / "profiles/work/profile.toml",
-                                  Path(data) / "profiles/work/home", Path(config) / "profiles/work/google-credentials.json"))
+                                 (None, Path(config) / "profiles/work.toml", Path(data) / "profiles/work/home",
+                                  Path(config) / "profiles/work.google-credentials.json"))
         with self.assertRaises(paths.PathError):
             self.lay(APOD_STATE_DIR="relative/state")
 
@@ -1679,9 +1679,11 @@ class PathsTest(unittest.TestCase):
                     p.profile(bad)
         for good in ("work", "a.b", "a_b-c", "x.google-credentialsx", "0"):
             self.assertIsNone(paths.name_error(good), good)
-        for d in ("work", "b", "-bad", "new"):
-            (p.profiles / d).mkdir(parents=True)
-        (p.profiles / "notes.txt").write_text("")
+        (p.profiles).mkdir(parents=True)
+        for f in ("work.toml", "b.toml", "work.google-credentials.json", "notes.txt", "-bad.toml", "new.toml"):
+            (p.profiles / f).write_text("")
+        (p.profiles / "dir.toml").mkdir()
+        (p.profiles / "folder").mkdir()
         self.assertEqual(p.profile_names(), ["b", "work"])
 
     def test_paths_command(self):
@@ -1693,7 +1695,7 @@ class PathsTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         out = json.loads(r.stdout)
         self.assertEqual((out["layout"], out["config"], out["profile"]["file"], out["profile"]["exists"]),
-                         ("xdg", str(self.home / "c"), str(self.home / "c/profiles/work/profile.toml"), False))
+                         ("xdg", str(self.home / "c"), str(self.home / "c/profiles/work.toml"), False))
         r = subprocess.run([sys.executable, BROKER, "paths", "--check-name", "migrate"], env=env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 2)
         self.assertIn("is an apod command or folder", r.stderr)
@@ -2055,6 +2057,36 @@ class ProfileLoaderTest(unittest.TestCase):
         r = subprocess.run([sys.executable, BROKER, "profile", "--profile-dir", str(self.pdir), "--project", str(HERE),
                             "--rw", str(HERE)], env=self.env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_a_profile_file_in_the_new_layout(self):
+        """profiles/NAME.toml: one file, with its home in the data folder; no old files there."""
+        env = dict(self.env, APOD_CONFIG_DIR=str(self.dir / "c"), APOD_DATA_DIR=str(self.dir / "d"),
+                   APOD_STATE_DIR=str(self.dir / "s"))
+        del env["APOD_ROOT"]
+        (self.dir / "c/profiles").mkdir(parents=True)
+        (self.dir / "c/profiles/work.toml").write_text(textwrap.dedent(self.NEW))
+        (self.dir / "c/profiles/env").write_text("GIT_AUTHOR_NAME=Old\n")  # not a profile's file: ignored
+        runs = [["--profile", "work"], ["--profile-file", str(self.dir / "c/profiles/work.toml")]]
+        for args in runs:
+            r = subprocess.run([sys.executable, BROKER, "profile", *args], env=env, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            p = json.loads(r.stdout)
+            self.assertEqual((p["name"], p["dir"], p["file"], p["home"], p["format"]),
+                             ("work", None, str(self.dir / "c/profiles/work.toml"), str(self.dir / "d/profiles/work/home"),
+                              "profile.toml"))
+            self.assertEqual(p["git"], {"name": "Bot Agent", "email": "bot@example.com"})
+            self.assertEqual(r.stderr, "")
+        for args, msg in ((["--profile", "nope"], f"no profile nope: {self.dir}/c/profiles/nope.toml doesn't exist"),
+                          (["--profile", "new"], "is an apod command or folder"),
+                          (["--profile", "x.google-credentials"], "ends in .google-credentials"),
+                          (["--profile-file", "work.txt"], "a profile's file ends in .toml")):
+            r = subprocess.run([sys.executable, BROKER, "profile", *args], env=env, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 2, args)
+            self.assertIn(msg, r.stderr)
+        # apod migrate: nothing to do in this layout.
+        r = subprocess.run([sys.executable, BROKER, "migrate", "--all"], env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("a profile is one file already", r.stderr)
 
     def test_needs_no_broker_and_no_extensions(self):
         # The old-files reading too: nothing is started, and the user's extensions aren't run.

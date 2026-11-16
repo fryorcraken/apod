@@ -1,20 +1,23 @@
 """A profile's configuration, read from one place.
 
-A profile is a folder (paths.py says where: profiles/NAME/ in apod's config folder, its home in
-the data folder; in the legacy layout, ~/.agent-pod/NAME/ with its home in it). Its settings are
-in profile.toml. Profiles made before it existed are spread over several files (broker.toml, env,
-mounts, image, network, volumes, connectors, github, ssh-key, ssh-confirm), which are still read,
-the same way as ever, when there is no profile.toml: `apod migrate` converts them.
+A profile is one file, profiles/NAME.toml in apod's config folder, with its home in the data
+folder (paths.py says where). In the legacy layout (~/.agent-pod), a profile is a folder,
+<root>/NAME/, with its settings in profile.toml and its home in it; profiles made before
+profile.toml existed are spread over several files there (broker.toml, env, mounts, image,
+network, volumes, connectors, github, ssh-key, ssh-confirm), which are still read, the same way as
+ever, when there is no profile.toml: `apod migrate` converts them. The old files, and .old/ where
+migrate moves them, are the legacy layout's only.
 
 Both `apod` (through `apod-broker profile`) and the broker (register) call load(), so they read
 the same thing. This module imports nothing from the broker but paths.py: it works without it
 running, and `apod-broker profile` doesn't load extensions.
 
-load(NAME, or a profile's folder) returns a dict (`apod-broker profile --profile NAME` prints it
-as JSON):
+load(NAME, or a profile's file or legacy folder) returns a dict (`apod-broker profile --profile
+NAME` prints it as JSON):
 
     name, home       the profile's name and its home folder (the pod's $HOME)
-    dir, file        its folder; the file the settings come from ("" if there is none)
+    dir, file        its folder (the legacy layout; None otherwise); the file the settings come
+                     from ("" if there is none)
     format           "profile.toml", "old files" or "none"
     broker           whether the broker acts for the pod (profile.toml: broker = ..., default
                      true; old files: broker.toml exists)
@@ -309,16 +312,20 @@ def old_files_in(pdir):
 
 
 def locate(spec):
-    """(name, folder, file, home) of a profile given by its name (paths.py says where it is) or
-    by its folder (a path; its home is in it, as in the legacy layout)."""
+    """(name, folder, file, home) of a profile given by its name (paths.py says where it is), its
+    file (a path ending in .toml that isn't a folder; folder None) or its folder (any other path,
+    with its home in it: the legacy layout)."""
     s = str(spec)
     if "/" not in s:
         try:
             p = paths.layout().profile(s)
         except paths.PathError as e:
             raise ProfileError(str(e))
-        return s, Path(p["dir"]), Path(p["file"]), Path(p["home"])
+        return s, p["dir"] and Path(p["dir"]), Path(p["file"]), Path(p["home"])
     path = Path(s)
+    if s.endswith(".toml") and not path.is_dir():
+        name = path.name[:-5]
+        return name, None, path, None if paths.name_error(name) else Path(paths.layout().profile(name)["home"])
     return path.name, path, path / "profile.toml", path / "home"
 
 
@@ -327,8 +334,10 @@ def load(spec, project=None, guard=True):
     the launch's `project` isn't checked: the project is mounted anyway. The broker (guard=False)
     doesn't mount anything: apod checks the mounts when it launches."""
     name, pdir, f, home = locate(spec)
-    old = old_files_in(pdir)
+    old = old_files_in(pdir) if pdir else []  # the old files: a legacy profile folder's only
     warnings = []
+    if pdir is None and not f.is_file():
+        raise ProfileError(f"no profile {name}: {f} doesn't exist")
     if f.exists():
         try:
             data = tomllib.loads(f.read_text())
@@ -345,7 +354,7 @@ def load(spec, project=None, guard=True):
         p["file"] = str(pdir / "broker.toml") if (pdir / "broker.toml").exists() else ""
         if old:
             warnings.append(f"{name}: old profile files ({', '.join(old)}): apod migrate {name}")
-    p["name"], p["dir"], p["home"] = name, str(pdir), str(home)
+    p["name"], p["dir"], p["home"] = name, pdir and str(pdir), home and str(home)
     p["warnings"] = warnings + p["warnings"]
     where = f if f.exists() else pdir / "mounts"
     for mode, path in p["pod"]["mounts"] if guard else []:
@@ -362,7 +371,7 @@ def names():
 # ---------------------------------------------------------------------------------------------
 # apod-broker profile --profile NAME ...
 
-USAGE = ("usage: apod-broker profile [--profile NAME | --profile-dir DIR] [--project DIR] "
+USAGE = ("usage: apod-broker profile [--profile NAME | --profile-file FILE | --profile-dir DIR] [--project DIR] "
          "[--ro PATH]... [--rw PATH]... [--json] [--quiet]\n"
          "(with no profile, it only checks the --ro and --rw mounts)")
 
@@ -370,10 +379,15 @@ USAGE = ("usage: apod-broker profile [--profile NAME | --profile-dir DIR] [--pro
 def main(argv):
     spec, project, quiet, cli, it = None, None, False, [], iter(argv)
     for a in it:
-        if a in ("--profile", "--profile-dir"):
+        if a in ("--profile", "--profile-file", "--profile-dir"):
             spec = next(it, None)
             # A folder given as a name (no "/") is a folder still.
             if a == "--profile-dir" and spec and "/" not in spec:
+                spec = f"./{spec}"
+            elif a == "--profile-file" and spec and not spec.endswith(".toml"):
+                print(f"apod: --profile-file {spec}: a profile's file ends in .toml", file=sys.stderr)
+                return 2
+            elif a == "--profile-file" and spec and "/" not in spec:
                 spec = f"./{spec}"
         elif a == "--project":
             project = next(it, None)
@@ -563,6 +577,9 @@ def migrate_main(argv):
             print(file=sys.stderr)
             return False
     lay = paths.layout()
+    if not lay.legacy:
+        say(f"apod: in this layout a profile is one file already ({lay.profiles}/NAME.toml): nothing to migrate")
+        return 0
     try:
         dirs = [Path(lay.profile(n)["dir"]) for n in (lay.profile_names() if everyone else names)]
     except paths.PathError as e:

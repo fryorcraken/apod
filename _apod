@@ -3,11 +3,9 @@
 # e.g. ln -s ~/src/rad/apod/_apod ~/.oh-my-zsh/custom/completions/_apod
 
 _apod_profiles() {
+  # profiles/*.toml in apod's config folder (the folders of ~/.agent-pod in the legacy layout)
   local -a profiles
-  profiles=(${APOD_ROOT:-$HOME/.agent-pod}/*(N/:t))
-  profiles=(${profiles:#broker})
-  profiles=(${profiles:#broker-extensions})
-  profiles=(${profiles:#worklog})
+  profiles=(${(f)"$(apod --list-profiles 2>/dev/null)"})
   _describe -t profiles 'profile' profiles
 }
 

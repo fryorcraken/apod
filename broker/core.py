@@ -1032,7 +1032,8 @@ def renamed_action(a):
 
 
 def read_profile(spec):
-    """The profile `spec` (a name, or its folder), as profiles.load reads it."""
+    """The profile `spec` (a name, its file, or its folder in the legacy layout), as profiles.load
+    reads it."""
     try:
         return profiles.load(spec, guard=False)  # the broker mounts nothing; apod checks mounts at launch
     except profiles.ProfileError as e:
@@ -1068,10 +1069,10 @@ def register(r):
     sid = r.get("id") or secrets.token_hex(6)
     if not re.fullmatch(r"[A-Za-z0-9_-]{4,64}", sid):
         raise BrokerError("bad session id")
-    # The profile: the folder apod found, else the profile's name.
-    spec = r.get("profile_dir")
+    # The profile: the file (or legacy folder) apod found, else the profile's name.
+    spec = r.get("profile_file") or r.get("profile_dir")
     if spec and "/" not in spec:
-        raise BrokerError("--profile-dir takes a path")
+        raise BrokerError("--profile-file and --profile-dir take a path")
     prof = read_profile(spec or r.get("profile", ""))
     warnings = list(prof["warnings"])
     cfg = load_config(None, warnings, prof)
@@ -1692,7 +1693,7 @@ def main(argv, script):
         return 0
     try:
         if cmd == "register":
-            # register --id ID --profile P [--profile-dir DIR] --project DIR [--role R] [--gh-user U] [--scope S]... [--remote URL]...
+            # register --id ID --profile P [--profile-file F | --profile-dir DIR] --project DIR [--role R] [--gh-user U] [--scope S]... [--remote URL]...
             r = {"scope": [], "remotes": []}
             it = iter(args)
             for a in it:

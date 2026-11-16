@@ -66,6 +66,7 @@ load_paths() {
 P() { jq -r "$@" <<< "$paths"; }
 # For shell completion.
 if [ "${1:-}" = --list-roles ]; then python3 "$apoddir/apod-broker" roles --plain 2>/dev/null | cut -f1; exit 0; fi
+if [ "${1:-}" = --list-profiles ]; then python3 "$apoddir/apod-broker" paths --json 2>/dev/null | jq -r '.all_profiles | keys[]'; exit 0; fi
 if [ "${1:-}" = --list-connectors ]; then printf '%s\n' "${!connector_servers[@]}" "${local_mcps[@]}" | sort; exit 0; fi
 
 # Subcommands: manage a profile's GitHub token (podman secret gh-<profile>) and Google login,
@@ -257,7 +258,7 @@ case ${1:-} in
       else
         load_paths --profile "$name"
         if [ "$(P .profile.exists)" = true ]; then
-          warn "$(P .profile.dir) already exists: edit its files instead (docs/reference.md#profiletoml)."; [ -z "${2:-}" ] || exit 2
+          warn "$(P '.profile.dir // .profile.file') already exists: edit it instead (docs/reference.md#profiletoml)."; [ -z "${2:-}" ] || exit 2
         else break; fi
       fi
       name=
@@ -434,7 +435,7 @@ case ${1:-} in
     fi
     mkdir -p "$phome" "$(dirname "$pfile")"
     printf '%s' "$toml" > "$pfile"
-    section "Created $(P .profile.dir). Next:"
+    section "Created $(P '.profile.dir // .profile.file'). Next:"
     [ -z "$ghnew" ] || echo "  gh auth login --hostname github.com   # as $ghuser; then gh auth switch back to yours" >&2
     if [ -n "$signkey" ] && [ -n "$ghuser" ]; then
       echo "  # Verified signatures on GitHub: add $(tilde "$signkey").pub as a signing key of the committing account" >&2
@@ -750,7 +751,7 @@ if [ -n "$usebroker" ]; then
   # The broker reads the profile from where this run found it (the broker may run with another
   # environment).
   regargs=(--id "$(uuidgen | tr -d - | cut -c1-12)" --profile "$profile" --project "$proj")
-  regargs+=(--profile-dir "$(P .profile.dir)")
+  if [ "$(P .profile.dir)" != null ]; then regargs+=(--profile-dir "$(P .profile.dir)"); else regargs+=(--profile-file "$(P .profile.file)"); fi
   [ -z "$role" ] || regargs+=(--role "$role")
   [ -z "$ghuser" ] || regargs+=(--gh-user "$ghuser")
   [ -z "$network" ] || regargs+=(--network "$network")

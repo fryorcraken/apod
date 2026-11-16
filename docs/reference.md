@@ -15,8 +15,8 @@ Every command, file, setting and variable. For how to set things up, see the
 
 ```
 apod <profile> [options] [dir] [-- agent args]   run an agent in a pod, in dir (default: the current folder)
-apod new [profile]                               create a profile, step by step
-apod migrate [profile | --all] [--yes]           old profile files to one profile.toml (the old files move to .old/)
+apod new [profile]                               create a profile, step by step (writes profiles/NAME.toml)
+apod migrate [profile | --all] [--yes]           legacy layout: old profile files to one profile.toml (the old files move to .old/)
 apod resume [--list|--latest|--claude] [dir]     resume a stopped Claude session started in dir
 apod history                                     folders and profiles launched, most recent first
 apod ps                                          running pods: profile, session, status, folder
@@ -62,8 +62,11 @@ Options for `apod <profile>`:
 
 ## profile.toml
 
-A profile is a folder, `profiles/NAME/` in apod's [config folder](#where-apod-keeps-its-files)
-(`~/.agent-pod/NAME/` in the legacy layout), and its settings are one file in it, `profile.toml`. Put the top-level keys first: a key written
+A profile is one file, `profiles/NAME.toml` in apod's [config folder](#where-apod-keeps-its-files)
+(in the legacy layout, a folder, `~/.agent-pod/NAME/`, with the file in it: `profile.toml`); this
+section calls it `profile.toml` either way. A profile's name is letters, digits, `.`, `_` and `-`,
+not an apod command or `broker`, `broker-extensions` or `worklog`, and doesn't end in
+`.google-credentials`. Put the top-level keys first: a key written
 after a `[table]` line belongs to that table (`scope` after `[gh]` would be `gh.scope`), so apod
 refuses a `role`, `scope`, `allow`, `deny` or `broker` inside a table. Unknown keys in `[pod]`,
 `[git]`, `[token]` and `[ssh-agent]` are errors too, and so are wrong types. `apod-broker profile
@@ -136,19 +139,21 @@ Extensions read their own `[NAME]` table. The names `pod`, `git`, `token` and `s
 own, and `config.toml` in apod's config folder (`broker.toml` in the legacy layout) holds the extension tables shared by every profile (key by key within
 each table; a profile's own value wins; it has no `role`, `scope`, `allow`, `deny` or `broker`).
 
-Next to `profile.toml`, a profile folder has `google-credentials.json` (an OAuth client for google-docs-mcp,
-instead of the checkout's). Its home, `profiles/NAME/home/` in the data folder (`home/` in the profile folder in
-the legacy layout), is the pod's persistent `$HOME`: the agent's login, settings and history, and the Google
-login; every pod of the profile shares it. Nothing of the profile folder is mounted in a pod (but
-`google-credentials.json`, read-only, with google-docs-mcp), so a pod can't change its own `profile.toml`. A
-folder with no settings file at all (a bare `mkdir ~/.config/apod/profiles/me`) launches without the broker,
-as `broker = false` does.
+Next to `NAME.toml`, `profiles/NAME.google-credentials.json` is an OAuth client for google-docs-mcp, instead of
+the checkout's (`google-credentials.json` in the profile's folder in the legacy layout). The profile's home,
+`profiles/NAME/home/` in the data folder (`home/` in its folder in the legacy layout), is the pod's persistent
+`$HOME`: the agent's login, settings and history, and the Google login; every pod of the profile shares it.
+Nothing from the config folder is mounted in a pod (but the profile's Google client, read-only, with
+google-docs-mcp), so a pod can't change its own `profile.toml`. An empty `NAME.toml` is a profile with the
+broker (`broker = true` is the default); in the legacy layout, a folder with no settings file at all (a bare
+`mkdir ~/.agent-pod/me`) launches without the broker, as `broker = false` does.
 
 ### The old files
 
-Profiles made before `profile.toml` have their settings in several files. They're still read, as
-they always were, when there is no `profile.toml` (with a warning at launch); `apod migrate`
-writes the `profile.toml` for them and moves the files to `.old/`. With both, `profile.toml` is
+Profiles made before `profile.toml` have their settings in several files, in their folder of the
+legacy layout. They're still read, as they always were, when there is no `profile.toml` (with a
+warning at launch); `apod migrate` writes the `profile.toml` for them and moves the files to
+`.old/`. The new layout has no old files. With both, `profile.toml` is
 used and the old files are ignored, with a warning.
 
 | File               | Now                                                                                                                 |
@@ -273,7 +278,7 @@ apod's files are in four folders, after the XDG Base Directory specification (on
 
 | Folder                                                                               | What's in it                                                                                                                                                                                                                                                                                                                                         |
 | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| config: `$APOD_CONFIG_DIR`, else `${XDG_CONFIG_HOME:-~/.config}/apod`                | What you write: `config.toml` (the extension tables shared by every profile), `roles.toml` (your roles), `extensions/` (your [broker extensions](../EXTENSIONS.md)), `profiles/NAME/` (a profile: [`profile.toml`](#profiletoml), `google-credentials.json`).                                                                                        |
+| config: `$APOD_CONFIG_DIR`, else `${XDG_CONFIG_HOME:-~/.config}/apod`                | What you write: `config.toml` (the extension tables shared by every profile), `roles.toml` (your roles), `extensions/` (your [broker extensions](../EXTENSIONS.md)), `profiles/NAME.toml` (a [profile](#profiletoml)), `profiles/NAME.google-credentials.json` (its Google OAuth client).                                                            |
 | data: `$APOD_DATA_DIR`, else `${XDG_DATA_HOME:-~/.local/share}/apod`                 | What you'd back up: `profiles/NAME/home/` (each profile's home), `worklog/<id>/worklog.md` (each session's [work log](guides.md#work-logs)).                                                                                                                                                                                                         |
 | state: `$APOD_STATE_DIR`, else `${XDG_STATE_HOME:-~/.local/state}/apod`              | What the tools write: `history.jsonl` (every launch, for `apod history` and `apod resume`), `broker/` (the broker's state: `log.jsonl`, every request; `broker.log`, its own log; `grants.json`, approvals for roles; `sessions/<id>.json`, each session's saved state), `selinux` (written by `apod selinux install`).                              |
 | runtime: `$APOD_RUNTIME_DIR`, else `$XDG_RUNTIME_DIR/apod`, else `$TMPDIR/apod-$UID` | Sockets only, mode 0700 (apod refuses one that isn't yours and private), gone at logout: the broker's `admin.sock` and `agent.sock` (its ssh-agent), `sessions/<id>/` (the folder a pod mounts at `/run/apod-broker`), `ssh-NAME-PID.sock` (a per-run ssh-agent). A session's state is in the state folder, so it comes back after a broker restart. |

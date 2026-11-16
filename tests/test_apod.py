@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
-"""Tests for the `apod` launcher (bash) with a stub `podman` that records its arguments, in a
-throwaway APOD_ROOT under tmp/ (never your real ~/.agent-pod).
+"""Tests for the `apod` launcher (bash) with a stub `podman` that records its arguments, in
+throwaway folders under tmp/ (never your real ones): the legacy layout (APOD_ROOT) or the new one
+(APOD_CONFIG_DIR, APOD_DATA_DIR, APOD_STATE_DIR, APOD_RUNTIME_DIR).
 
 The regression test: a set of profiles in the old file formats (env, mounts, image, network,
 volumes, connectors, github, ssh-key, broker.toml) must launch with the podman command line
 recorded in tests/golden/ before profile.toml existed, both as they are and after `apod migrate`
-turned them into profile.toml.
+turned them into profile.toml; and so must the same profiles in the new layout. There, the folder
+names are mapped to the legacy ones before the comparison (a profile's home, the work logs, the
+broker's session folders), and a per-run ssh-agent's socket is mounted alone, where the legacy
+layout mounts <profile>/agent/.
 
 The comparison treats `--env-file F` as the `-e K=V` lines of F, and sorts the `-e` options: apod
 passes a profile's environment and git identity as `-e` options now, not as an --env-file.
 
-Run: python3 tests/test_apod.py   (RECORD=1 rewrites tests/golden/; KEEP=1 keeps the temp dir; APOD_TEST_TMP=DIR puts it
-there instead of tmp/, when the checkout's path is too long for a unix socket)
+Run: python3 tests/test_apod.py   (RECORD=1 rewrites tests/golden/, from the apod you started from only; KEEP=1 keeps the
+temp dir; APOD_TEST_TMP=DIR puts it there instead of tmp/, when the checkout's path is too long for the legacy layout's
+unix sockets)
 """
 import json
 import os
@@ -25,7 +30,12 @@ import unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(HERE / "broker"))
+import paths  # noqa: E402 (where apod's files are)
+
 APOD = HERE / "apod"
+LAYOUT_VARS = ("APOD_ROOT", "APOD_CONFIG_DIR", "APOD_DATA_DIR", "APOD_STATE_DIR", "APOD_RUNTIME_DIR",
+               "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR")
 GOLDEN = HERE / "tests/golden"
 RECORD = bool(os.environ.get("RECORD"))
 
@@ -66,8 +76,16 @@ def env_file_pairs(path):
 
 
 class Launcher:
-    """What the tests of the launcher share: a throwaway APOD_ROOT with profiles (made by the
-    subclass's make_profiles), the stub programs, and launch() with the podman arguments."""
+    """What the tests of the launcher share: throwaway apod folders (LAYOUT: "legacy", APOD_ROOT;
+    "xdg", the new layout) with profiles (made by the subclass's make_profiles), the stub
+    programs, and launch() with the podman arguments."""
+    LAYOUT = "legacy"
+    # The new layout's folder names, mapped to the legacy ones that tests/golden/ has.
+    TO_LEGACY = [(r"@TMP@/data/profiles/([^/:\n]+)/home", r"@TMP@/apod/\1/home"),
+                 (r"@TMP@/data/worklog/", "@TMP@/apod/worklog/"),
+                 (r"@RUN@/sessions/", "@TMP@/apod/broker/sessions/"),
+                 (r"@RUN@/ssh-([^/:\n]+)-@PID@\.sock:@RUN@/ssh-\1-@PID@\.sock", r"@TMP@/apod/\1/agent:@TMP@/apod/\1/agent"),
+                 (r"SSH_AUTH_SOCK=@RUN@/ssh-([^/:\n]+)-@PID@\.sock", r"SSH_AUTH_SOCK=@TMP@/apod/\1/agent/ssh-@PID@.sock")]
 
     @classmethod
     def setUpClass(cls):
@@ -75,8 +93,15 @@ class Launcher:
         base.mkdir(exist_ok=True)
         cls.tmp = Path(tempfile.mkdtemp(dir=base, prefix="apod-test-"))
         cls.addClassCleanup(lambda: None if os.environ.get("KEEP") else shutil.rmtree(cls.tmp, ignore_errors=True))
-        cls.root = cls.tmp / "apod"
-        cls.root.mkdir()
+        cls.root = cls.tmp / "apod"  # the legacy layout's folder
+        cls.rundir = Path(tempfile.mkdtemp(prefix="apod-run-"))  # the new layout's runtime folder: short, 0700
+        cls.addClassCleanup(lambda: None if os.environ.get("KEEP") else shutil.rmtree(cls.rundir, ignore_errors=True))
+        if cls.LAYOUT == "legacy":
+            cls.root.mkdir()
+            cls.layout_env = {"APOD_ROOT": str(cls.root)}
+        else:
+            cls.layout_env = {"APOD_CONFIG_DIR": str(cls.tmp / "config"), "APOD_DATA_DIR": str(cls.tmp / "data"),
+                              "APOD_STATE_DIR": str(cls.tmp / "state"), "APOD_RUNTIME_DIR": str(cls.rundir)}
         cls.home = cls.tmp / "home"
         cls.home.mkdir()
         (cls.home / ".gitconfig").write_text("[user]\n\tname = Host User\n\temail = host@example.com\n")
@@ -97,9 +122,11 @@ class Launcher:
         for d in ("ro1", "rw1", "cli-ro", "cli-rw"):
             (cls.m / d).mkdir(parents=True)
         subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", cls.tmp / "key"], check=True)
-        cls.env = dict(os.environ, APOD_ROOT=str(cls.root), HOME=str(cls.home), STUB_DIR=str(cls.tmp),
+        cls.env = dict({k: v for k, v in os.environ.items() if k not in LAYOUT_VARS}, **cls.layout_env,
+                       HOME=str(cls.home), STUB_DIR=str(cls.tmp),
                        STUB_LOG=str(cls.log), STUB_SECRETS="gh-plain gh-other", NO_COLOR="1",
                        APOD_BROKER_ASK_TIMEOUT="3", PATH=f"{cls.bin}:{os.environ['PATH']}")
+        cls.P = paths.Layout(cls.env)
         for k in list(cls.env):
             if k in ("GH_REPO", "SSH_AUTH_SOCK", "HERDR_PANE_ID", "HC_SCOPE", "APOD_IMAGE") or k.startswith(("GIT_AUTHOR_", "GIT_COMMITTER_", "GIT_CONFIG")):
                 cls.env.pop(k)
@@ -111,6 +138,8 @@ class Launcher:
 
     @classmethod
     def profile(cls, name, **files):
+        """A profile in the old files: the legacy layout's only."""
+        assert cls.LAYOUT == "legacy"
         d = cls.root / name
         (d / "home").mkdir(parents=True)
         for f, text in files.items():
@@ -119,10 +148,12 @@ class Launcher:
 
     @classmethod
     def toml_profile(cls, name, text, **files):
-        d = cls.root / name
-        (d / "home").mkdir(parents=True)
-        (d / "profile.toml").write_text(textwrap.dedent(text))
-        return d
+        """A profile in a profile.toml: <root>/NAME/profile.toml, or profiles/NAME.toml."""
+        p = cls.P.profile(name)
+        Path(p["home"]).mkdir(parents=True)
+        Path(p["file"]).parent.mkdir(parents=True, exist_ok=True)
+        Path(p["file"]).write_text(textwrap.dedent(text))
+        return Path(p["dir"] or p["file"])
 
     @classmethod
     def make_profiles(cls):
@@ -205,10 +236,14 @@ class Launcher:
         out += [f"-e {e}" for e in sorted(envs)]
         text = "\n".join(out)
         text = text.replace(str(self.m), "@TMP@/mounts")
-        for real, name in ((self.tmp, "@TMP@"), (HERE, "@REPO@")):
+        for real, name in ((self.rundir, "@RUN@"), (self.tmp, "@TMP@"), (HERE, "@REPO@")):
             text = text.replace(str(real), name)
         text = re.sub(r"(apod-[A-Za-z0-9._-]+-proj)-\d+", r"\1-@PID@", text)
         text = re.sub(r"ssh-\d+\.sock", "ssh-@PID@.sock", text)
+        text = re.sub(r"ssh-([A-Za-z0-9._-]+)-\d+\.sock", r"ssh-\1-@PID@.sock", text)
+        if self.LAYOUT != "legacy":
+            for pat, rep in self.TO_LEGACY:
+                text = re.sub(pat, rep, text)
         return text.split("\n")
 
     def check_golden(self, name, argv):
@@ -221,7 +256,7 @@ class Launcher:
 
     def test_profiles_listing(self):
         """apod profiles: the same answer whichever way a profile is written."""
-        if not (self.root / "plain").exists():
+        if "plain" not in self.P.profile_names():
             self.skipTest("no profiles")
         r = subprocess.run([APOD, "profiles"], env=self.env, cwd=self.tmp, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -265,6 +300,7 @@ class OldFilesTest(Launcher, unittest.TestCase):
 
     def test_old_files_are_announced(self):
         _, err = self.launch("plain")
+        self.assertEqual(err.count("apod: legacy layout: apod migrate --layout, then unset APOD_ROOT"), 1, err)
         self.assertIn("apod: plain: old profile files (env, mounts, image, network, volumes, connectors): apod migrate plain", err)
         _, err = self.launch("brk")  # the broker's session says it
         self.assertIn("apod broker: brk: old profile files (broker.toml, env, mounts, image): apod migrate brk", err)
@@ -403,6 +439,71 @@ class ProfileTomlTest(Launcher, unittest.TestCase):
         argv, err = self.launch("both")
         self.assertIn("-e GIT_AUTHOR_NAME=New", argv)
         self.assertIn("apod: both: profile.toml is used; the old files (env) are ignored (apod migrate both moves them away)", err)
+
+
+class NewLayoutTest(ProfileTomlTest):
+    """The same profile.toml files in the new layout, profiles/NAME.toml: the same command lines
+    (the folder names mapped)."""
+    LAYOUT = "xdg"
+
+    def test_the_old_files_are_ignored_beside_a_profile_toml(self):
+        self.skipTest("the old files are the legacy layout's only")
+
+    def test_where_things_are(self):
+        argv, err = self.launch("brk")
+        self.assertNotIn("legacy layout", err)
+        files = {f.name for f in (self.tmp / "config/profiles").iterdir()}  # files only, one per profile
+        self.assertLessEqual({"brk.toml", "brkhost.toml", "notoken.toml", "plain.toml", "sshkey.toml", "tokenother.toml"}, files)
+        self.assertTrue(all(f.endswith((".toml", ".google-credentials.json")) for f in files), files)
+        raw = self.log.read_text().split("\n")
+        self.assertIn(f"{self.tmp}/data/profiles/brk/home:/home/agent", raw)
+        self.assertTrue(any(a.startswith(f"{self.rundir}/sessions/") and a.endswith(":/run/apod-broker") for a in raw), raw)
+        self.assertTrue((self.tmp / "state/history.jsonl").is_file())
+        self.assertFalse(self.root.exists())
+        # The per-run ssh-agent's socket, alone, from the runtime folder.
+        self.launch("sshkey", "-a", "bash")
+        raw = self.log.read_text().split("\n")
+        socks = [a for a in raw if re.fullmatch(rf"{self.rundir}/ssh-sshkey-\d+\.sock:{self.rundir}/ssh-sshkey-\d+\.sock", a)]
+        self.assertEqual(len(socks), 1, raw)
+
+    def test_nothing_from_the_config_folder_is_mounted_but_the_google_client(self):
+        gd = Path(tempfile.mkdtemp(prefix="apod-gdocs-"))  # a google-docs-mcp checkout, outside tmp/
+        self.addCleanup(shutil.rmtree, gd, ignore_errors=True)
+        (gd / "dist").mkdir()
+        (gd / "dist/index.js").write_text("")
+        self.toml_profile("gdocs", "broker = false\n[git]\nname = \"N\"\nemail = \"n@example.org\"\n")
+        tok = self.tmp / "data/profiles/gdocs/home/.config/google-docs-mcp"
+        tok.mkdir(parents=True)
+        (tok / "token.json").write_text("{}")
+        cred = self.tmp / "config/profiles/gdocs.google-credentials.json"
+        cred.write_text('{"installed": {"client_id": "x", "client_secret": "y"}}')
+        self.launch("gdocs", "-c", "google-docs-mcp", extra_env={"APOD_GDOCS_MCP": str(gd)})
+        raw = self.log.read_text().split("--end--")[0].split("\n")
+        mounted = [a for a in raw if a.startswith(str(self.tmp / "config"))]
+        self.assertEqual(mounted, [f"{cred}:{gd}/credentials.json:ro,z"])
+
+    def test_names_a_profile_cant_have(self):
+        for name, msg in (("x.google-credentials", "ends in .google-credentials"), ("worklog", "is an apod command or folder")):
+            r = subprocess.run([APOD, name, str(self.proj)], env=self.env, cwd=self.tmp, stdin=subprocess.DEVNULL,
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn(msg, r.stderr)
+        r = subprocess.run([APOD, "nonesuch", str(self.proj)], env=self.env, cwd=self.tmp, stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True)
+        self.assertIn("no profile named nonesuch (profiles: brk brkhost", r.stderr)
+        r = subprocess.run([APOD, "--list-profiles"], env=self.env, capture_output=True, text=True)  # for _apod
+        self.assertLessEqual({"brk", "brkhost", "notoken", "plain", "sshkey", "tokenother"}, set(r.stdout.split()))
+        self.assertEqual(r.stderr, "")
+
+    def test_new_writes_one_file(self):
+        r = subprocess.run([APOD, "new", "wiz2"], env=self.env, cwd=self.tmp, capture_output=True, text=True,
+                           input="\n".join(["reader", "", "n", "", "", "n", "n", "n", "", "", "", "y"]) + "\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.tmp / "config/profiles/wiz2.toml").read_text(), "broker = false\n")
+        self.assertTrue((self.tmp / "data/profiles/wiz2/home").is_dir())
+        self.assertIn(f"Created {self.tmp}/config/profiles/wiz2.toml", r.stderr)
+        r = subprocess.run([APOD, "new", "wiz2"], env=self.env, cwd=self.tmp, capture_output=True, text=True, input="")
+        self.assertIn("wiz2.toml already exists", r.stderr)
 
 
 class MigratedTest(Launcher, unittest.TestCase):
