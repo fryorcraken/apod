@@ -98,9 +98,10 @@ def name_error(name):
 
 
 class Layout:
-    """apod's folders and files for an environment (os.environ by default)."""
+    """apod's folders and files for an environment (os.environ by default). force_new: the new
+    layout's, even where the legacy one is in use (apod migrate --layout's target)."""
 
-    def __init__(self, env=None):
+    def __init__(self, env=None, force_new=False):
         env = os.environ if env is None else env
         self.config = _dir(env, "APOD_CONFIG_DIR", "XDG_CONFIG_HOME", ".config")
         self.data = _dir(env, "APOD_DATA_DIR", "XDG_DATA_HOME", ".local/share")
@@ -108,8 +109,8 @@ class Layout:
         self.runtime = runtime_dir(env)
         self.own_runtime = True  # a folder of its own: made private here (ensure_runtime)
         self.legacy_root = Path(env["APOD_ROOT"]) if env.get("APOD_ROOT") else _home(env) / ".agent-pod"
-        self.legacy = bool(env.get("APOD_ROOT")) or (
-            not any(d.exists() for d in (self.config, self.data, self.state)) and self.legacy_root.is_dir())
+        self.legacy = not force_new and (bool(env.get("APOD_ROOT")) or (
+            not any(d.exists() for d in (self.config, self.data, self.state)) and self.legacy_root.is_dir()))
         self.notice = None
         if self.legacy:
             # The legacy layout: one folder for all of it, a profile a folder in it, the sockets in

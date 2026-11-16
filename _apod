@@ -11,7 +11,7 @@ _apod_profiles() {
 
 _apod_first() {
   local -a cmds
-  cmds=('new:create a profile, step by step' 'migrate:move a profile'"'"'s old files into one profile.toml'
+  cmds=('new:create a profile, step by step' 'migrate:move a profile'"'"'s old files into one profile.toml (--layout: ~/.agent-pod to the new layout)'
         'token:set, replace or remove a profile GitHub token' 'profiles:list profiles and token status'
         'google-auth:sign a profile in to Google for google-docs-mcp'
         'resume:resume a stopped Claude session started in a folder (this pane'"'"'s, or pick)'
@@ -45,7 +45,7 @@ case ${words[2]} in
   token)    _arguments '1: :(token)' '2:profile:_apod_profiles' '3:option:(--rm)'; return ;;
   google-auth) _arguments '1: :(google-auth)' '2:profile:_apod_profiles'; return ;;
   new)      return ;;
-  migrate)  _arguments '1: :(migrate)' '2:profile:{_apod_profiles; compadd -- --all}'; return ;;
+  migrate)  _arguments '1: :(migrate)' '2:profile:{_apod_profiles; compadd -- --all --layout}' '3:option:(--yes)'; return ;;
   resume)   _arguments '1: :(resume)' '(--latest --claude)--list[always list and ask]' \
               '(--list --claude)--latest[resume the newest without asking]' \
               '(--list --latest)--claude[use Claude'"'"'s own session picker]' '2:folder:_directories'; return ;;

@@ -49,6 +49,7 @@ STUB_PODMAN = textwrap.dedent("""\
           ls) for s in $STUB_SECRETS; do echo "$s"; done; exit 0 ;;
         esac ;;
       run) { printf 'podman'; printf '\\n%s' "$@"; printf '\\n--end--\\n'; } >> "$STUB_LOG"; exit 0 ;;
+      ps) [ -z "${STUB_PS:-}" ] || echo "$STUB_PS"; exit 0 ;;
     esac
     exit 0
 """)
@@ -138,8 +139,7 @@ class Launcher:
 
     @classmethod
     def profile(cls, name, **files):
-        """A profile in the old files: the legacy layout's only."""
-        assert cls.LAYOUT == "legacy"
+        """A profile in the old files, in the legacy folder (the legacy layout's only)."""
         d = cls.root / name
         (d / "home").mkdir(parents=True)
         for f, text in files.items():
@@ -532,6 +532,174 @@ class NewLayoutTest(ProfileTomlTest):
         self.assertIn(f"Created {self.tmp}/config/profiles/wiz2.toml", r.stderr)
         r = subprocess.run([APOD, "new", "wiz2"], env=self.env, cwd=self.tmp, capture_output=True, text=True, input="")
         self.assertIn("wiz2.toml already exists", r.stderr)
+
+
+class MigratedLayoutTest(Launcher, unittest.TestCase):
+    """A legacy folder (the old profiles, a profile.toml, the broker's state, work logs...) after
+    `apod migrate --layout`: the same command lines in the new layout, and nothing deleted."""
+    LAYOUT = "xdg"
+
+    @classmethod
+    def make_profiles(cls):
+        cls.root.mkdir()
+        cls.make_old_profiles()
+        r = cls.root
+        (r / "tomlp/home").mkdir(parents=True)
+        (r / "tomlp/profile.toml").write_text('# kept\nbroker = false\n[git]\nname = "T"\nemail = "t@example.org"\n')
+        (r / "bare/home").mkdir(parents=True)  # no settings: no broker
+        (r / "plain/google-credentials.json").write_text('{"installed": {}}')
+        (r / "plain/home/.claude").mkdir(parents=True)
+        (r / "plain/home/.claude/x.json").write_text("{}")
+        (r / "plain/agent").mkdir()  # a per-run ssh-agent's folder, from a run long gone
+        (r / "broker.toml").write_text('[notify]\ncommand = ["true"]\n')
+        (r / "roles.toml").write_text('[roles.mine]\nextends = ["reader"]\n')
+        (r / "broker-extensions").mkdir()
+        (r / "broker-extensions/mine.py").write_text("")
+        (r / "worklog/w1").mkdir(parents=True)
+        (r / "worklog/w1/worklog.md").write_text("# log\n")
+        (r / "history.jsonl").write_text('{"ts": 1, "profile": "plain", "agent": "bash", "project": "/x", "opts": ["plain"]}\n')
+        (r / "broker/sessions/s1").mkdir(parents=True)
+        (r / "broker/sessions/s1/allowed_signers").write_text("")
+        (r / "broker/sessions/s1.json").write_text('{"id": "s1", "profile": "brk"}\n')
+        for f in ("log.jsonl", "grants.json", "broker.log"):
+            (r / "broker" / f).write_text("{}\n")
+        (r / "broker/gh-api").mkdir()
+        (r / "broker/gh-api/ca.pem").write_text("pem")
+        (r / "notes.txt").write_text("mine")
+        cls.files_before = sorted(str(f.relative_to(r)) for f in r.rglob("*") if f.is_file())
+        res = subprocess.run([APOD, "migrate", "--layout", "--yes"], env=dict(cls.env, APOD_ROOT=str(r)), cwd=cls.tmp,
+                             capture_output=True, text=True)
+        assert res.returncode == 0, res.stderr
+        cls.migrated = res.stderr
+
+    def test_migrated_layout_launches_as_before(self):
+        self.run_cases("migrated layout")
+        _, err = self.launch("plain")
+        self.assertNotIn("legacy layout", err)
+        self.assertNotIn("old profile files", err)
+
+    def test_where_everything_went(self):
+        t = self.tmp
+        for f in ("config/profiles/plain.toml", "config/profiles/brk.toml", "config/profiles/tomlp.toml",
+                  "config/profiles/bare.toml", "config/profiles/plain.google-credentials.json", "config/config.toml",
+                  "config/roles.toml", "config/extensions/mine.py", "data/profiles/plain/home/.claude/x.json",
+                  "data/worklog/w1/worklog.md", "state/history.jsonl", "state/broker/log.jsonl", "state/broker/grants.json",
+                  "state/broker/broker.log", "state/broker/sessions/s1.json", "state/broker/gh-api/ca.pem"):
+            self.assertTrue((t / f).is_file(), f)
+        self.assertEqual((t / "config/profiles/tomlp.toml").read_text().splitlines()[0], "# kept")
+        self.assertTrue((t / "config/profiles/bare.toml").read_text().startswith("broker = false"))
+        self.assertEqual((t / "config/profiles/plain.toml").stat().st_mode & 0o777, 0o600)
+        self.assertIn("plain/ (converted from env, mounts, image, network, volumes, connectors)", self.migrated)
+        self.assertIn("broker = false", self.migrated)  # it shows the files it writes
+        self.assertIn("moved;", self.migrated)
+        self.assertIn("unset APOD_ROOT", self.migrated)
+        # A bare folder launches without the broker, as before.
+        argv, _ = self.launch("bare")
+        self.assertFalse(any(a.startswith("apod.broker=") for a in argv))
+        r = subprocess.run([APOD, "history"], env=self.env, capture_output=True, text=True)
+        self.assertIn("plain", r.stdout)
+
+    def test_nothing_is_deleted(self):
+        self.assertFalse(self.root.exists())
+        old = self.tmp / "apod.migrated"
+        left = sorted(str(f.relative_to(old)) for f in old.rglob("*") if f.is_file())
+        for f in ("plain/env", "plain/mounts", "brk/broker.toml", "sshkey/ssh-key", "tomlp/profile.toml",
+                  "broker/sessions/s1/allowed_signers", "notes.txt"):
+            self.assertIn(f, left)
+        moved = {"broker.toml": "config/config.toml", "roles.toml": "config/roles.toml",
+                 "history.jsonl": "state/history.jsonl"}
+        for f in self.files_before:  # every file is still somewhere
+            here = (old / f).exists() or (self.tmp / moved.get(f, "-")).exists()
+            if not here and "/" in f:
+                top, rest = f.split("/", 1)
+                here = any((self.tmp / p).exists() for p in (f"data/profiles/{top}/{rest}", f"data/{f}",
+                                                             f"config/extensions/{rest}", f"state/{f}",
+                                                             f"config/profiles/{top}.google-credentials.json"))
+            self.assertTrue(here, f)
+
+    def test_it_is_idempotent(self):
+        for env in (dict(self.env, APOD_ROOT=str(self.root)), self.env):
+            r = subprocess.run([APOD, "migrate", "--layout", "--yes"], env=env, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("nothing to migrate", r.stderr)
+
+
+class MigrateLayoutChecksTest(unittest.TestCase):
+    """apod migrate --layout: when it refuses, what it asks, and a second run after a first that
+    didn't finish."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="apod-ml-"))  # short: a unix socket goes in it
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.root = self.tmp / "old"
+        (self.root / "p/home").mkdir(parents=True)
+        (self.root / "p/env").write_text("GIT_AUTHOR_NAME=A\nGIT_AUTHOR_EMAIL=a@example.org\n")
+        (self.root / "selinux").write_text("apod\n")
+        b = self.tmp / "bin"
+        b.mkdir()
+        (b / "podman").write_text(STUB_PODMAN)
+        (b / "podman").chmod(0o755)
+        self.env = dict({k: v for k, v in os.environ.items() if k not in LAYOUT_VARS}, HOME=str(self.tmp / "home"),
+                        APOD_ROOT=str(self.root), APOD_CONFIG_DIR=str(self.tmp / "c"), APOD_DATA_DIR=str(self.tmp / "d"),
+                        APOD_STATE_DIR=str(self.tmp / "s"), PATH=f"{b}:{os.environ['PATH']}", STUB_LOG=os.devnull)
+
+    def migrate(self, *args, input="", **env):
+        return subprocess.run([APOD, "migrate", "--layout", *args], env=dict(self.env, **env), capture_output=True,
+                              text=True, input=input)
+
+    def test_refused_while_a_broker_or_a_pod_runs(self):
+        import socket
+        (self.root / "broker").mkdir()
+        s = socket.socket(socket.AF_UNIX)
+        s.bind(str(self.root / "broker/admin.sock"))
+        s.listen()
+        r = self.migrate("--yes")
+        s.close()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("a broker of the legacy layout is running: apod broker stop", r.stderr)
+        (self.root / "broker/admin.sock").unlink()
+        r = self.migrate("--yes", STUB_PS="apod-p-proj-1")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("apod pods are running (apod-p-proj-1)", r.stderr)
+        self.assertTrue((self.root / "p/home").is_dir() and not (self.tmp / "c").exists())
+
+    def test_it_asks_first(self):
+        r = self.migrate(input="n\n")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(f"p/home/", r.stderr)
+        self.assertIn(f"-> {self.tmp}/d/profiles/p/home", r.stderr)
+        self.assertIn("selinux", r.stderr)
+        self.assertIn("Move them? [Y/n]", r.stderr)
+        self.assertIn("nothing moved", r.stderr)
+        self.assertTrue((self.root / "p/home").is_dir() and not (self.tmp / "c").exists())
+        self.assertEqual(self.migrate(input="").returncode, 1)  # no answer is a no
+        r = self.migrate(input="y\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.tmp / "s/selinux").read_text(), "apod\n")
+
+    def test_what_is_there_already_stops_it(self):
+        (self.tmp / "d/profiles/p/home").mkdir(parents=True)
+        r = self.migrate("--yes")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn(f"{self.tmp}/d/profiles/p/home", r.stderr)
+        self.assertTrue(self.root.exists() and not (self.tmp / "c/profiles/p.toml").exists())
+
+    def test_a_second_run_finishes_the_first(self):
+        # As if a first run had written the profile's file and moved its home, then stopped.
+        text = 'broker = false\n\n[git]   # the identity (GIT_AUTHOR_* and GIT_COMMITTER_* in the old env file)\nname = "A"\nemail = "a@example.org"\n'
+        (self.tmp / "c/profiles").mkdir(parents=True)
+        (self.tmp / "c/profiles/p.toml").write_text(text)
+        (self.tmp / "d/profiles/p").mkdir(parents=True)
+        os.rename(self.root / "p/home", self.tmp / "d/profiles/p/home")
+        r = self.migrate("--yes")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.tmp / "c/profiles/p.toml").read_text(), text)
+        self.assertTrue((self.tmp / "s/selinux").exists() and (self.tmp / "old.migrated/p/env").exists())
+
+    def test_mounts_the_new_layout_refuses_are_pointed_out(self):
+        (self.root / "p/mounts").write_text(f"{self.tmp}\n")  # contains the new folders
+        r = self.migrate(input="n\n")
+        self.assertIn(f"careful: p.toml: ro mount {self.tmp} is refused: it contains apod's config folder", r.stderr)
 
 
 class MigratedTest(Launcher, unittest.TestCase):

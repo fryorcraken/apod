@@ -16,6 +16,7 @@ variable.
 - [Approving requests](#approving-requests)
 - [Without the broker: tokens](#without-the-broker-tokens)
 - [Migrating to profile.toml](#migrating-to-profiletoml)
+- [Migrating to the new layout](#migrating-to-the-new-layout)
 - [Mounts, network and images](#mounts-network-and-images)
 - [SELinux](#selinux)
 - [claude.ai connectors and MCP servers](#claudeai-connectors-and-mcp-servers)
@@ -724,6 +725,45 @@ One behaviour changes when a profile is read, migrated or not: the `env` file is
 podman as `--env-file`. Its variables, and `[pod.env]`, are `-e` options, with the quotes stripped
 from an old file's values as the broker always did. And mounts that would expose apod's own files
 are refused (see [SECURITY.md](../SECURITY.md#the-container)).
+
+## Migrating to the new layout
+
+apod used to keep everything in `~/.agent-pod`: your settings, the profiles' logins, the broker's
+state and its sockets. It now keeps them in four folders ([where](reference.md#where-apod-keeps-its-files)):
+what you write in `~/.config/apod` (which can go in a dotfiles repository: no logins or logs
+there), the profiles' homes and the work logs in `~/.local/share/apod`, what the tools write in
+`~/.local/state/apod`, and the sockets in `$XDG_RUNTIME_DIR/apod`. An install that has only
+`~/.agent-pod` keeps working as it did, and says `apod: legacy layout: apod migrate --layout` at
+launch. The legacy layout will go in a later release. To move:
+
+```sh
+apod broker stop                 # and exit the pods first: it refuses while they run
+apod migrate --layout            # shows what moves where, and asks; --yes doesn't ask
+apod broker paths                # where things are now
+```
+
+The broker starts again with the next pod that uses it, from the new folders, with its saved
+approvals; `apod broker keys` loads its keys.
+
+- Each profile becomes one file, `profiles/NAME.toml`: its `profile.toml`, or its old files
+  converted on the way (with the same check as `apod migrate`; mode 0600), or `broker = false` for
+  a folder with no settings (which launched without the broker). Its `home/` goes to
+  `~/.local/share/apod/profiles/NAME/home/`, its `google-credentials.json` beside its file, as
+  `NAME.google-credentials.json`.
+- `broker.toml` becomes `config.toml`; `roles.toml` and `broker-extensions/` (now `extensions/`)
+  go to the config folder; `worklog/` to the data folder; `history.jsonl`, `selinux` and the
+  broker's state (`log.jsonl`, `grants.json`, the saved sessions, the gh-api CA, its home) to the
+  state folder.
+- Nothing is deleted. What isn't moved (the old profile files, `.old/`, stale sockets, files apod
+  doesn't know) stays in the old folder, which becomes `~/.agent-pod.migrated`: delete it once your
+  profiles work.
+- It stops before moving anything when a file it would write is there already with something
+  else in it, and says which. Run again, it finishes what a first run left; once done, there's
+  nothing to migrate.
+- It says which mounts of a profile the new folders' [mount guard](reference.md#where-apod-keeps-its-files)
+  would refuse (a mount of `~/.config` or `~/.local` contains them now).
+- With `APOD_ROOT=DIR`, it moves `DIR` to the folders the `APOD_*_DIR` and `XDG_*` variables say;
+  then unset `APOD_ROOT`.
 
 ## Mounts, network and images
 

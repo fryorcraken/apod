@@ -10,6 +10,9 @@ sys.path.insert(0, str(HERE / "broker"))
 if sys.argv[1:2] == ["paths"]:  # where apod's files are: for apod, which asks once at start
     import paths  # noqa: E402
     sys.exit(paths.main(sys.argv[2:]))
+if sys.argv[1:2] == ["migrate"] and "--layout" in sys.argv[2:]:  # the legacy layout to the new one
+    import migrate_layout  # noqa: E402
+    sys.exit(migrate_layout.main(sys.argv[2:]))
 if sys.argv[1:2] in (["profile"], ["migrate"]):  # profile settings: need neither the broker nor its extensions
     import profiles  # noqa: E402
     sys.exit(profiles.main(sys.argv[2:]) if sys.argv[1] == "profile" else profiles.migrate_main(sys.argv[2:]))

@@ -17,6 +17,7 @@ Every command, file, setting and variable. For how to set things up, see the
 apod <profile> [options] [dir] [-- agent args]   run an agent in a pod, in dir (default: the current folder)
 apod new [profile]                               create a profile, step by step (writes profiles/NAME.toml)
 apod migrate [profile | --all] [--yes]           legacy layout: old profile files to one profile.toml (the old files move to .old/)
+apod migrate --layout [--yes]                    the legacy layout (~/.agent-pod) to the new one
 apod resume [--list|--latest|--claude] [dir]     resume a stopped Claude session started in dir
 apod history                                     folders and profiles launched, most recent first
 apod ps                                          running pods: profile, session, status, folder
@@ -283,13 +284,14 @@ apod's files are in four folders, after the XDG Base Directory specification (on
 | state: `$APOD_STATE_DIR`, else `${XDG_STATE_HOME:-~/.local/state}/apod`              | What the tools write: `history.jsonl` (every launch, for `apod history` and `apod resume`), `broker/` (the broker's state: `log.jsonl`, every request; `broker.log`, its own log; `grants.json`, approvals for roles; `sessions/<id>.json`, each session's saved state), `selinux` (written by `apod selinux install`).                              |
 | runtime: `$APOD_RUNTIME_DIR`, else `$XDG_RUNTIME_DIR/apod`, else `$TMPDIR/apod-$UID` | Sockets only, mode 0700 (apod refuses one that isn't yours and private), gone at logout: the broker's `admin.sock` and `agent.sock` (its ssh-agent), `sessions/<id>/` (the folder a pod mounts at `/run/apod-broker`), `ssh-NAME-PID.sock` (a per-run ssh-agent). A session's state is in the state folder, so it comes back after a broker restart. |
 
-`apod-broker paths` prints where they are (`--json` for scripts).
+`apod broker paths` (`apod-broker paths`) prints where they are (`--json` for scripts).
 
 **The legacy layout.** Installs from before this layout keep everything in one folder,
 `~/.agent-pod`: profiles as folders in it (`<profile>/profile.toml`, `<profile>/home/`),
 `broker.toml` (now `config.toml`), `roles.toml`, `broker-extensions/` (now `extensions/`),
 `broker/` (with the sockets), `history.jsonl`, `worklog/`, `selinux`. apod uses it when none of
-the config, data and state folders exists and `~/.agent-pod` does, and says so at launch. `APOD_ROOT=DIR` means the legacy
+the config, data and state folders exists and `~/.agent-pod` does, and says so at launch; `apod
+migrate --layout` moves it to the new layout ([guide](guides.md#migrating-to-the-new-layout)). `APOD_ROOT=DIR` means the legacy
 layout rooted at `DIR`, whatever the other variables say.
 
 apod refuses a mount (`[pod] ro`/`rw`, `--ro`, `--rw`) that is, contains or is inside one of
