@@ -91,7 +91,9 @@ class Launcher:
         (cls.proj).mkdir()
         subprocess.run(["git", "init", "-q", "-b", "main", cls.proj], check=True)
         subprocess.run(["git", "-C", cls.proj, "remote", "add", "origin", "git@github.com:acme/widget.git"], check=True)
-        cls.m = cls.tmp / "mounts"          # things to mount
+        # Things to mount: not under tmp/, which may be inside the checkout, a mount the guard refuses.
+        cls.m = Path(tempfile.mkdtemp(prefix="apod-mounts-"))
+        cls.addClassCleanup(lambda: None if os.environ.get("KEEP") else shutil.rmtree(cls.m, ignore_errors=True))
         for d in ("ro1", "rw1", "cli-ro", "cli-rw"):
             (cls.m / d).mkdir(parents=True)
         subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", cls.tmp / "key"], check=True)
@@ -202,6 +204,7 @@ class Launcher:
                 i += 1
         out += [f"-e {e}" for e in sorted(envs)]
         text = "\n".join(out)
+        text = text.replace(str(self.m), "@TMP@/mounts")
         for real, name in ((self.tmp, "@TMP@"), (HERE, "@REPO@")):
             text = text.replace(str(real), name)
         text = re.sub(r"(apod-[A-Za-z0-9._-]+-proj)-\d+", r"\1-@PID@", text)
@@ -293,7 +296,7 @@ class OldFilesTest(Launcher, unittest.TestCase):
         (old / "python3").write_text("#!/bin/sh\ncase $1 in --version) echo Python 3.9.2 ;; *) exit 1 ;; esac\n")
         (old / "python3").chmod(0o755)
         self.log.write_text("")
-        for args in (["plain"], ["profiles"]):
+        for args in (["plain"], ["profiles"], ["new", "x"], ["migrate", "--all"]):
             r = subprocess.run([APOD, *args, str(self.proj)] if args[0] == "plain" else [APOD, *args],
                                env=dict(self.env, PATH=f"{old}:{self.env['PATH']}"), cwd=self.tmp,
                                stdin=subprocess.DEVNULL, capture_output=True, text=True)
@@ -485,6 +488,18 @@ class MigratedTest(Launcher, unittest.TestCase):
         self.migrate("silent", input="")
         self.assertTrue((self.root / "silent/image").exists() and not (self.root / "silent/profile.toml").exists())
 
+    def test_the_profile_toml_is_private(self):
+        self.profile("secretive", env="GIT_AUTHOR_NAME=A\nGIT_AUTHOR_EMAIL=a@example.org\nAPI_KEY=hunter2\n")
+        (self.root / "secretive/env").chmod(0o600)
+        self.assertEqual(self.migrate("secretive", "--yes").returncode, 0)
+        self.assertEqual((self.root / "secretive/profile.toml").stat().st_mode & 0o777, 0o600)
+
+    def test_persona_is_renamed_only_at_the_top(self):
+        self.profile("pers", broker_toml='persona = "dev"\n[x]\npersona = "keep"\n')
+        r = self.migrate("pers", "--yes")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.root / "pers/profile.toml").read_text(), 'role = "dev"\n[x]\npersona = "keep"\n')
+
     def test_old_files_beside_a_profile_toml_are_moved_away(self):
         self.toml_profile("both", 'broker = false\n[git]\nname = "New"\nemail = "new@example.org"\n')
         (self.root / "both/env").write_text("GIT_AUTHOR_NAME=Old\n")
@@ -580,6 +595,12 @@ class WizardTest(Launcher, unittest.TestCase):
         self.assertIn("@TMP@/mounts/ro1:@TMP@/mounts/ro1:ro", argv)
         self.assertIn("@TMP@/mounts/rw1:@TMP@/mounts/rw1", argv)
         self.assertIn("myimage", argv)
+
+    def test_paths_are_stored_absolute(self):
+        rel = os.path.relpath(self.m / "ro1", self.tmp)  # as typed, from the folder apod new runs in
+        r = self.new("relwiz", "reader", "", "n", "", "", "n", "n", "n", rel, "", "", "", "y")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f'ro = ["{self.m}/ro1"]', (self.root / "relwiz/profile.toml").read_text())
 
     def test_a_profile_without_the_broker(self):
         r = self.new("plainwiz", "reader", "", "n", "", "", "n", "n", "n", "", "", "", "y")

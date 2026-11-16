@@ -187,6 +187,7 @@ case ${1:-} in
     # A wizard for a new profile: the GitHub account, git identity, signing, ssh, Radicle,
     # notifications, role, scope, mounts and image. It shows the profile.toml it would write, and
     # writes nothing until you say yes.
+    need_python
     root=${APOD_ROOT:-$HOME/.agent-pod}
     cb=; cdim=; cy=; cr=
     if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then cb=$'\e[1m'; cdim=$'\e[2m'; cy=$'\e[1;33m'; cr=$'\e[0m'; fi
@@ -212,15 +213,16 @@ case ${1:-} in
     tlist() { local out="" v; for v in "$@"; do out+="${out:+, }$(tq "$v")"; done; printf '[%s]' "$out"; }
     tilde() { case $1 in "$HOME"/*) printf '%s/%s' "~" "${1#"$HOME"/}" ;; *) printf '%s' "$1" ;; esac; }
     mountpath() {  # mountpath VAR MODE QUESTION: an existing path apod would mount, or empty
-      local mp err
+      local mp err rc
       while :; do
         ask mp "$3"; mp=${mp/#\~/$HOME}
         if [ -z "$mp" ]; then printf -v "$1" '%s' ""; return; fi
         if [ ! -e "$mp" ]; then warn "No such path: $mp"; continue; fi
-        # The loader's mount guard: apod's own files can't be mounted.
-        if err=$(python3 "$apoddir/apod-broker" profile --profile-dir "$root/$name" --"$2" "$mp" --quiet 2>&1 >/dev/null); then
-          printf -v "$1" '%s' "$mp"; return
-        fi
+        mp=$(realpath -m "$mp")  # absolute: profile.toml is read from other folders
+        # The loader's mount guard: apod's own files can't be mounted (exit 2: refused; else it broke).
+        rc=0; err=$(python3 "$apoddir/apod-broker" profile --profile-dir "$root/$name" --"$2" "$mp" --quiet 2>&1 >/dev/null) || rc=$?
+        if [ "$rc" = 0 ]; then printf -v "$1" '%s' "$mp"; return; fi
+        [ "$rc" = 2 ] || { echo "apod: couldn't check the mount: $err" >&2; exit 2; }
         warn "${err#apod: }"
       done
     }
@@ -228,7 +230,7 @@ case ${1:-} in
       local k
       while :; do
         ask k "$2"; k=${k/#\~/$HOME}
-        if [ -z "$k" ] || { [ -f "$k" ] && [ -f "$k.pub" ]; }; then printf -v "$1" '%s' "$k"; return; fi
+        if [ -z "$k" ] || { [ -f "$k" ] && [ -f "$k.pub" ]; }; then printf -v "$1" '%s' "${k:+$(realpath -m "$k")}"; return; fi
         warn "No key at $k (with $k.pub next to it)."
       done
     }
@@ -308,7 +310,7 @@ case ${1:-} in
       signkey=$HOME/.ssh/id_apod_${name}_sign; newsign=1
       [ ! -e "$signkey" ] || { warn "$signkey exists: using it."; newsign=; }
     elif [ -n "$signkey" ]; then
-      signkey=${signkey/#\~/$HOME}
+      signkey=$(realpath -m "${signkey/#\~/$HOME}")
       [ -f "$signkey" ] && [ -f "$signkey.pub" ] || keypath signkey "No key there (with its .pub). Signing key (empty: none):"
     fi
     [ -z "$signkey" ] || offer "sign commits" git-sign:commit git-sign:tag
@@ -634,7 +636,9 @@ fi
 # for the same path. Each path is mounted once.
 declare -A mmode=(); morder=()
 want_mount() {  # <ro|rw> <path>; fails if the path doesn't exist
-  local path; path=$(realpath -m "${2/#\~/$HOME}")
+  local path p=$2
+  case $p in "~"|"~/"*) p=$HOME${p#"~"} ;; esac  # only ~ and ~/..., as the loader that checked it
+  path=$(realpath -m "$p")
   [ -e "$path" ] || return 1
   [ "$path" = "$proj" ] && return 0
   [ -n "${mmode[$path]+x}" ] || morder+=("$path")

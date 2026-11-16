@@ -297,9 +297,10 @@ def old_files_in(pdir):
     return [f for f in OLD_FILES if (Path(pdir) / f).exists()]
 
 
-def load(pdir, project=None):
+def load(pdir, project=None, guard=True):
     """The profile in folder `pdir`, checked. Raises ProfileError. A mount of the launch's
-    `project` isn't checked: the project is mounted anyway."""
+    `project` isn't checked: the project is mounted anyway. The broker (guard=False) doesn't mount
+    anything: apod checks the mounts when it launches."""
     pdir = Path(pdir)
     old = old_files_in(pdir)
     name = pdir.name
@@ -324,7 +325,7 @@ def load(pdir, project=None):
     p["dir"] = str(pdir)
     p["warnings"] = warnings + p["warnings"]
     where = f if f.exists() else pdir / "mounts"
-    for mode, path in p["pod"]["mounts"]:
+    for mode, path in p["pod"]["mounts"] if guard else []:
         if not (project and real(path) == real(project)):
             check_mount(mode, path, where)
     return p
@@ -404,8 +405,11 @@ def toml_of_old(pdir, p):
     bt = pdir / "broker.toml"
     if bt.exists():
         text = bt.read_text()
-        # persona was role's old name
-        text = re.sub(r"(?m)^persona(\s*=)", r"role\1", text) if "role" not in tomllib.loads(text) else text
+        # persona was role's old name: a top-level key, so only before the first [table]
+        if "role" not in tomllib.loads(text):
+            m = re.search(r"(?m)^\[", text)
+            cut = m.start() if m else len(text)
+            text = re.sub(r"(?m)^persona(\s*=)", r"role\1", text[:cut]) + text[cut:]
         out.append(text.rstrip() + "\n")
     else:
         out.append("broker = false\n")
@@ -495,7 +499,10 @@ def migrate_one(pdir, ask, say):
     if not ask("Write it?"):
         say(f"{name}: left as it was")
         return False
-    f.write_text(text)
+    # Not world-readable: [pod.env] may hold what an old env file kept (tokens, API keys).
+    fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as out:
+        out.write(text)
     move_old(pdir, old)
     say(f"{name}: wrote profile.toml; the old files are in {tilde(str(pdir))}/.old/")
     return True

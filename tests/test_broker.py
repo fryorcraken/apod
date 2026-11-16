@@ -1134,6 +1134,8 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual(state["identity"]["emails"], ["agent@example.com"])
         r = self.gh("pr", "create", "--title", "t", "--body", "b", sess=sess, cwd=self.work, expect=1)
         self.assertIn("never allowed", r.stderr)
+        # The broker mounts nothing: a mount the guard would refuse (apod checks those) doesn't stop a session.
+        self.register("", [], new=True, toml=f'[pod]\nro = ["{HERE}"]\n')
         # The launch's role still wins over profile.toml's.
         self.assertEqual(self.register("reader", [], new=True, toml='role = "dev"\n')["role"], "reader")
         # Old files warn once, with the way out.

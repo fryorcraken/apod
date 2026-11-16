@@ -1025,7 +1025,7 @@ def renamed_action(a):
 def read_profile(pdir):
     """The profile in folder pdir (profile.toml, or the old files), as profiles.load reads it."""
     try:
-        return profiles.load(pdir)
+        return profiles.load(pdir, guard=False)  # the broker mounts nothing; apod checks mounts at launch
     except profiles.ProfileError as e:
         raise BrokerError(str(e))
 

@@ -57,7 +57,7 @@ do and leaves a record of what it did.
   broker runs on the host; and the folder holds every profile's login and the broker's state. The
   only exceptions are read-only mounts of `worklog/`, `history.jsonl` and `broker/log.jsonl`, for
   a pod that reviews them. The check follows symlinks and `..`, and nothing in a profile's folder
-  but `home/` (and `agent/`, the ssh-agent's socket) is mounted. It doesn't cover the project
+  but `home/` (and `agent/`, the ssh-agent's socket) is mounted, apart from `google-credentials.json`, read-only, when google-docs-mcp is enabled. It doesn't cover the project
   folder, which is mounted read-write anyway (launching from `~` or from the apod checkout is up
   to you), and it checks the paths when apod starts, not a symlink someone changes later.
 - **Processes:** the host's processes, other pods and their files are not visible.
