@@ -23,7 +23,8 @@ NAME` prints it as JSON):
                      true; old files: broker.toml exists)
     role, scope, allow, deny   the broker's, as in profile.toml ("role" is None when not set)
     pod              image, network (None when not set), mounts [[mode, path], ...], volumes
-                     {name: path}, connectors [...], env {NAME: value}
+                     {name: path}, connectors [...], env {NAME: value}, env_from [NAME, ...]
+                     (host variables passed by name: their values are never in the file)
     git              name, email, committer_name, committer_email: the keys that are set
     token            profile: whose GitHub token (podman secret gh-<profile>) a launch without
                      the broker uses, None for the profile's own
@@ -44,7 +45,7 @@ OLD_FILES = ("broker.toml", "env", "mounts", "image", "network", "volumes", "con
              "ssh-key", "ssh-confirm")
 TOP_KEYS = {"broker": bool, "role": str, "scope": list, "allow": list, "deny": list}
 # Tables the profile owns; any other table belongs to a broker extension.
-OWN_TABLES = {"pod": {"image", "network", "ro", "rw", "volumes", "connectors", "env"},
+OWN_TABLES = {"pod": {"image", "network", "ro", "rw", "volumes", "connectors", "env", "env_from"},
               "git": {"name", "email", "committer_name", "committer_email"},
               "token": {"profile"},
               "ssh-agent": {"key", "confirm"}}
@@ -67,7 +68,8 @@ def expand(p):
 
 def empty():
     return {"broker": True, "role": None, "scope": [], "allow": [], "deny": [],
-            "pod": {"image": None, "network": None, "mounts": [], "volumes": {}, "connectors": [], "env": {}},
+            "pod": {"image": None, "network": None, "mounts": [], "volumes": {}, "connectors": [], "env": {},
+                    "env_from": []},
             "git": {}, "token": {"profile": None}, "ssh_agent": {"key": None, "confirm": False},
             "tables": {}, "warnings": []}
 
@@ -150,6 +152,17 @@ def from_toml(data, where):
             if k in IDENTITY_ENV:
                 raise ProfileError(f"{where}: [pod.env] {k}: the git identity is [git] name and email")
         p["pod"]["env"] = dict(env)
+    if "env_from" in pod:
+        # Names of host variables, passed by name at launch: the file holds no value.
+        names = check_list(f"{where}: [pod]", "env_from", pod["env_from"])
+        for k in names:
+            if not ENV_NAME.fullmatch(k):
+                raise ProfileError(f"{where}: [pod] env_from: {k!r} isn't an environment variable name")
+            if k in IDENTITY_ENV:
+                raise ProfileError(f"{where}: [pod] env_from: {k}: the git identity is [git] name and email")
+            if k in p["pod"]["env"]:
+                raise ProfileError(f"{where}: [pod] env_from: {k} is in [pod.env] too: one or the other")
+        p["pod"]["env_from"] = list(dict.fromkeys(names))
     for k, v in data.get("git", {}).items():
         p["git"][k] = check_str(f"{where}: [git]", k, v)
         if k.endswith("email") and not re.fullmatch(r"[^@\s]+@[^@\s]+", v):

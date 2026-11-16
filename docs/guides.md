@@ -800,6 +800,21 @@ even inside a read-only entry. The first launch relabels mounted trees for SELin
 can take a while on big trees. A running pod can't gain mounts: exit and relaunch with
 `-- --continue`, or `apod resume`.
 
+**Environment.** `[pod.env]` sets variables in the pod, with their values in the profile's file.
+For a secret (an API key), list its name in `[pod] env_from` instead, and keep the value in your
+own environment (a password manager, your shell's startup): the file then holds no secret, and can
+go in a dotfiles repository with the rest of `~/.config/apod`.
+
+```toml
+# ~/.config/apod/profiles/work.toml
+[pod]
+env_from = ["OPENAI_API_KEY"]   # passed as -e OPENAI_API_KEY: podman takes the value from apod's environment
+```
+
+The value isn't in podman's command line (`ps` doesn't show it), nor in `history.jsonl`. A name
+that isn't set when you launch is left out, with a warning. Once passed, the value is in the pod,
+like any variable: the agent can read it, and use it as the account it belongs to can.
+
 **Network.** Pods use podman's default network (pasta). On some hosts (seen on Wi-Fi) pasta
 gives pods IPv6 only, so IPv4-only destinations such as Tailscale hosts are unreachable; a
 `[pod] network = "host"` shares the host's network instead, its localhost services

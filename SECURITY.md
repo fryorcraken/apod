@@ -73,6 +73,10 @@ do and leaves a record of what it did.
   doesn't cover the project folder, which is mounted read-write anyway (launching from `~` or from
   the apod checkout is up to you), and it checks the paths when apod starts, not a symlink someone
   changes later.
+- **Environment:** the pod gets the variables of its profile's `[pod.env]` and `[pod] env_from`
+  (yours, by name: apod passes `-e NAME` and podman reads the value, so it's in neither the
+  profile's file nor podman's command line). Whatever is passed is in the pod: an API key passed
+  this way is the agent's to use.
 - **Processes:** the host's processes, other pods and their files are not visible.
 - **The desktop:** no display or Wayland socket is passed in. With `[clipboard] enabled`, the
   pod can ask the broker for an image on your clipboard (`clipboard:image`, checked like any

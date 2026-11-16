@@ -1897,7 +1897,8 @@ class ProfileLoaderTest(unittest.TestCase):
                          (True, "reader", ["gh:fryorcraken/*", "gh-search:all"], ["clipboard:image"], ["gh:pr merge"]))
         self.assertEqual(p["pod"], {"image": "myimage", "network": "host", "volumes": {"apod-work-nix": "/nix"},
                                     "mounts": [["ro", "/home/agent-test/ro1"], ["ro", "/ro2"], ["rw", "/rw1"]],
-                                    "connectors": ["gdoc", "todoist"], "env": {"SOME_VAR": "a b", "QUOTED": "x"}})
+                                    "connectors": ["gdoc", "todoist"], "env": {"SOME_VAR": "a b", "QUOTED": "x"},
+                                    "env_from": []})
         self.assertEqual(p["git"], {"name": "Bot Agent", "email": "bot@example.com"})
         self.assertEqual(p["tables"], {"gh": {"user": "fryorcraken"}})
 
@@ -1984,6 +1985,11 @@ class ProfileLoaderTest(unittest.TestCase):
             ("[pod.env]\nN = 3\n", "values are strings"),
             ("[pod.env]\n\"A B\" = \"x\"\n", "isn't an environment variable name"),
             ("[pod.env]\nGIT_AUTHOR_NAME = \"x\"\n", "the git identity is [git] name and email"),
+            ("[pod]\nenv_from = \"API_KEY\"\n", "env_from is a list of strings"),
+            ("[pod]\nenv_from = [\"A B\"]\n", "env_from: 'A B' isn't an environment variable name"),
+            ("[pod]\nenv_from = [\"API_KEY=x\"]\n", "env_from: 'API_KEY=x' isn't an environment variable name"),
+            ("[pod]\nenv_from = [\"GIT_COMMITTER_EMAIL\"]\n", "env_from: GIT_COMMITTER_EMAIL: the git identity is [git]"),
+            ("[pod]\nenv_from = [\"API_KEY\"]\n[pod.env]\nAPI_KEY = \"x\"\n", "API_KEY is in [pod.env] too"),
             ("[git]\nemail = \"nope\"\n", "email isn't an email address"),
             ("[ssh-agent]\nconfirm = \"yes\"\n", "confirm is true or false"),
             ("[token]\nprofile = \"a b\"\n", "profile is the name of a profile"),

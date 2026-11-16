@@ -429,6 +429,37 @@ class ProfileTomlTest(Launcher, unittest.TestCase):
         self.assertNotIn("--env-file", Path(self.log).read_text().split("\n"))
         self.assertIn("-e GIT_AUTHOR_NAME=N", argv)
 
+    def test_env_from_passes_names_not_values(self):
+        """[pod] env_from: -e NAME, and podman reads the value from its environment (podman-run(1),
+        --env: a variable given without a value is set from the host's, if it's set there)."""
+        self.toml_profile("envfrom", """\
+            broker = false
+            [pod]
+            env_from = ["APOD_TEST_SECRET", "APOD_TEST_EMPTY", "APOD_TEST_UNSET", "proj"]
+            [pod.env]
+            PLAIN = "v"
+            [git]
+            name = "N"
+            email = "n@example.org"
+            """)
+        env = {k: v for k, v in self.env.items() if k != "APOD_TEST_UNSET"}
+        self.log.write_text("")
+        r = subprocess.run([APOD, "envfrom", str(self.proj)], env=dict(env, APOD_TEST_SECRET="s3cret-value", APOD_TEST_EMPTY=""),
+                           cwd=self.tmp, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        argv, raw = self.argv(), self.log.read_text()
+        self.assertIn("-e APOD_TEST_SECRET", argv)
+        self.assertIn("-e APOD_TEST_EMPTY", argv)  # set, if empty: podman passes it
+        self.assertIn("-e PLAIN=v", argv)
+        self.assertNotIn("s3cret-value", raw)
+        self.assertNotIn("APOD_TEST_SECRET=", raw)
+        # Not set: left out, with a warning; nor is one of apod's own shell variables (not the environment).
+        self.assertNotIn("-e APOD_TEST_UNSET", argv)
+        self.assertIn("apod: APOD_TEST_UNSET ([pod] env_from) isn't set in your environment: not passed to the pod", r.stderr)
+        self.assertIn("apod: proj ([pod] env_from) isn't set in your environment", r.stderr)
+        self.assertNotIn("-e proj", argv)
+        self.assertNotIn("s3cret", self.P.history.read_text())
+
     def test_a_mount_that_is_missing_is_skipped_with_a_warning(self):
         _, err = self.launch("plain")
         self.assertIn(f"apod: skipping missing mount {self.m}/missing", err)

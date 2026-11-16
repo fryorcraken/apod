@@ -884,6 +884,13 @@ gitkv+=(gc.worktreePruneExpire never)
 # quotes podman might keep).
 penv=()
 while IFS= read -r -d '' kv; do penv+=(-e "$kv"); done < <(plist '.pod.env | to_entries[] | "\(.key)=\(.value)\u0000"')
+# [pod] env_from: host variables, passed by name (-e NAME, no value: podman reads the value from its
+# own environment, so it isn't in podman's command line). One that isn't set here (in the
+# environment, not apod's own shell variables) is left out, with a warning.
+while IFS= read -r -d '' k; do
+  if printenv "$k" >/dev/null; then penv+=(-e "$k")
+  else echo "apod: $k ([pod] env_from) isn't set in your environment: not passed to the pod" >&2; fi
+done < <(plist '.pod.env_from[] | "\(.)\u0000"')
 gitenv=(-e "GIT_CONFIG_COUNT=$((${#gitkv[@]} / 2))")
 for ((i = 0; i < ${#gitkv[@]}; i += 2)); do
   gitenv+=(-e "GIT_CONFIG_KEY_$((i / 2))=${gitkv[i]}" -e "GIT_CONFIG_VALUE_$((i / 2))=${gitkv[i + 1]}")
