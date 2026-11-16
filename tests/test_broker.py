@@ -2088,6 +2088,49 @@ class ProfileLoaderTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("a profile is one file already", r.stderr)
 
+    def test_mount_guard_new_layout(self):
+        """The four folders of the new layout, and the read-only exceptions in them."""
+        d = self.dir
+        env = dict(self.env, APOD_CONFIG_DIR=str(d / "c"), APOD_DATA_DIR=str(d / "d"), APOD_STATE_DIR=str(d / "s"),
+                   APOD_RUNTIME_DIR=str(d / "r"))
+        del env["APOD_ROOT"]
+        for x in ("c/profiles", "c/extensions", "d/profiles/work/home", "d/worklog/s1", "s/broker/sessions", "r/sessions/x"):
+            (d / x).mkdir(parents=True)
+        for f in ("c/config.toml", "c/roles.toml", "s/history.jsonl", "s/broker/log.jsonl", "s/broker/grants.json",
+                  "d/worklog/s1/worklog.md"):
+            (d / f).write_text("")
+        pf = d / "c/profiles/work.toml"
+
+        def err(mode, path, cli=False):
+            pf.write_text("" if cli else f'[pod]\n{mode} = ["{path}"]\n')
+            r = subprocess.run([sys.executable, BROKER, "profile", "--profile", "work", *([f"--{mode}", str(path)] if cli else [])],
+                               env=env, capture_output=True, text=True)
+            return r.stderr if r.returncode else None
+        for cli in (False, True):
+            for path, what in ((d / "c", "is apod's config folder"), (d / "c/profiles", "is inside apod's config folder"),
+                               (pf, "is inside apod's config folder"), (d / "c/roles.toml", "is inside apod's config folder"),
+                               (d / "d", "is apod's data folder"), (d / "d/profiles/work/home", "is inside apod's data folder"),
+                               (d / "s", "is apod's state folder"), (d / "s/broker/grants.json", "is inside apod's state folder"),
+                               (d / "s/broker/sessions", "is inside apod's state folder"),
+                               (d / "r", "is apod's runtime folder"), (d / "r/sessions/x", "is inside apod's runtime folder"),
+                               (d, "contains apod's config folder"), ("/", "contains apod's config folder"),
+                               (HERE, "is the apod checkout")):
+                for mode in ("ro", "rw"):
+                    e = err(mode, path, cli)
+                    self.assertIn(f"{mode} mount {path}", e or f"allowed {mode} {path} cli={cli}")
+                    self.assertIn(f"is refused: it {what}", e)
+            # Read-only, the work logs, the history and the broker's log are fine; not read-write.
+            for path in (d / "d/worklog", d / "d/worklog/s1", d / "d/worklog/s1/worklog.md", d / "s/history.jsonl",
+                         d / "s/broker/log.jsonl"):
+                self.assertIsNone(err("ro", path, cli), path)
+                self.assertIn("is refused", err("rw", path, cli) or f"allowed rw {path}")
+            self.assertIn("is inside apod's data folder", err("ro", d / "d/worklog/s1/../../profiles", cli) or "")
+        e = err("rw", d / "r")
+        self.assertIn("holds the broker's sockets", e)
+        self.assertIn(f"(Only read-only mounts of {d}/d/worklog, {d}/s/history.jsonl and {d}/s/broker/log.jsonl are "
+                      f"allowed.)", e)
+        self.assertIn(str(pf), e)
+
     def test_needs_no_broker_and_no_extensions(self):
         # The old-files reading too: nothing is started, and the user's extensions aren't run.
         ext = self.dir / "broker-extensions"

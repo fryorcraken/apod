@@ -45,22 +45,34 @@ do and leaves a record of what it did.
   - the project folder (read-write);
   - when the project is a linked worktree (`git worktree add`), its repository's `.git`
     (read-write), which the main checkout and the other worktrees share;
-  - the profile's own home (`~/.agent-pod/<profile>/home`, read-write);
-  - its session's work log folder (`~/.agent-pod/worklog/<id>`, read-write);
+  - the profile's own home (`~/.local/share/apod/profiles/<profile>/home`, read-write;
+    `~/.agent-pod/<profile>/home` in the legacy layout);
+  - its session's work log folder (`~/.local/share/apod/worklog/<id>`, read-write;
+    `~/.agent-pod/worklog/<id>`);
+  - with the broker, its own folder of the broker's runtime folder (`sessions/<id>/`, read-write, at
+    `/run/apod-broker`), the pod-side commands (read-only) and what the extensions on for it mount
+    (read-only: the gh-api CA's certificate, never its key);
+  - with an `[ssh-agent]` key, the per-run ssh-agent's socket alone;
   - the profile's `[pod] ro` and `rw` mounts, and those of `--ro` and `--rw` (see the guard below);
   - your `~/.claude/CLAUDE.md` and `~/.claude/skills`, read-only.
 - **Apod's own files stay out of reach (the mount guard).** apod refuses to start a pod with a
-  mount that is, contains or is inside `~/.agent-pod` (`APOD_ROOT`) or the apod checkout, whether
-  it comes from the profile or from `--ro`/`--rw`, and a read-write mount of your home folder. A
-  pod that could write `~/.agent-pod/<profile>/profile.toml` could give itself a role, scope and
-  extensions on its next launch; one that could write the checkout could change the code the
-  broker runs on the host; and the folder holds every profile's login and the broker's state. The
-  only exceptions are read-only mounts of `worklog/`, `history.jsonl` and `broker/log.jsonl`, for
-  a pod that reviews them. The check follows symlinks and `..`, and nothing in a profile's folder
-  but `home/` is mounted (and a per-run ssh-agent's socket, from the runtime folder; `agent/` in the
-  legacy layout), apart from `google-credentials.json`, read-only, when google-docs-mcp is enabled. It doesn't cover the project
-  folder, which is mounted read-write anyway (launching from `~` or from the apod checkout is up
-  to you), and it checks the paths when apod starts, not a symlink someone changes later.
+  mount that is, contains or is inside one of apod's folders (config `~/.config/apod`, data
+  `~/.local/share/apod`, state `~/.local/state/apod`, runtime `$XDG_RUNTIME_DIR/apod`, wherever
+  the `APOD_*_DIR` and `XDG_*` variables put them; `~/.agent-pod` or `APOD_ROOT` in the legacy
+  layout) or the apod checkout, whether it comes from the profile or from `--ro`/`--rw`, and a
+  read-write mount of your home folder. A pod that could write its `profiles/<profile>.toml` could
+  give itself a role, scope and extensions on its next launch; one that could write the checkout
+  could change the code the broker runs on the host; the data folder holds every profile's login,
+  the state folder the broker's approvals, sessions and the gh-api CA's key, and the runtime
+  folder its sockets (through the admin socket, a pod could approve its own requests: a socket on
+  a read-only mount still answers). The only exceptions are read-only mounts of the work logs
+  (`worklog/`, or one in it), `history.jsonl` and the broker's `log.jsonl`, for a pod that
+  reviews them. The check follows symlinks and `..`. apod itself mounts, from these folders, only
+  what the list above says: nothing from the config folder but the profile's
+  `<profile>.google-credentials.json`, read-only, when google-docs-mcp is enabled. The guard
+  doesn't cover the project folder, which is mounted read-write anyway (launching from `~` or from
+  the apod checkout is up to you), and it checks the paths when apod starts, not a symlink someone
+  changes later.
 - **Processes:** the host's processes, other pods and their files are not visible.
 - **The desktop:** no display or Wayland socket is passed in. With `[clipboard] enabled`, the
   pod can ask the broker for an image on your clipboard (`clipboard:image`, checked like any

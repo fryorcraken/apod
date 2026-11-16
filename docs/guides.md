@@ -751,9 +751,11 @@ rw = ["~/src/work/tmp"]
 
 For one run, `--ro PATH` (`-m`) and `--rw PATH`. A command-line entry overrides the profile's mode
 for the same path; a missing command-line path is an error, a missing profile path a warning.
-apod refuses mounts that would expose its own files: `~/.agent-pod`, the apod checkout, anything
-that contains them, and a read-write mount of your home folder. A read-only `~/.agent-pod/worklog`
-(or a folder in it), `history.jsonl` and `broker/log.jsonl` are fine, for a pod that reviews them. The project folder stays writable
+apod refuses mounts that would expose its own files: its config, data, state and runtime folders
+([where they are](reference.md#where-apod-keeps-its-files); `~/.agent-pod` in the legacy layout),
+the apod checkout, anything that contains them, and a read-write mount of your home folder. A
+read-only `~/.local/share/apod/worklog` (or a folder in it), `~/.local/state/apod/history.jsonl`
+and `~/.local/state/apod/broker/log.jsonl` are fine, for a pod that reviews them. The project folder stays writable
 even inside a read-only entry. The first launch relabels mounted trees for SELinux (`:z`), which
 can take a while on big trees. A running pod can't gain mounts: exit and relaunch with
 `-- --continue`, or `apod resume`.

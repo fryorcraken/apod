@@ -482,6 +482,34 @@ class NewLayoutTest(ProfileTomlTest):
         mounted = [a for a in raw if a.startswith(str(self.tmp / "config"))]
         self.assertEqual(mounted, [f"{cred}:{gd}/credentials.json:ro,z"])
 
+    def test_mounts_that_expose_apods_files_are_refused(self):
+        (self.tmp / "data/worklog").mkdir(parents=True, exist_ok=True)
+        (self.tmp / "state").mkdir(exist_ok=True)
+        (self.tmp / "state/history.jsonl").touch()
+        for opts in (["--rw", str(self.tmp / "config")], ["--ro", str(self.tmp / "config/profiles/plain.toml")],
+                     ["--ro", str(self.tmp / "data/profiles/brk/home")], ["--ro", str(self.tmp / "state")],
+                     ["--ro", str(self.rundir)], ["--ro", str(self.tmp)], ["--rw", str(self.tmp / "data/worklog")],
+                     ["--ro", str(self.tmp / "data/worklog/../profiles")]):
+            self.log.write_text("")
+            r = subprocess.run([APOD, "plain", *opts, str(self.proj)], env=self.env, cwd=self.tmp,
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 2, opts)
+            self.assertIn("is refused", r.stderr)
+            self.assertEqual(self.log.read_text(), "", "no pod")
+        # Read-only, the work logs and the history are fine.
+        argv, _ = self.launch("plain", "--ro", str(self.tmp / "data/worklog"), "--ro", str(self.tmp / "state/history.jsonl"))
+        self.assertIn("@TMP@/data/worklog:@TMP@/data/worklog:ro,z", argv)
+        self.assertIn("@TMP@/state/history.jsonl:@TMP@/state/history.jsonl:ro,z", argv)
+        # So is a profile's own mount list.
+        f = self.tmp / "config/profiles/plain.toml"
+        text = f.read_text()
+        self.addCleanup(f.write_text, text)
+        f.write_text(text.replace('rw = [', f'rw = ["{self.tmp}/state", '))
+        r = subprocess.run([APOD, "plain", str(self.proj)], env=self.env, cwd=self.tmp, stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn(f"{f}: rw mount {self.tmp}/state is refused: it is apod's state folder", r.stderr)
+
     def test_names_a_profile_cant_have(self):
         for name, msg in (("x.google-credentials", "ends in .google-credentials"), ("worklog", "is an apod command or folder")):
             r = subprocess.run([APOD, name, str(self.proj)], env=self.env, cwd=self.tmp, stdin=subprocess.DEVNULL,
