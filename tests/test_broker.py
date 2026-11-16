@@ -531,6 +531,18 @@ class BrokerTest(unittest.TestCase):
         r = self.gh("issue", "create", "-R", "evil/repo", "--title", "-h", "--body", "x", expect=1)
         self.assertIn("needs your approval", r.stderr)
 
+    def test_search_across_github(self):
+        # A search without --repo or --owner is across GitHub: in scope only with gh-search:.
+        sess = self.register("reader", ["gh:acme/widget", "gh-search:prs"])
+        self.assertIn("searches across GitHub for prs", sess["context"])
+        out = self.ran("search", "prs", "--author", "someone", sess=sess)
+        self.assertEqual(out["argv"][:2], ["search", "prs"])
+        r = self.gh("search", "issues", "--involves", "someone", sess=sess, expect=1)
+        self.assertIn("gh-search:issues (gh search issues across GitHub)", r.stderr)
+        sess = self.register("reader", ["gh-search:all"])  # all: every kind of search
+        self.assertEqual(self.ran("search", "code", "x", sess=sess)["argv"][:2], ["search", "code"])
+        self.assertEqual(self.ran("search", "issues", "x", sess=sess)["argv"][:2], ["search", "issues"])
+
     def test_agent_sees_permissions_and_session_name(self):
         sess = self.register("pm", ["gh:acme/widget", "gh-project:acme/11"])
         self.assertIn("project item-edit", sess["context"])

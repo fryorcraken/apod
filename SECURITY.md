@@ -202,7 +202,8 @@ The broker turns each request into actions and targets, and checks them before a
   Private data in scope is readable. A read can also reach past the scope: a GraphQL query is
   scoped by its top-level fields, so one on an in-scope repository can follow links to others
   (its owner's repositories, a fork's parent), and REST lists such as forks do the same. Treat
-  everything the account can read as readable.
+  everything the account can read as readable. A `gh-search:` entry goes further on purpose: a
+  search across GitHub returns titles and numbers from every repository the account can read.
 - **SELinux is off for broker pods unless you install apod's module.** By default they run with
   `label=disable`, because SELinux stops a container from connecting to the broker's socket; the
   same goes for pods with an `ssh-key`. `apod selinux install` loads a one-rule module that lets
