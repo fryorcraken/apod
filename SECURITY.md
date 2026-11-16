@@ -57,7 +57,8 @@ do and leaves a record of what it did.
   broker runs on the host; and the folder holds every profile's login and the broker's state. The
   only exceptions are read-only mounts of `worklog/`, `history.jsonl` and `broker/log.jsonl`, for
   a pod that reviews them. The check follows symlinks and `..`, and nothing in a profile's folder
-  but `home/` (and `agent/`, the ssh-agent's socket) is mounted, apart from `google-credentials.json`, read-only, when google-docs-mcp is enabled. It doesn't cover the project
+  but `home/` is mounted (and a per-run ssh-agent's socket, from the runtime folder; `agent/` in the
+  legacy layout), apart from `google-credentials.json`, read-only, when google-docs-mcp is enabled. It doesn't cover the project
   folder, which is mounted read-write anyway (launching from `~` or from the apod checkout is up
   to you), and it checks the paths when apod starts, not a symlink someone changes later.
 - **Processes:** the host's processes, other pods and their files are not visible.
@@ -92,11 +93,14 @@ With the broker (`broker = true` in `profile.toml`, the default), a pod holds no
   its `profile.toml` table sets it up (an account, a key, `[rad] autodetect`), it isn't
   `enabled = false`, and the pod's scope has something of its kind. A folder's `rad://` remote
   alone doesn't give a pod Radicle, and keys are unlocked only for roles that use them.
-- **The broker listens only on unix sockets.** There's a directory per pod, mounted into that pod
-  alone, and an admin socket in `~/.agent-pod/broker/` (mode 0700). There is no TCP listener.
+- **The broker listens only on unix sockets,** in apod's runtime folder (`$XDG_RUNTIME_DIR/apod`,
+  mode 0700, which apod refuses to use if it isn't yours and private; `~/.agent-pod/broker/` in the
+  legacy layout): a directory per pod, `sessions/<id>/`, mounted into that pod alone, and an admin
+  socket. There is no TCP listener.
 - **The pod's directory is the pod's.** It's mounted read-write, so the broker keeps nothing it
-  trusts there: a session's role, scope and approvals are saved next to it, out of the pod's reach,
-  and what the broker writes into it (ssh `known_hosts`, signers) only informs tools in the pod.
+  trusts there: a session's role, scope and approvals are saved in the state folder
+  (`broker/sessions/<id>.json`), out of the pod's reach, and what the broker writes into the pod's
+  directory (ssh `known_hosts`, signers) only informs tools in the pod.
 
 Without the broker, a profile's GitHub token is in the pod's environment (`GH_TOKEN`). An agent
 can read it and use it for anything the token allows.

@@ -3,7 +3,9 @@
 ;
 ; One rule: container_t may connect to unix sockets served by unconfined processes. What a pod
 ; can reach is still limited twice over: the socket file has to be mounted into it and relabelled
-; (:z, which apod does for its own sockets only), and MCS only lets a container connect to a
+; (:z, which apod does for its own sockets only: a pod's folder in apod's runtime folder,
+; $XDG_RUNTIME_DIR/apod/sessions/<id>/, or a per-run ssh-agent's socket there; ~/.agent-pod/broker/
+; and <profile>/agent/ in the legacy layout), and MCS only lets a container connect to a
 ; process at a level its categories dominate. apod runs the broker and per-run ssh-agents at plain
 ; s0; your login session's processes run at s0-s0:c0.c1023, out of a container's reach.
 ;

@@ -898,7 +898,8 @@ class UnixServer(socketserver.ThreadingUnixStreamServer):
 def unix_listen(path, handler, session_id=None):
     """Serve a unix socket (mode 0600) in a thread; handlers see self.server.session_id."""
     if len(os.fsencode(path)) > 107:
-        raise BrokerError(f"socket path too long for a unix socket: {path} (use a shorter APOD_ROOT)")
+        raise BrokerError(f"socket path too long for a unix socket: {path} (apod's runtime folder is too deep: set "
+                          f"APOD_RUNTIME_DIR to a shorter one; in the legacy layout, apod migrate --layout)")
     if os.path.lexists(path):
         os.unlink(path)
     srv = UnixServer(str(path), handler)
@@ -1354,9 +1355,14 @@ def prune_loop(every=300, grace=600):
 
 
 def serve():
-    for d in (BDIR, SDIR, RDIR, BDIR / "home", BDIR / "tmp"):
+    for d in (BDIR, SDIR, BDIR / "home", BDIR / "tmp"):
         d.mkdir(parents=True, exist_ok=True)
     os.chmod(BDIR, 0o700)
+    try:
+        PATHS.ensure_runtime()  # the sockets' folder: yours, mode 0700
+    except paths.PathError as e:
+        sys.exit(f"apod-broker: {e}")
+    RDIR.mkdir(exist_ok=True)
     shutil.rmtree(BDIR / "tmp", ignore_errors=True)
     (BDIR / "tmp").mkdir()
     (BDIR / "ui.json").unlink(missing_ok=True)  # left by the web page earlier versions had
@@ -1445,6 +1451,10 @@ def ensure(script):
     except (OSError, BrokerError, ValueError):
         pass
     BDIR.mkdir(parents=True, exist_ok=True)
+    try:
+        PATHS.ensure_runtime()  # here too, to say what's wrong with it
+    except paths.PathError as e:
+        sys.exit(f"apod-broker: {e}")
     cmd = [sys.executable, str(script), "serve"]
     if PATHS.selinux.exists() and shutil.which("runcon") and shutil.which("selinuxenabled") \
             and subprocess.run(["selinuxenabled"]).returncode == 0:

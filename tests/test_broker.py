@@ -3,7 +3,9 @@
 (the real gh for --help, canned answers otherwise), a local git upstream (git http-backend), a
 plain repository standing in for Radicle storage, real ssh-agents and ssh-keygen.
 Run: python3 tests/test_broker.py (KEEP=1 keeps the temporary directory; APOD_TEST_TMP=DIR puts it
-there instead of tmp/, when the checkout's path is too long for a unix socket)
+there instead of tmp/). apod's folders are throwaway ones, set with APOD_CONFIG_DIR, APOD_DATA_DIR,
+APOD_STATE_DIR and XDG_RUNTIME_DIR (or APOD_ROOT, for the legacy layout), never your own; the
+sockets are in a short runtime folder, so a long checkout path is fine.
 """
 import base64
 import itertools
@@ -17,6 +19,7 @@ import os
 import shutil
 import socketserver
 import ssl
+import stat
 import subprocess
 import sys
 import tempfile
@@ -31,6 +34,16 @@ sys.path.insert(0, str(HERE / "broker"))
 import paths  # noqa: E402 (where apod's files are, as the broker sees them)
 
 BROKER = HERE / "apod-broker"
+# The variables that say where apod's folders are: the tests set their own.
+LAYOUT_VARS = ("APOD_ROOT", "APOD_CONFIG_DIR", "APOD_DATA_DIR", "APOD_STATE_DIR", "APOD_RUNTIME_DIR",
+               "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR")
+
+
+def host_env(**more):
+    """os.environ without what says where apod's folders are (and the pod's own git setup)."""
+    env = {k: v for k, v in os.environ.items() if k not in LAYOUT_VARS and k not in ("GH_REPO", "SSH_AUTH_SOCK")
+           and not k.startswith(("GIT_AUTHOR_", "GIT_COMMITTER_", "GIT_CONFIG"))}
+    return dict(env, **more)
 SHIM = HERE / "broker/pod-shim"
 RID = "z3gqcJUoA1n9HaHKufZs5FCSGazv5"
 NID = "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
@@ -318,9 +331,11 @@ class BrokerTest(unittest.TestCase):
         base = Path(os.environ.get("APOD_TEST_TMP") or HERE / "tmp")  # short enough for unix socket paths
         base.mkdir(exist_ok=True)
         cls.tmp = Path(tempfile.mkdtemp(dir=base, prefix="broker-test-"))
-        cls.root = cls.tmp / "apod"
-        cls.root.mkdir()
-        cls.layout_env = {"APOD_ROOT": str(cls.root)}  # apod's folders for this test
+        # apod's folders: the new layout, the sockets in a short runtime folder (not under tmp/, which
+        # may be deep in the checkout).
+        cls.rundir = Path(tempfile.mkdtemp(prefix="apod-run-"))
+        cls.layout_env = {"APOD_CONFIG_DIR": str(cls.tmp / "config"), "APOD_DATA_DIR": str(cls.tmp / "data"),
+                          "APOD_STATE_DIR": str(cls.tmp / "state"), "XDG_RUNTIME_DIR": str(cls.rundir)}
         cls.P = paths.Layout(dict(cls.layout_env, HOME=str(cls.tmp / "home")))
         bin_ = cls.tmp / "bin"
         bin_.mkdir()
@@ -413,7 +428,7 @@ class BrokerTest(unittest.TestCase):
         cls.api = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeAPI)
         threading.Thread(target=cls.api.serve_forever, daemon=True).start()
         cls.gh_api_certs = make_gh_api_certs(cls.P.broker / "gh-api")
-        cls.env = dict(os.environ, **cls.layout_env, APOD_GH_BIN=str(bin_ / "gh"),
+        cls.env = host_env(**cls.layout_env, APOD_GH_BIN=str(bin_ / "gh"),
                        APOD_GH_API_UPSTREAM=f"http://127.0.0.1:{cls.api.server_address[1]}",
                        APOD_BROKER_ASK_TIMEOUT="4", HOME=str(home), WAYLAND_DISPLAY="wayland-test", APOD_SSH_CONFIG=str(home / ".ssh/config"),
                        APOD_GH_GIT_UPSTREAM=f"http://127.0.0.1:{cls.upstream.server_address[1]}",
@@ -444,6 +459,7 @@ class BrokerTest(unittest.TestCase):
         cls.api.shutdown()
         if not os.environ.get("KEEP"):
             shutil.rmtree(cls.tmp, ignore_errors=True)
+            shutil.rmtree(cls.rundir, ignore_errors=True)
 
     @classmethod
     def register(cls, role, scope, user="agentbot", toml="", remotes=(), warnings=None, project=None, extra=(), new=False):
@@ -701,6 +717,7 @@ class BrokerTest(unittest.TestCase):
 
     def test_terminal_notifications_drop_control_characters(self):
         sys.path.insert(0, str(HERE / "broker"))
+        os.environ.pop("APOD_ROOT", None)
         for k, v in self.layout_env.items():
             os.environ.setdefault(k, v)
         import tui
@@ -936,13 +953,15 @@ class BrokerTest(unittest.TestCase):
         # The pod's folder is mounted read-write: the broker must not keep its role and scope there.
         d = Path(self.sess["dir"])
         self.assertFalse((d / "session.json").exists())
-        state = json.loads((d.parent / f"{self.sess['id']}.json").read_text())
+        self.assertEqual(d, self.P.sessions_run / self.sess["id"])  # in the runtime folder
+        state = json.loads((self.P.sessions_state / f"{self.sess['id']}.json").read_text())  # in the state folder
         self.assertEqual(state["role"], "dev")
+        self.assertFalse(list(d.glob("*.json")))
 
     def test_saved_session_keeps_its_scope(self):
         # A restarted broker reloads each session from its state file: its scope must come back,
         # also from a session saved with the old kind names (repo, host).
-        state = Path(self.sess["dir"]).parent / f"{self.sess['id']}.json"
+        state = self.P.sessions_state / f"{self.sess['id']}.json"
         code = textwrap.dedent(f"""\
             import json, sys
             sys.path.insert(0, {str(HERE / "broker")!r})
@@ -1142,7 +1161,7 @@ class BrokerTest(unittest.TestCase):
         self.assertIn("ssh:login", sess["allowed"])
         self.assertNotIn("old profile files", w[0])
         self.assertIn("ssh", sess["providers"])
-        state = json.loads((Path(sess["dir"]).parent / f"{sess['id']}.json").read_text())
+        state = json.loads((self.P.sessions_state / f"{sess['id']}.json").read_text())
         self.assertEqual(state["extra"], {"allow": ["ssh:connect", "ssh:login"], "deny": ["gh:pr create"]})
         self.assertEqual(state["identity"]["emails"], ["agent@example.com"])
         r = self.gh("pr", "create", "--title", "t", "--body", "b", sess=sess, cwd=self.work, expect=1)
@@ -1179,7 +1198,7 @@ class BrokerTest(unittest.TestCase):
         r = self.gh("pr", "create", "--title", "t", "--body", "b", sess=sess, cwd=self.work, expect=1)
         self.assertIn("never allowed", r.stderr)
         # Kept across a broker restart, like the role and scope.
-        state = json.loads((Path(sess["dir"]).parent / f"{sess['id']}.json").read_text())
+        state = json.loads((self.P.sessions_state / f"{sess['id']}.json").read_text())
         self.assertEqual(state["extra"], {"allow": ["ssh:connect", "ssh:login"], "deny": ["gh:pr create"]})
         # Not a list of PROVIDER:ACTION: the launch fails, rather than run with a role it didn't mean.
         pdir = self.tmp / "profiles" / "badallow"
@@ -1592,22 +1611,44 @@ class PathsTest(unittest.TestCase):
         with self.assertRaises(paths.PathError):
             self.lay(APOD_STATE_DIR="relative/state")
 
+    def test_runtime_folder(self):
+        uid = os.getuid()
+        cases = [  # (environment, runtime folder)
+            ({"XDG_RUNTIME_DIR": "/run/user/7"}, "/run/user/7/apod"),
+            ({"XDG_RUNTIME_DIR": "/run/user/7", "APOD_RUNTIME_DIR": "/r/t"}, "/r/t"),
+            ({"TMPDIR": "/var/tmp/x"}, f"/var/tmp/x/apod-{uid}"),       # no XDG_RUNTIME_DIR
+            ({"XDG_RUNTIME_DIR": "rel", "TMPDIR": "/t"}, f"/t/apod-{uid}"),  # only an absolute one counts
+            ({}, f"/tmp/apod-{uid}"),
+        ]
+        for env, rt in cases:
+            with self.subTest(env=env):
+                p = self.lay(**env)
+                self.assertEqual(p.runtime, Path(rt))
+                self.assertEqual((p.admin_sock, p.agent_sock, p.sessions_run),
+                                 (Path(rt) / "admin.sock", Path(rt) / "agent.sock", Path(rt) / "sessions"))
+                self.assertEqual(p.sessions_state, p.state / "broker/sessions")  # the state stays in state
+                prof = p.profile("work", pid=42)
+                self.assertEqual((prof["ssh_agent_sock"], prof["ssh_agent_mount"]),
+                                 (Path(rt) / "ssh-work-42.sock", Path(rt) / "ssh-work-42.sock"))
+        self.assertEqual(self.lay(APOD_ROOT="/r", XDG_RUNTIME_DIR="/run/user/7").runtime, Path("/r/broker"))
+
     def test_legacy(self):
         p = self.lay(APOD_ROOT="/r", APOD_CONFIG_DIR="/a/c")  # APOD_ROOT: the legacy layout, whatever else is set
         self.assertTrue(p.legacy)
         self.assertEqual(p.notice, "legacy layout: apod migrate --layout, then unset APOD_ROOT")
-        self.assertEqual({k: str(getattr(p, k)) for k in ("config", "data", "state", "config_file", "roles", "extensions",
+        self.assertEqual({k: str(getattr(p, k)) for k in ("config", "data", "state", "runtime", "config_file", "roles", "extensions",
                                                           "worklog", "history", "broker", "selinux", "admin_sock",
                                                           "agent_sock", "sessions_state", "sessions_run")},
                          {"config": "/r", "data": "/r", "state": "/r", "config_file": "/r/broker.toml",
                           "roles": "/r/roles.toml", "extensions": "/r/broker-extensions", "worklog": "/r/worklog",
                           "history": "/r/history.jsonl", "broker": "/r/broker", "selinux": "/r/selinux",
-                          "admin_sock": "/r/broker/admin.sock", "agent_sock": "/r/broker/agent.sock",
+                          "admin_sock": "/r/broker/admin.sock", "agent_sock": "/r/broker/agent.sock", "runtime": "/r/broker",
                           "sessions_state": "/r/broker/sessions", "sessions_run": "/r/broker/sessions"})
         prof = p.profile("work", pid=42)
-        self.assertEqual((prof["dir"], prof["file"], prof["home"], prof["google_credentials"], prof["ssh_agent_sock"]),
+        self.assertEqual((prof["dir"], prof["file"], prof["home"], prof["google_credentials"], prof["ssh_agent_sock"],
+                          prof["ssh_agent_mount"]),
                          (Path("/r/work"), Path("/r/work/profile.toml"), Path("/r/work/home"),
-                          Path("/r/work/google-credentials.json"), Path("/r/work/agent/ssh-42.sock")))
+                          Path("/r/work/google-credentials.json"), Path("/r/work/agent/ssh-42.sock"), Path("/r/work/agent")))
 
     def test_legacy_detection(self):
         old = self.home / ".agent-pod"
@@ -1660,6 +1701,122 @@ class PathsTest(unittest.TestCase):
         self.assertEqual((r.returncode, r.stdout), (2, ""))
         r = subprocess.run([sys.executable, BROKER, "paths"], env=env, capture_output=True, text=True)
         self.assertIn(f"config   {self.home}/c", r.stdout)
+
+
+def unix_get(sock, path):
+    with socket.socket(socket.AF_UNIX) as s:
+        s.connect(str(sock))
+        s.sendall(f"GET {path} HTTP/1.0\r\n\r\n".encode())
+        data = b"".join(iter(lambda: s.recv(65536), b""))
+    head, _, body = data.partition(b"\r\n\r\n")
+    return int(head.split()[1]), json.loads(body or b"{}")
+
+
+class RuntimeTest(unittest.TestCase):
+    """The broker's sockets are in the runtime folder (sockets only, mode 0700, gone at logout);
+    what it keeps is in the state folder, so a session outlives a broker restart. In the legacy
+    layout, both are ~/.agent-pod/broker/."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="apod-rt-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        (self.tmp / "home").mkdir()
+        (self.tmp / "proj/.git").mkdir(parents=True)
+        # config, data and state deep enough that a socket there would be too long a path
+        self.deep = self.tmp / ("deep-" + "x" * 100)
+
+    def env(self, **layout):
+        return host_env(HOME=str(self.tmp / "home"), APOD_BROKER_ASK_TIMEOUT="2", **layout)
+
+    def new_layout(self):
+        run = self.tmp / "run"
+        run.mkdir(mode=0o700)
+        return self.env(APOD_CONFIG_DIR=str(self.deep / "config"), APOD_DATA_DIR=str(self.deep / "data"),
+                        APOD_STATE_DIR=str(self.deep / "state"), XDG_RUNTIME_DIR=str(run))
+
+    def broker(self, env, *args, expect=0):
+        r = subprocess.run([sys.executable, BROKER, *args], env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, expect, r.stderr)
+        return r
+
+    def register(self, env, name="p"):
+        """Start the broker (stopped at the end) and register a pod of profile NAME."""
+        self.addCleanup(subprocess.run, [sys.executable, BROKER, "stop"], env=env, capture_output=True)
+        prof = paths.Layout(env).profile(name)
+        f = Path(prof["file"])
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text('[git]\nname = "A"\nemail = "a@example.com"\n')
+        where = ["--profile-dir", str(prof["dir"])] if prof["dir"] else ["--profile-file", str(f)]
+        r = self.broker(env, "register", "--profile", name, *where, "--project", str(self.tmp / "proj"))
+        return json.loads(r.stdout)
+
+    def test_sockets_are_in_the_runtime_folder(self):
+        env = self.new_layout()
+        P = paths.Layout(env)
+        self.assertEqual(P.runtime, self.tmp / "run/apod")
+        sess = self.register(env)
+        self.assertEqual(stat.S_IMODE(P.runtime.stat().st_mode), 0o700)
+        self.assertTrue(P.admin_sock.is_socket())
+        self.assertEqual(sess["agent"], str(self.tmp / "run/apod/agent.sock"))
+        self.assertEqual(sess["dir"], str(self.tmp / "run/apod/sessions" / sess["id"]))
+        self.assertTrue((Path(sess["dir"]) / "broker.sock").is_socket())
+        # What it keeps is in the state folder, and no socket is.
+        self.assertTrue((P.sessions_state / f"{sess['id']}.json").is_file())
+        self.assertTrue(P.daemon_log.is_file())
+        self.assertEqual([f for f in P.state.rglob("*") if f.is_socket()], [])
+        self.assertFalse(list(P.runtime.rglob("*.json")))
+
+    def test_sessions_survive_a_restart(self):
+        env = self.new_layout()
+        sess = self.register(env)
+        sock = Path(sess["dir"]) / "broker.sock"
+        self.broker(env, "restart")
+        self.assertIn(sess["id"], self.broker(env, "sessions").stdout)
+        status, who = unix_get(sock, "/whoami")
+        self.assertEqual((status, who["role"]), (200, "reader"))
+        # The runtime folder goes at logout: the session comes back from its state.
+        self.broker(env, "stop")
+        shutil.rmtree(self.tmp / "run/apod")
+        self.broker(env, "ensure")
+        self.assertIn(sess["id"], self.broker(env, "sessions").stdout)
+        self.assertEqual(unix_get(sock, "/whoami")[0], 200)
+
+    def test_runtime_folder_without_xdg_runtime_dir(self):
+        t = self.tmp / "t"
+        t.mkdir()
+        env = self.env(APOD_CONFIG_DIR=str(self.deep / "config"), TMPDIR=str(t))
+        P = paths.Layout(env)
+        rt = t / f"apod-{os.getuid()}"
+        self.assertEqual(P.runtime, rt)
+        self.broker(env, "paths", "--ensure-runtime")
+        self.assertEqual(stat.S_IMODE(rt.stat().st_mode), 0o700)
+        # Not private: refused, and the broker doesn't start.
+        rt.chmod(0o755)
+        r = self.broker(env, "paths", "--ensure-runtime", expect=2)
+        self.assertIn(f"apod's runtime folder {rt} has mode 0755, not 0700: chmod 700 {rt}", r.stderr)
+        r = self.broker(env, "ensure", expect=1)
+        self.assertIn("has mode 0755, not 0700", r.stderr)
+        rt.rmdir()
+        rt.symlink_to(t)
+        self.assertIn("isn't a folder", self.broker(env, "paths", "--ensure-runtime", expect=2).stderr)
+        if os.getuid() != 0:  # someone else's: root's /, here
+            with self.assertRaisesRegex(paths.PathError, "belongs to someone else"):
+                paths.ensure_private(Path("/"))
+        # APOD_RUNTIME_DIR: there, made with its parents.
+        env = self.env(APOD_STATE_DIR=str(self.deep / "state"), APOD_RUNTIME_DIR=str(self.tmp / "a/b"))
+        self.assertEqual(paths.Layout(env).runtime, self.tmp / "a/b")
+        self.broker(env, "paths", "--ensure-runtime")
+        self.assertEqual(stat.S_IMODE((self.tmp / "a/b").stat().st_mode), 0o700)
+
+    def test_legacy_layout_keeps_its_sockets_in_broker(self):
+        root = self.tmp / "ap"
+        env = self.env(APOD_ROOT=str(root), XDG_RUNTIME_DIR=str(self.tmp / "unused"))
+        sess = self.register(env)
+        self.assertTrue((root / "broker/admin.sock").is_socket())
+        self.assertEqual((sess["agent"], sess["dir"]), (str(root / "broker/agent.sock"),
+                                                         str(root / "broker/sessions" / sess["id"])))
+        self.assertTrue((root / "broker/sessions" / f"{sess['id']}.json").is_file())
+        self.assertFalse((self.tmp / "unused").exists())
 
 
 class ProfileLoaderTest(unittest.TestCase):

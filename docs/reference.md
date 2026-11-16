@@ -248,41 +248,43 @@ The broker turns each request into actions (what it does) and targets (what it t
 
 On the host:
 
-| Variable                                                                         |                                                                                                                 |
-| -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `APOD_CONFIG_DIR`, `APOD_DATA_DIR`, `APOD_STATE_DIR`                             | apod's folders, over the XDG variables ([where apod keeps its files](#where-apod-keeps-its-files)).             |
-| `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`                             | Where apod's folders go when `APOD_*_DIR` isn't set (defaults `~/.config`, `~/.local/share`, `~/.local/state`). |
-| `APOD_ROOT`                                                                      | The legacy layout, rooted at this folder (`~/.agent-pod` otherwise): everything in one folder.                  |
-| `APOD_IMAGE`                                                                     | The default image (default `apod`).                                                                             |
-| `APOD_SSH_TTL`                                                                   | How long keys stay in the broker's agent and per-run agents (default `4h`).                                     |
-| `APOD_BROKER_ASK_TIMEOUT`                                                        | Seconds a request waits for approval (default `90`; `0` rejects at once).                                       |
-| `APOD_BROKER_NOTIFY`                                                             | How the TUI notifies you: `osc9`, `osc99`, `osc777`, `bell`, `none`.                                            |
-| `APOD_PANE_ENV`                                                                  | Variables that identify the terminal tab, for `apod resume` (default `HERDR_PANE_ID HC_SCOPE`).                 |
-| `APOD_HERDR`                                                                     | `0`: don't show a herdr pane as blocked while a request of its pod waits for approval.                          |
-| `APOD_GDOCS_MCP`                                                                 | The google-docs-mcp checkout (default `~/src/fryorcraken/google-docs-mcp`).                                     |
-| `APOD_GDOCS_SCOPES`                                                              | Its Google scopes (default `docs,sheets,slides,drive`).                                                         |
-| `APOD_GH_BIN`, `APOD_GH_GIT_UPSTREAM`, `APOD_GH_API_UPSTREAM`, `APOD_SSH_CONFIG` | For the tests: the `gh` binary, the git server, the API server (`gh-api`) and the ssh config the broker uses.   |
+| Variable                                                                         |                                                                                                                  |
+| -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `APOD_CONFIG_DIR`, `APOD_DATA_DIR`, `APOD_STATE_DIR`                             | apod's folders, over the XDG variables ([where apod keeps its files](#where-apod-keeps-its-files)).              |
+| `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`                             | Where apod's folders go when `APOD_*_DIR` isn't set (defaults `~/.config`, `~/.local/share`, `~/.local/state`).  |
+| `APOD_RUNTIME_DIR`, `XDG_RUNTIME_DIR`                                            | apod's runtime folder (its sockets): `APOD_RUNTIME_DIR`, else `$XDG_RUNTIME_DIR/apod`, else `$TMPDIR/apod-$UID`. |
+| `APOD_ROOT`                                                                      | The legacy layout, rooted at this folder (`~/.agent-pod` otherwise): everything in one folder.                   |
+| `APOD_IMAGE`                                                                     | The default image (default `apod`).                                                                              |
+| `APOD_SSH_TTL`                                                                   | How long keys stay in the broker's agent and per-run agents (default `4h`).                                      |
+| `APOD_BROKER_ASK_TIMEOUT`                                                        | Seconds a request waits for approval (default `90`; `0` rejects at once).                                        |
+| `APOD_BROKER_NOTIFY`                                                             | How the TUI notifies you: `osc9`, `osc99`, `osc777`, `bell`, `none`.                                             |
+| `APOD_PANE_ENV`                                                                  | Variables that identify the terminal tab, for `apod resume` (default `HERDR_PANE_ID HC_SCOPE`).                  |
+| `APOD_HERDR`                                                                     | `0`: don't show a herdr pane as blocked while a request of its pod waits for approval.                           |
+| `APOD_GDOCS_MCP`                                                                 | The google-docs-mcp checkout (default `~/src/fryorcraken/google-docs-mcp`).                                      |
+| `APOD_GDOCS_SCOPES`                                                              | Its Google scopes (default `docs,sheets,slides,drive`).                                                          |
+| `APOD_GH_BIN`, `APOD_GH_GIT_UPSTREAM`, `APOD_GH_API_UPSTREAM`, `APOD_SSH_CONFIG` | For the tests: the `gh` binary, the git server, the API server (`gh-api`) and the ssh config the broker uses.    |
 
 In the pod: `APOD_PROFILE` (the profile), `APOD_BROKER_SOCK` (the broker's socket), and the
 variables from the profile's `[pod.env]`.
 
 ## Where apod keeps its files
 
-apod's files are in three folders, after the XDG Base Directory specification (on macOS too):
+apod's files are in four folders, after the XDG Base Directory specification (on macOS too):
 
-| Folder                                                                  | What's in it                                                                                                                                                                                                                                                                                    |
-| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| config: `$APOD_CONFIG_DIR`, else `${XDG_CONFIG_HOME:-~/.config}/apod`   | What you write: `config.toml` (the extension tables shared by every profile), `roles.toml` (your roles), `extensions/` (your [broker extensions](../EXTENSIONS.md)), `profiles/NAME/` (a profile: [`profile.toml`](#profiletoml), `google-credentials.json`).                                   |
-| data: `$APOD_DATA_DIR`, else `${XDG_DATA_HOME:-~/.local/share}/apod`    | What you'd back up: `profiles/NAME/home/` (each profile's home), `worklog/<id>/worklog.md` (each session's [work log](guides.md#work-logs)).                                                                                                                                                    |
-| state: `$APOD_STATE_DIR`, else `${XDG_STATE_HOME:-~/.local/state}/apod` | What the tools write: `history.jsonl` (every launch, for `apod history` and `apod resume`), `broker/` (the broker's state: `log.jsonl`, every request; `broker.log`, its own log; `grants.json`, approvals for roles; `sessions/`; its sockets), `selinux` (written by `apod selinux install`). |
+| Folder                                                                               | What's in it                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| config: `$APOD_CONFIG_DIR`, else `${XDG_CONFIG_HOME:-~/.config}/apod`                | What you write: `config.toml` (the extension tables shared by every profile), `roles.toml` (your roles), `extensions/` (your [broker extensions](../EXTENSIONS.md)), `profiles/NAME/` (a profile: [`profile.toml`](#profiletoml), `google-credentials.json`).                                                                                        |
+| data: `$APOD_DATA_DIR`, else `${XDG_DATA_HOME:-~/.local/share}/apod`                 | What you'd back up: `profiles/NAME/home/` (each profile's home), `worklog/<id>/worklog.md` (each session's [work log](guides.md#work-logs)).                                                                                                                                                                                                         |
+| state: `$APOD_STATE_DIR`, else `${XDG_STATE_HOME:-~/.local/state}/apod`              | What the tools write: `history.jsonl` (every launch, for `apod history` and `apod resume`), `broker/` (the broker's state: `log.jsonl`, every request; `broker.log`, its own log; `grants.json`, approvals for roles; `sessions/<id>.json`, each session's saved state), `selinux` (written by `apod selinux install`).                              |
+| runtime: `$APOD_RUNTIME_DIR`, else `$XDG_RUNTIME_DIR/apod`, else `$TMPDIR/apod-$UID` | Sockets only, mode 0700 (apod refuses one that isn't yours and private), gone at logout: the broker's `admin.sock` and `agent.sock` (its ssh-agent), `sessions/<id>/` (the folder a pod mounts at `/run/apod-broker`), `ssh-NAME-PID.sock` (a per-run ssh-agent). A session's state is in the state folder, so it comes back after a broker restart. |
 
 `apod-broker paths` prints where they are (`--json` for scripts).
 
 **The legacy layout.** Installs from before this layout keep everything in one folder,
 `~/.agent-pod`: profiles as folders in it (`<profile>/profile.toml`, `<profile>/home/`),
 `broker.toml` (now `config.toml`), `roles.toml`, `broker-extensions/` (now `extensions/`),
-`broker/`, `history.jsonl`, `worklog/`, `selinux`. apod uses it when none of the three folders
-above exists and `~/.agent-pod` does, and says so at launch. `APOD_ROOT=DIR` means the legacy
+`broker/` (with the sockets), `history.jsonl`, `worklog/`, `selinux`. apod uses it when none of
+the config, data and state folders exists and `~/.agent-pod` does, and says so at launch. `APOD_ROOT=DIR` means the legacy
 layout rooted at `DIR`, whatever the other variables say.
 
 apod refuses a mount (`[pod] ro`/`rw`, `--ro`, `--rw`) that is, contains or is inside one of

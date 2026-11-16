@@ -12,8 +12,11 @@ The layout follows the XDG Base Directory specification, on macOS too:
     data     $APOD_DATA_DIR, else ${XDG_DATA_HOME:-~/.local/share}/apod      what you'd back up
              profiles/NAME/home/ (a pod's $HOME), worklog/<session>/
     state    $APOD_STATE_DIR, else ${XDG_STATE_HOME:-~/.local/state}/apod    what the tools write
-             history.jsonl, broker/ (log.jsonl, grants.json, sessions/, broker.log, gh-api/,
-             home/, tmp/, its sockets), selinux
+             history.jsonl, broker/ (log.jsonl, grants.json, sessions/<id>.json, broker.log,
+             gh-api/, home/, tmp/), selinux
+    runtime  $APOD_RUNTIME_DIR, else $XDG_RUNTIME_DIR/apod, else $TMPDIR/apod-$UID: sockets only,
+             mode 0700, gone at logout: admin.sock, agent.sock, sessions/<id>/ (what a pod
+             mounts: broker.sock...), ssh-NAME-PID.sock
 
 The legacy layout is one folder, ~/.agent-pod, with everything in it (a profile is a folder there,
 the sockets are in its broker/). It's used when APOD_ROOT=DIR is set (the legacy layout rooted at
@@ -23,6 +26,7 @@ migrate --layout` moves it to the new layout. All of it is the `legacy` branch o
 import json
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -51,6 +55,37 @@ def _dir(env, own, xdg, default):
     return (Path(x) if os.path.isabs(x) else _home(env) / default) / "apod"
 
 
+def runtime_dir(env):
+    """$APOD_RUNTIME_DIR, else $XDG_RUNTIME_DIR/apod, else $TMPDIR/apod-$UID (see ensure_private)."""
+    if env.get("APOD_RUNTIME_DIR"):
+        return _dir(env, "APOD_RUNTIME_DIR", "", "")
+    if os.path.isabs(env.get("XDG_RUNTIME_DIR", "")):
+        return Path(env["XDG_RUNTIME_DIR"]) / "apod"
+    return Path(env.get("TMPDIR") or "/tmp") / f"apod-{os.getuid()}"
+
+
+def ensure_private(d):
+    """Create folder d (mode 0700) if it's missing, and refuse one that isn't a folder of yours
+    with mode 0700: in a shared $TMPDIR, another user could have made it first."""
+    d = Path(d)
+    if not os.path.lexists(d):
+        d.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.mkdir(d, 0o700)
+        except FileExistsError:
+            pass
+    st = os.lstat(d)
+    if not stat.S_ISDIR(st.st_mode):
+        raise PathError(f"apod's runtime folder {d} isn't a folder (a symlink, or a file): remove it, or set "
+                        f"APOD_RUNTIME_DIR")
+    if st.st_uid != os.getuid():
+        raise PathError(f"apod's runtime folder {d} belongs to someone else (uid {st.st_uid}): set APOD_RUNTIME_DIR "
+                        f"(or XDG_RUNTIME_DIR) to a folder of yours")
+    if stat.S_IMODE(st.st_mode) != 0o700:
+        raise PathError(f"apod's runtime folder {d} has mode {stat.S_IMODE(st.st_mode):04o}, not 0700: chmod 700 {d}")
+    return d
+
+
 def name_error(name):
     """Why NAME can't be a profile's name, or None."""
     if not NAME.fullmatch(name or ""):
@@ -70,6 +105,8 @@ class Layout:
         self.config = _dir(env, "APOD_CONFIG_DIR", "XDG_CONFIG_HOME", ".config")
         self.data = _dir(env, "APOD_DATA_DIR", "XDG_DATA_HOME", ".local/share")
         self.state = _dir(env, "APOD_STATE_DIR", "XDG_STATE_HOME", ".local/state")
+        self.runtime = runtime_dir(env)
+        self.own_runtime = True  # a folder of its own: made private here (ensure_runtime)
         self.legacy_root = Path(env["APOD_ROOT"]) if env.get("APOD_ROOT") else _home(env) / ".agent-pod"
         self.legacy = bool(env.get("APOD_ROOT")) or (
             not any(d.exists() for d in (self.config, self.data, self.state)) and self.legacy_root.is_dir())
@@ -80,6 +117,7 @@ class Layout:
             r = self.legacy_root
             self.notice = NOTICE + (", then unset APOD_ROOT" if env.get("APOD_ROOT") else "")
             self.config = self.data = self.state = r
+            self.runtime, self.own_runtime = r / "broker", False  # the broker's state folder, made private by the broker
             self.config_file = r / "broker.toml"
             self.extensions = r / "broker-extensions"
             self.old_roles = r / "personas.toml"  # before roles were called roles
@@ -106,25 +144,30 @@ class Layout:
             self.selinux = self.state / "selinux"
             self.profiles = self.config / "profiles"
             self.guarded = [("apod's config folder", self.config), ("apod's data folder", self.data),
-                            ("apod's state folder", self.state)]
+                            ("apod's state folder", self.state), ("apod's runtime folder", self.runtime)]
             p = self.profiles
             self._names = lambda: [d.name for d in sorted(p.iterdir()) if d.is_dir()] if p.is_dir() else []
             self._profile = lambda n, pid: {
                 "dir": p / n, "file": p / n / "profile.toml", "home": self.data / "profiles" / n / "home",
                 "google_credentials": p / n / "google-credentials.json",
-                "exists": (p / n).is_dir(), "ssh_agent_dir": self.data / "profiles" / n / "agent",
-                **({"ssh_agent_sock": self.data / "profiles" / n / "agent" / f"ssh-{pid}.sock",
-                    "ssh_agent_mount": self.data / "profiles" / n / "agent"} if pid else {})}
+                "exists": (p / n).is_dir(), "ssh_agent_dir": self.runtime,
+                **({"ssh_agent_sock": self.runtime / f"ssh-{n}-{pid}.sock",
+                    "ssh_agent_mount": self.runtime / f"ssh-{n}-{pid}.sock"} if pid else {})}
         self.roles = self.config / "roles.toml"
         self.log = self.broker / "log.jsonl"              # every request the broker decided
         self.daemon_log = self.broker / "broker.log"       # the broker's own output
         self.grants = self.broker / "grants.json"          # approvals saved for roles
         self.sessions_state = self.broker / "sessions"     # <id>.json: each session's saved state
-        self.sessions_run = self.broker / "sessions"       # <id>/: each session's folder, mounted in its pod
-        self.admin_sock = self.broker / "admin.sock"
-        self.agent_sock = self.broker / "agent.sock"       # the broker's ssh-agent
+        self.sessions_run = self.runtime / "sessions"      # <id>/: each session's folder, mounted in its pod
+        self.admin_sock = self.runtime / "admin.sock"
+        self.agent_sock = self.runtime / "agent.sock"      # the broker's ssh-agent
         # Read-only mounts that are fine although they're in a guarded folder.
         self.readable = [self.worklog, self.history, self.log]
+
+    def ensure_runtime(self):
+        """The runtime folder, made (mode 0700) if it's missing; PathError if it isn't private
+        (ensure_private). The legacy layout's is the broker's folder, which the broker makes."""
+        return ensure_private(self.runtime) if self.own_runtime else self.runtime
 
     @property
     def layout(self):
@@ -147,7 +190,7 @@ class Layout:
         def s(v):
             return {k: s(x) for k, x in v.items()} if isinstance(v, dict) else str(v) if isinstance(v, Path) else v
         out = {k: getattr(self, k) for k in (
-            "layout", "legacy", "notice", "config", "data", "state", "config_file", "roles", "extensions",
+            "layout", "legacy", "notice", "config", "data", "state", "runtime", "config_file", "roles", "extensions",
             "profiles", "worklog", "history", "broker", "selinux", "log", "grants", "sessions_state",
             "sessions_run", "admin_sock", "agent_sock")}
         out["legacy_root"] = self.legacy_root
@@ -162,12 +205,13 @@ def layout(env=None):
 
 
 USAGE = ("usage: apod-broker paths [--json] [--profile NAME [--pid PID]]\n"
-         "       apod-broker paths --check-name NAME")
+         "       apod-broker paths --check-name NAME | --ensure-runtime")
 
 
 def main(argv):
     """apod-broker paths: where apod's files are. --json for apod; --check-name NAME says why NAME
-    can't be a profile's (exit 2)."""
+    can't be a profile's (exit 2); --ensure-runtime makes the runtime folder (exit 2 if it isn't
+    private)."""
     js, profile, pid, it = False, None, None, iter(argv)
     try:
         for a in it:
@@ -182,6 +226,9 @@ def main(argv):
                 if why:
                     print(f"apod: {why}", file=sys.stderr)
                     return 2
+                return 0
+            elif a == "--ensure-runtime":
+                layout().ensure_runtime()
                 return 0
             else:
                 raise StopIteration
@@ -200,7 +247,7 @@ def main(argv):
         print(json.dumps(out))
         return 0
     print(f"layout   {out['layout']}" + (f" ({out['legacy_root']}; {out['notice']})" if out["legacy"] else ""))
-    for k in ("config", "data", "state"):
+    for k in ("config", "data", "state", "runtime"):
         print(f"{k:<8} {out[k]}")
     for k in ("config_file", "roles", "extensions", "profiles", "worklog", "history", "broker", "admin_sock"):
         print(f"  {k:<12} {out[k]}")

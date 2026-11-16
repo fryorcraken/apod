@@ -946,8 +946,10 @@ if [ -z "$sshkey" ]; then "${run[@]}" "${cmdline[@]}"; exit; fi
 
 # Dedicated ssh-agent for this run: asks for the key's passphrase here, drops the key after
 # $APOD_SSH_TTL (default 4h), confirms each use if [ssh-agent] confirm is true, and is
-# killed when the pod exits. SELinux: see sockopts above; with the module, the agent runs at
-# level s0 so that the pod may connect to it.
+# killed when the pod exits. Its socket is in apod's runtime folder (made private here), and the
+# pod gets that socket alone (the legacy layout: <profile>/agent/). SELinux: see sockopts above;
+# with the module, the agent runs at level s0 so that the pod may connect to it.
+python3 "$apoddir/apod-broker" paths --ensure-runtime || exit 2
 adir=$(P .profile.ssh_agent_dir); mkdir -p "$adir"; chmod 700 "$adir"
 sock=$(P .profile.ssh_agent_sock)
 agentcmd=(ssh-agent); [ -n "$seltype" ] && agentcmd=(runcon -l s0 ssh-agent)
