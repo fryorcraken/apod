@@ -216,6 +216,19 @@ class Launcher:
             return
         self.assertEqual("\n".join(argv) + "\n", f.read_text(), f"podman arguments of {name} changed")
 
+    def test_profiles_listing(self):
+        """apod profiles: the same answer whichever way a profile is written."""
+        if not (self.root / "plain").exists():
+            self.skipTest("no profiles")
+        r = subprocess.run([APOD, "profiles"], env=self.env, cwd=self.tmp, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rows = {l.split()[0]: " ".join(l.split()[1:]) for l in r.stdout.splitlines() if l.startswith(("plain", "tokenother", "notoken", "sshkey", "brk"))}
+        self.assertEqual(rows, {
+            "plain": "token: set google: no broker: -", "tokenother": "token: gh-other google: no broker: -",
+            "notoken": "token: - google: no broker: -", "sshkey": "token: - google: no broker: -",
+            "brk": "token: - google: no broker: dev", "brkhost": "token: unused google: no broker: reader"})
+        self.assertNotIn("no profile launches with", r.stdout)
+
     # (golden name, profile, apod options, extra env). Options with paths use @M@ for the mounts dir.
     CASES = [
         ("plain", "plain", [], {}),
@@ -504,6 +517,84 @@ class MigratedTest(Launcher, unittest.TestCase):
     def test_migrate_is_not_a_profile_name(self):
         r = subprocess.run([APOD, "migrate-me"], env=self.env, cwd=self.tmp, capture_output=True, text=True)
         self.assertIn("no profile named migrate-me", r.stderr)
+
+
+class WizardTest(Launcher, unittest.TestCase):
+    """apod new: answers on stdin; it writes one profile.toml."""
+
+    @classmethod
+    def make_profiles(cls):
+        (cls.bin / "rad").write_text("#!/bin/sh\nexit 0\n")  # there's a rad, so the wizard asks about it
+        (cls.bin / "rad").chmod(0o755)
+
+    def new(self, name, *answers):
+        return subprocess.run([APOD, "new", name], env=self.env, cwd=self.tmp, input="\n".join(answers) + "\n",
+                              capture_output=True, text=True)
+
+    def test_a_broker_profile(self):
+        m = self.m
+        r = self.new("wiz",
+                     "dev",                       # role
+                     "agentbot",                  # GitHub account
+                     "y", "Bot Agent", "bot@example.org",   # another git identity
+                     "",                          # signing key
+                     "",                          # ssh hosts
+                     "n",                         # radicle
+                     "n",                         # notifications
+                     "y", "y",                    # paste images; allow it for this profile
+                     "gh:acme/*",                 # more scope
+                     f"{m}/nonesuch", str(self.root), f"{m}/ro1", "",   # read-only mounts: missing, refused, fine, done
+                     f"{m}/rw1", "",              # read-write mounts
+                     "myimage",                   # image
+                     "y")                         # create
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"No such path: {m}/nonesuch", r.stderr)
+        self.assertIn("is refused", r.stderr)
+        self.assertIn(f"{self.root}/wiz/profile.toml:", r.stderr)
+        text = (self.root / "wiz/profile.toml").read_text()
+        self.assertEqual(text, textwrap.dedent(f"""\
+            role = "dev"
+            allow = ["clipboard:image"]   # on top of the role, for this profile
+            scope = ["gh:acme/*"]
+
+            [pod]
+            image = "myimage"
+            ro = ["{m}/ro1"]
+            rw = ["{m}/rw1"]
+
+            [git]
+            name = "Bot Agent"
+            email = "bot@example.org"
+
+            [gh]
+            user = "agentbot"
+
+            [clipboard]
+            enabled = true
+            """))
+        self.assertEqual(sorted(f.name for f in (self.root / "wiz").iterdir()), ["home", "profile.toml"])
+        # It's a profile apod can launch, with what was asked for.
+        argv, err = self.launch("wiz")
+        self.assertNotIn("old profile files", err)
+        self.assertIn("-e GIT_AUTHOR_NAME=Bot Agent", argv)
+        self.assertIn("@TMP@/mounts/ro1:@TMP@/mounts/ro1:ro", argv)
+        self.assertIn("@TMP@/mounts/rw1:@TMP@/mounts/rw1", argv)
+        self.assertIn("myimage", argv)
+
+    def test_a_profile_without_the_broker(self):
+        r = self.new("plainwiz", "reader", "", "n", "", "", "n", "n", "n", "", "", "", "y")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("No broker: the agent works on the launch folder", r.stderr)
+        self.assertEqual((self.root / "plainwiz/profile.toml").read_text(), "broker = false\n")
+
+    def test_nothing_is_written_without_a_yes(self):
+        r = self.new("nope", "reader", "", "n", "", "", "n", "n", "n", "", "", "", "n")
+        self.assertEqual(r.returncode, 1)
+        self.assertFalse((self.root / "nope").exists())
+
+    def test_names_that_are_taken(self):
+        for name in ("migrate", "broker"):
+            self.assertIn("is an apod command or folder", self.new(name, "").stderr)
 
 
 if __name__ == "__main__":
