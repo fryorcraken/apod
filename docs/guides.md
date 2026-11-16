@@ -664,7 +664,7 @@ the agent's arguments partly shape.
 
 ## Without the broker: tokens
 
-A profile without a `broker.toml` can use a GitHub token instead: `apod token bot` stores a
+A profile with `broker = false` in its `profile.toml` (an old one without a `broker.toml`) can use a GitHub token instead: `apod token bot` stores a
 fine-grained one as the podman secret `gh-bot` (prompted without echo), and `gh` and `git push` in
 the pod have whatever it allows. A `github` file naming another profile uses that profile's token.
 Without either, `gh` and HTTPS pushes are unauthenticated.
@@ -680,6 +680,38 @@ tokens no profile launches with. For each profile:
 3. Relaunch, check `gh auth status` and a push in the pod, then remove what the broker made
    redundant: `apod token PROFILE --rm`, the `github` file, and the token itself on GitHub
    (Settings → Developer settings → Personal access tokens).
+
+## Migrating to profile.toml
+
+Profiles made before `profile.toml` have their settings in up to eleven files (`broker.toml`,
+`env`, `mounts`, `image`, `network`, `volumes`, `connectors`, `github`, `ssh-key`, `ssh-confirm`).
+They still launch, as they always did, with a warning that names the fix. To convert one:
+
+```sh
+apod migrate work          # one profile
+apod migrate --all         # every profile
+```
+
+For each profile, `apod migrate` shows the `profile.toml` it would write, and the old files it
+would move, and asks. On yes it writes the file and moves the old files into
+`~/.agent-pod/<profile>/.old/`; nothing is deleted, and nothing in `.old/` is read or mounted.
+
+- A profile with a `broker.toml` keeps that file's text, comments included, as the start of its
+  `profile.toml`; a profile without one gets `broker = false`.
+- `env` becomes `[git]` (the four `GIT_AUTHOR_*` and `GIT_COMMITTER_*` names) and `[pod.env]` (the
+  rest); `mounts` becomes `[pod] ro` and `rw`, read-only ones first; `github` becomes
+  `[token] profile`; `ssh-key` and `ssh-confirm` become `[ssh-agent]`.
+- Before it writes, it reads the new file back and checks that it means what the old files did. If it
+  doesn't (a `scope` that sits under `[gh]` in the old `broker.toml` was `gh.scope` all along),
+  it says so and changes nothing.
+- It's safe to run again: a migrated profile says so. With both a `profile.toml` and old files
+  (the old files are ignored, with a warning at every launch), it offers to move the old files.
+- `--yes` doesn't ask.
+
+One behaviour changes when a profile is read, migrated or not: the `env` file is no longer passed to
+podman as `--env-file`. Its variables, and `[pod.env]`, are `-e` options, with the quotes stripped
+from an old file's values as the broker always did. And mounts that would expose apod's own files
+are refused (see [SECURITY.md](../SECURITY.md#the-container)).
 
 ## Mounts, network and images
 

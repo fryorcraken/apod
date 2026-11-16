@@ -389,5 +389,122 @@ class ProfileTomlTest(Launcher, unittest.TestCase):
         self.assertIn("apod: both: profile.toml is used; the old files (env) are ignored (apod migrate both moves them away)", err)
 
 
+class MigratedTest(Launcher, unittest.TestCase):
+    """The old profiles after `apod migrate`: the same command lines again."""
+
+    @classmethod
+    def make_profiles(cls):
+        cls.make_old_profiles()
+        r = cls.migrate("--all", "--yes")
+        assert r.returncode == 0, r.stderr
+
+    @classmethod
+    def migrate(cls, *args, input=""):
+        return subprocess.run([APOD, "migrate", *args], env=cls.env, cwd=cls.tmp, input=input, capture_output=True, text=True)
+
+    def test_migrated_profiles_launch_as_before(self):
+        self.run_cases("migrated")
+        # And without a warning about old files.
+        _, err = self.launch("plain")
+        self.assertNotIn("old profile files", err)
+
+    def test_the_old_files_are_moved_not_deleted(self):
+        d = self.root / "plain"
+        self.assertEqual(sorted(f.name for f in (d / ".old").iterdir()),
+                         ["connectors", "env", "image", "mounts", "network", "volumes"])
+        self.assertEqual(sorted(f.name for f in d.iterdir()), [".old", "home", "profile.toml"])
+        self.assertEqual((d / ".old/env").read_text().splitlines()[0], 'GIT_AUTHOR_NAME="Bot Agent"')
+        self.assertTrue((self.root / "sshkey/.old/ssh-key").exists() and (self.root / "sshkey/.old/ssh-confirm").exists())
+
+    def test_the_profile_toml_written(self):
+        m = self.m
+        self.assertEqual((self.root / "plain/profile.toml").read_text(), textwrap.dedent(f"""\
+            broker = false
+
+            [pod]
+            image = "myimage"
+            network = "host"
+            ro = ["{m}/ro1", "{m}/missing"]
+            rw = ["{m}/rw1"]
+            volumes = {{ "apod-plain-nix" = "/nix" }}
+            connectors = ["gdoc", "todoist"]
+
+            [pod.env]
+            SOME_VAR = "a b"
+            PLAIN = "value"
+
+            [git]   # the identity (GIT_AUTHOR_* and GIT_COMMITTER_* in the old env file)
+            name = "Bot Agent"
+            email = "bot@example.com"
+            """))
+        brk = (self.root / "brk/profile.toml").read_text()
+        self.assertTrue(brk.startswith('role = "dev"\nscope = ["gh:acme/*"]'), brk)  # broker.toml first, as it was
+        self.assertNotIn("broker = ", brk)
+        self.assertIn('[gh]\nuser = "agentbot"', brk)
+        self.assertIn('committer_name = "Committer"', brk)
+        self.assertIn('[token]   # without the broker: another profile\'s GitHub token\nprofile = "other"', (self.root / "tokenother/profile.toml").read_text())
+        self.assertIn("confirm = true", (self.root / "sshkey/profile.toml").read_text())
+
+    def test_it_is_idempotent(self):
+        before = {f: f.read_text() for f in self.root.glob("*/profile.toml")}
+        r = self.migrate("--all", "--yes")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("plain: already migrated: nothing to do", r.stderr)
+        self.assertNotIn("would be", r.stderr)
+        self.assertEqual({f: f.read_text() for f in self.root.glob("*/profile.toml")}, before)
+
+    def test_it_shows_the_file_and_asks_first(self):
+        self.profile("asked", env="GIT_AUTHOR_NAME=A\nGIT_AUTHOR_EMAIL=a@example.org\n", image="img\n")
+        r = self.migrate("asked", input="n\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"asked: {self.root}/asked/profile.toml would be:", r.stderr)
+        self.assertIn('    image = "img"', r.stderr)
+        self.assertIn("Write it? [Y/n]", r.stderr)
+        self.assertIn("asked: left as it was", r.stderr)
+        self.assertFalse((self.root / "asked/profile.toml").exists())
+        self.assertTrue((self.root / "asked/env").exists())
+        r = self.migrate("asked", input="y\n")
+        self.assertTrue((self.root / "asked/profile.toml").exists())
+        self.assertFalse((self.root / "asked/env").exists())
+        self.assertEqual(self.migrate("asked", input="").returncode, 0)
+        # No answer (stdin closed) is a no.
+        self.profile("silent", image="img\n")
+        self.migrate("silent", input="")
+        self.assertTrue((self.root / "silent/image").exists() and not (self.root / "silent/profile.toml").exists())
+
+    def test_old_files_beside_a_profile_toml_are_moved_away(self):
+        self.toml_profile("both", 'broker = false\n[git]\nname = "New"\nemail = "new@example.org"\n')
+        (self.root / "both/env").write_text("GIT_AUTHOR_NAME=Old\n")
+        r = self.migrate("both", input="y\n")
+        self.assertIn("both: profile.toml exists, so the old files (env) are ignored.", r.stderr)
+        self.assertTrue((self.root / "both/.old/env").exists())
+        self.assertIn('name = "New"', (self.root / "both/profile.toml").read_text())  # untouched
+
+    def test_comments_and_persona_survive(self):
+        self.profile("old", broker_toml='# my broker\npersona = "maintainer"   # was persona\nscope = ["gh:a/b"]\n\n[gh]\nuser = "x"  # the bot\n')
+        r = self.migrate("old", "--yes")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        text = (self.root / "old/profile.toml").read_text()
+        self.assertTrue(text.startswith('# my broker\nrole = "maintainer"   # was persona\n'), text)
+        self.assertIn('user = "x"  # the bot', text)
+
+    def test_what_does_not_convert_is_reported_and_nothing_changes(self):
+        # A key after a [table] line was gh.scope for the old reading; profile.toml refuses it.
+        self.profile("odd", broker_toml='[gh]\nuser = "x"\nscope = ["gh:a/b"]\n', image="img\n")
+        r = self.migrate("odd", "--yes")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("odd: the old files don't convert to a profile.toml", r.stderr)
+        self.assertIn("move it above the first [table]", r.stderr)
+        self.assertTrue((self.root / "odd/broker.toml").exists() and not (self.root / "odd/profile.toml").exists())
+        r = self.migrate("nonesuch")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("no profile named nonesuch", r.stderr)
+        self.assertEqual(self.migrate().returncode, 2)  # a profile or --all
+
+    def test_migrate_is_not_a_profile_name(self):
+        r = subprocess.run([APOD, "migrate-me"], env=self.env, cwd=self.tmp, capture_output=True, text=True)
+        self.assertIn("no profile named migrate-me", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

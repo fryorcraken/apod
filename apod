@@ -10,7 +10,7 @@ set -euo pipefail
 
 usage() {
   echo "usage: apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [--role R] [--scope S]... [--gh-user ACCOUNT] [--no-broker] [project-dir] [-- agent args...]" >&2
-  echo "       apod new [profile] | resume [--list|--latest|--claude] [dir] | history | ps | profiles | token <profile> [--rm] | google-auth <profile>" >&2
+  echo "       apod new [profile] | migrate [profile|--all] | resume [--list|--latest|--claude] [dir] | history | ps | profiles | token <profile> [--rm] | google-auth <profile>" >&2
   echo "       apod broker [ui]|log [-f] [-n N]|pending|allow ID [--session|--role]|deny ID|sessions|roles|grants|scopes|keys|restart|stop" >&2
   echo "       apod selinux [install|remove|status]" >&2
   exit 2
@@ -91,6 +91,10 @@ case ${1:-} in
       *) echo "usage: apod selinux [install|remove|status]" >&2; exit 2 ;;
     esac
     exit ;;
+  migrate)
+    # Old profile files (env, mounts, broker.toml...) to one profile.toml; the old files move to .old/.
+    need_python
+    shift; exec python3 "$apoddir/apod-broker" migrate "$@" ;;
   google-auth)
     [ $# -ge 2 ] || { echo "usage: apod google-auth <profile>" >&2; exit 2; }
     pdir=${APOD_ROOT:-$HOME/.agent-pod}/$2
@@ -219,7 +223,7 @@ case ${1:-} in
     while :; do
       [ -n "$name" ] || ask name "Profile name:"
       if [[ ! $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then warn "Letters, digits, '.', '_' and '-' only."
-      elif [[ " broker broker-extensions worklog new resume history ps profiles token google-auth selinux gh " == *" $name "* ]]; then
+      elif [[ " broker broker-extensions worklog new migrate resume history ps profiles token google-auth selinux gh " == *" $name "* ]]; then
         warn "'$name' is an apod command or folder."
       elif [ -e "$root/$name" ]; then
         warn "$root/$name already exists: edit its files instead (docs/reference.md#profile-files)."; [ -z "${2:-}" ] || exit 2
@@ -410,7 +414,7 @@ esac
 
 [ $# -ge 1 ] || usage
 profile=$1; shift
-case $profile in broker|broker-extensions|worklog|new|-*)
+case $profile in broker|broker-extensions|worklog|new|migrate|-*)
   echo "apod: '$profile' isn't a profile name (broker, broker-extensions and worklog are apod's own folders)" >&2; exit 2 ;;
 esac
 agent=claude

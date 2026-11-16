@@ -339,7 +339,7 @@ def profile_dirs():
 
 
 # ---------------------------------------------------------------------------------------------
-# apod-broker profile --profile-dir DIR [--json] [--quiet]
+# apod-broker profile --profile-dir DIR ...
 
 USAGE = "usage: apod-broker profile --profile-dir DIR [--project DIR] [--ro PATH]... [--rw PATH]... [--json] [--quiet]"
 
@@ -378,3 +378,168 @@ def main(argv):
             print(f"apod: {w}", file=sys.stderr)
     print(json.dumps(p))
     return 0
+
+
+# ---------------------------------------------------------------------------------------------
+# apod migrate [PROFILE... | --all] [--yes]
+
+def tq(s):
+    """A TOML basic string."""
+    return json.dumps(s, ensure_ascii=False)
+
+
+def tlist(items):
+    return "[" + ", ".join(tq(i) for i in items) + "]"
+
+
+def tilde(path):
+    home = os.environ.get("HOME") or str(Path.home())
+    return "~" + path[len(home):] if path.startswith(home + "/") else path
+
+
+def toml_of_old(pdir, p):
+    """profile.toml's text for a profile read from the old files `p`: broker = false when there's
+    no broker.toml, else broker.toml's own text (its comments too) with the new tables after it."""
+    out = []
+    bt = pdir / "broker.toml"
+    if bt.exists():
+        text = bt.read_text()
+        # persona was role's old name
+        text = re.sub(r"(?m)^persona(\s*=)", r"role\1", text) if "role" not in tomllib.loads(text) else text
+        out.append(text.rstrip() + "\n")
+    else:
+        out.append("broker = false\n")
+    pod = p["pod"]
+    lines = []
+    for k in ("image", "network"):
+        if pod[k]:
+            lines.append(f"{k} = {tq(pod[k])}")
+    for mode in ("ro", "rw"):
+        paths = [tilde(path) for m, path in pod["mounts"] if m == mode]
+        if paths:
+            lines.append(f"{mode} = {tlist(paths)}")
+    if pod["volumes"]:
+        lines.append("volumes = { " + ", ".join(f"{tq(k)} = {tq(v)}" for k, v in pod["volumes"].items()) + " }")
+    if pod["connectors"]:
+        lines.append(f"connectors = {tlist(pod['connectors'])}")
+    env = [f"{k} = {tq(v)}" for k, v in pod["env"].items()]
+    if lines or env:
+        out.append("\n[pod]\n" + "\n".join(lines) + ("\n" if lines else ""))
+    if env:
+        out.append("\n[pod.env]\n" + "\n".join(env) + "\n")
+    if p["git"]:
+        out.append("\n[git]   # the identity (GIT_AUTHOR_* and GIT_COMMITTER_* in the old env file)\n"
+                   + "".join(f"{k} = {tq(p['git'][k])}\n" for k in ("name", "email", "committer_name", "committer_email")
+                             if k in p["git"]))
+    if p["token"]["profile"]:
+        out.append(f"\n[token]   # without the broker: another profile's GitHub token\nprofile = {tq(p['token']['profile'])}\n")
+    ssh = p["ssh_agent"]
+    if ssh["key"] or ssh["confirm"]:
+        out.append("\n[ssh-agent]\n" + (f"key = {tq(tilde(ssh['key']))}\n" if ssh["key"] else "")
+                   + ("confirm = true\n" if ssh["confirm"] else ""))
+    return "".join(out)
+
+
+SAME = ("broker", "role", "scope", "allow", "deny", "pod", "git", "token", "ssh_agent", "tables")
+
+
+def move_old(pdir, names):
+    """Move the old files into <profile>/.old/ (nothing is deleted)."""
+    old = pdir / ".old"
+    old.mkdir(mode=0o700, exist_ok=True)
+    for n in names:
+        dest, i = old / n, 1
+        while dest.exists():
+            dest, i = old / f"{n}.{i}", i + 1
+        os.replace(pdir / n, dest)
+
+
+def migrate_one(pdir, ask, say):
+    """Migrate one profile folder; returns whether it changed anything. `ask(question)` says
+    whether to go on."""
+    name, f = pdir.name, pdir / "profile.toml"
+    old = old_files_in(pdir)
+    if f.exists():
+        load(pdir)  # fails if the profile.toml is no good
+        if not old:
+            say(f"{name}: already migrated: nothing to do")
+            return False
+        say(f"{name}: profile.toml exists, so the old files ({', '.join(old)}) are ignored.")
+        if ask(f"Move them to {tilde(str(pdir))}/.old/?"):
+            move_old(pdir, old)
+            say(f"{name}: moved the old files to .old/")
+            return True
+        return False
+    if not old:
+        say(f"{name}: no settings files: nothing to migrate")
+        return False
+    p = from_old_files(pdir, [])
+    text = toml_of_old(pdir, p)
+    # The new file must mean what the old ones did: check before anything is written.
+    try:
+        new = from_toml(tomllib.loads(text), f)
+    except (tomllib.TOMLDecodeError, ProfileError) as e:
+        raise ProfileError(f"{name}: the old files don't convert to a profile.toml ({e}); fix them (the old files "
+                           f"are untouched) and run apod migrate {name} again")
+    # [pod] ro and rw keep each list's order, not the order of mixed lines: read-only mounts first.
+    p["pod"]["mounts"] = [m for m in p["pod"]["mounts"] if m[0] == "ro"] + [m for m in p["pod"]["mounts"] if m[0] == "rw"]
+    for k in SAME:
+        if new[k] != p[k]:
+            raise ProfileError(f"{name}: converting the old files changed {k} ({p[k]!r} became {new[k]!r}); "
+                               f"nothing was written. Please report this")
+    for mode, path in new["pod"]["mounts"]:
+        check_mount(mode, path, f"{name}: mounts")
+    say(f"{name}: {tilde(str(f))} would be:\n")
+    say("".join("    " + l + "\n" for l in text.splitlines()))
+    say(f"and the old files ({', '.join(old)}) would move to .old/ in {tilde(str(pdir))}.")
+    if not ask("Write it?"):
+        say(f"{name}: left as it was")
+        return False
+    f.write_text(text)
+    move_old(pdir, old)
+    say(f"{name}: wrote profile.toml; the old files are in {tilde(str(pdir))}/.old/")
+    return True
+
+
+def migrate_main(argv):
+    names, everyone, yes = [], False, False
+    for a in argv:
+        if a == "--all":
+            everyone = True
+        elif a in ("--yes", "-y"):
+            yes = True
+        elif a.startswith("-"):
+            print("usage: apod migrate [PROFILE | --all] [--yes]", file=sys.stderr)
+            return 2
+        else:
+            names.append(a)
+    if bool(names) == everyone or len(names) > 1:
+        print("usage: apod migrate [PROFILE | --all] [--yes]", file=sys.stderr)
+        return 2
+
+    def say(text):
+        print(text, file=sys.stderr)
+
+    def ask(question):
+        if yes:
+            return True
+        sys.stderr.write(f"{question} [Y/n] ")
+        sys.stderr.flush()
+        try:
+            return input().strip().lower() in ("", "y", "yes")
+        except EOFError:
+            print(file=sys.stderr)
+            return False
+    dirs = profile_dirs() if everyone else [root() / names[0]]
+    status = 0
+    for d in dirs:
+        if not d.is_dir():
+            say(f"apod: no profile named {d.name}")
+            status = 2
+            continue
+        try:
+            migrate_one(d, ask, say)
+        except ProfileError as e:
+            say(f"apod: {e}")
+            status = 2
+    return status
