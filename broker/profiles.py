@@ -46,6 +46,7 @@ IDENTITY_ENV = ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GI
 GIT_KEYS = {"GIT_AUTHOR_NAME": "name", "GIT_AUTHOR_EMAIL": "email",
             "GIT_COMMITTER_NAME": "committer_name", "GIT_COMMITTER_EMAIL": "committer_email"}
 ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+CHECKOUT = Path(__file__).resolve().parent.parent  # this apod checkout
 
 
 class ProfileError(Exception):
@@ -253,13 +254,52 @@ def from_old_files(pdir, warnings):
 
 
 # ---------------------------------------------------------------------------------------------
+# The mount guard
+
+def real(path):
+    """Where a path really is, as realpath -m: symlinks followed, `..` resolved, may not exist."""
+    return os.path.realpath(expand(path))
+
+
+def inside(a, b):
+    """Whether path a is b or inside it (both resolved)."""
+    return a == b or a.startswith(b.rstrip("/") + "/")
+
+
+def check_mount(mode, path, where):
+    """Refuse a mount that would let a pod read or change apod's own configuration: one that is,
+    contains or is inside the apod folder (~/.agent-pod: the profiles' logins, the broker's keys
+    and state, and each profile.toml) or this checkout (the code the host runs), and a read-write
+    mount of your home folder. A read-only mount of the apod folder's worklog/, history.jsonl or
+    broker/log.jsonl, or of something inside worklog/, is fine. `where` says what asked for it."""
+    r, c, p = real(str(root())), real(str(CHECKOUT)), real(path)
+    if mode == "ro" and any(inside(p, f"{r}/{a}") for a in ("worklog", "history.jsonl", "broker/log.jsonl")):
+        return
+    for name, x, why in ((f"apod's folder {r}", r, "holds every profile's login, the broker's keys and state, and "
+                          "the profiles' settings: a pod could read them, or rewrite its own configuration"),
+                         (f"the apod checkout {c}", c, "is the code the broker runs on the host: a pod could "
+                          "change it")):
+        rel = "is" if p == x else "is inside" if inside(p, x) else "contains" if inside(x, p) else None
+        if rel:
+            raise ProfileError(f"{where}: {mode} mount {path}{'' if p == expand(path) else f' ({p})'} is refused: it "
+                               f"{rel} {name}, which {why}. (Only read-only mounts of {r}/worklog, "
+                               f"{r}/history.jsonl and {r}/broker/log.jsonl are allowed.)")
+    home = real("~")
+    if mode == "rw" and p == home:
+        raise ProfileError(f"{where}: rw mount {path} is refused: it is your home folder, which gives the pod write "
+                           f"access to everything of yours (ssh keys, shell startup files, apod's configuration). "
+                           f"Mount the folders it needs")
+
+
+# ---------------------------------------------------------------------------------------------
 
 def old_files_in(pdir):
     return [f for f in OLD_FILES if (Path(pdir) / f).exists()]
 
 
-def load(pdir):
-    """The profile in folder `pdir`, checked. Raises ProfileError."""
+def load(pdir, project=None):
+    """The profile in folder `pdir`, checked. Raises ProfileError. A mount of the launch's
+    `project` isn't checked: the project is mounted anyway."""
     pdir = Path(pdir)
     old = old_files_in(pdir)
     name = pdir.name
@@ -283,6 +323,10 @@ def load(pdir):
             warnings.append(f"{name}: old profile files ({', '.join(old)}): apod migrate {name}")
     p["dir"] = str(pdir)
     p["warnings"] = warnings + p["warnings"]
+    where = f if f.exists() else pdir / "mounts"
+    for mode, path in p["pod"]["mounts"]:
+        if not (project and real(path) == real(project)):
+            check_mount(mode, path, where)
     return p
 
 
@@ -297,14 +341,18 @@ def profile_dirs():
 # ---------------------------------------------------------------------------------------------
 # apod-broker profile --profile-dir DIR [--json] [--quiet]
 
-USAGE = "usage: apod-broker profile --profile-dir DIR [--json] [--quiet]"
+USAGE = "usage: apod-broker profile --profile-dir DIR [--project DIR] [--ro PATH]... [--rw PATH]... [--json] [--quiet]"
 
 
 def main(argv):
-    pdir, quiet, it = None, False, iter(argv)
+    pdir, project, quiet, cli, it = None, None, False, [], iter(argv)
     for a in it:
         if a == "--profile-dir":
             pdir = next(it, None)
+        elif a == "--project":
+            project = next(it, None)
+        elif a in ("--ro", "--rw", "-m"):  # the launch's own mounts: checked like the profile's
+            cli.append(("rw" if a == "--rw" else "ro", next(it, None)))
         elif a == "--json":
             pass  # the output is always JSON
         elif a in ("--quiet", "-q"):
@@ -316,7 +364,12 @@ def main(argv):
         print(USAGE, file=sys.stderr)
         return 2
     try:
-        p = load(pdir)
+        p = load(pdir, project)
+        for mode, path in cli:
+            if path is None:
+                raise ProfileError(USAGE)
+            if not (project and real(path) == real(project)):
+                check_mount(mode, path, f"--{mode}")
     except ProfileError as e:
         print(f"apod: {e}", file=sys.stderr)
         return 2

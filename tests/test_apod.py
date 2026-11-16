@@ -253,6 +253,27 @@ class OldFilesTest(Launcher, unittest.TestCase):
         _, err = self.launch("brk")  # the broker's session says it
         self.assertIn("apod broker: brk: old profile files (broker.toml, env, mounts, image): apod migrate brk", err)
 
+    def test_mounts_that_expose_apods_files_are_refused(self):
+        for opts in (["--rw", str(self.root)], ["--ro", str(self.root / "plain")], ["--ro", str(self.root.parent)],
+                     ["--rw", str(HERE)], ["--ro", str(self.root / "worklog/../broker")]):
+            self.log.write_text("")
+            r = subprocess.run([APOD, "plain", *opts, str(self.proj)], env=self.env, cwd=self.tmp,
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 2, opts)
+            self.assertIn("is refused", r.stderr)
+            self.assertEqual(self.log.read_text(), "", "no pod")
+        # The worklog, read-only, is fine.
+        (self.root / "worklog").mkdir(exist_ok=True)
+        argv, _ = self.launch("plain", "--ro", str(self.root / "worklog"))
+        self.assertIn("@TMP@/apod/worklog:@TMP@/apod/worklog:ro,z", argv)
+        # So is a profile's own mount list.
+        (self.root / "plain/mounts").write_text(f"rw {self.root}\n")
+        r = subprocess.run([APOD, "plain", str(self.proj)], env=self.env, cwd=self.tmp, stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn(f"{self.root}/plain/mounts: rw mount {self.root} is refused", r.stderr)
+        (self.root / "plain/mounts").write_text(f"{self.m}/ro1\nrw {self.m}/rw1\n{self.m}/missing\n")
+
     def test_python_3_11_is_required(self):
         old = self.tmp / "oldbin"
         old.mkdir()

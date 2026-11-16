@@ -1708,6 +1708,69 @@ class ProfileLoaderTest(unittest.TestCase):
             self.assertIn(msg, err, text)
             self.assertIn(str(self.pdir / "profile.toml"), err)
 
+    def mount_error(self, mode, path, *, cli=False, old=False):
+        """The loader's answer to a mount: None when allowed, else its error."""
+        args = []
+        if old:
+            (self.pdir / "profile.toml").unlink(missing_ok=True)
+            self.write("mounts", f"{mode} {path}\n")
+        elif cli:
+            self.write("profile.toml", "")
+            args = [f"--{mode}", str(path)]
+        else:
+            self.write("profile.toml", f'[pod]\n{mode} = ["{path}"]\n')
+        r = subprocess.run([sys.executable, BROKER, "profile", "--profile-dir", str(self.pdir), *args],
+                           env=self.env, capture_output=True, text=True)
+        return r.stderr if r.returncode else None
+
+    def test_mount_guard(self):
+        root = self.dir
+        for d in ("worklog/s1", "broker", "work/home"):
+            (root / d).mkdir(parents=True, exist_ok=True)
+        (root / "history.jsonl").write_text("")
+        (root / "broker/log.jsonl").write_text("")
+        for how in ({}, {"cli": True}, {"old": True}):
+            # Refused: the apod folder, what's in it, what holds it, and the checkout.
+            for path in (root, root / "work", root / "work/home", root / "broker", root / "broker/sessions",
+                         root / "roles.toml", root / "worklog/../broker", root.parent, "/", HERE, HERE / "broker",
+                         HERE / "apod", HERE.parent):
+                for mode in ("ro", "rw"):
+                    err = self.mount_error(mode, path, **how)
+                    self.assertIn(f"{mode} mount {path}", err or f"allowed {mode} {path} {how}")
+                    self.assertIn("is refused", err)
+            # Allowed: read-only, the worklog and what's in it, the history, the broker's log.
+            for path in (root / "worklog", root / "worklog/s1", root / "worklog/s1/worklog.md", root / "history.jsonl",
+                         root / "broker/log.jsonl", "/etc", "~/projects"):
+                self.assertIsNone(self.mount_error("ro", path, **how), f"{path} {how}")
+            # ... but not read-write, nor by a path that leads elsewhere.
+            for path in (root / "worklog", root / "worklog/s1", root / "history.jsonl", root / "broker/log.jsonl"):
+                self.assertIn("is refused", self.mount_error("rw", path, **how) or "")
+            self.assertIn("is refused", self.mount_error("ro", root / "worklog/s1/../../broker", **how) or "")
+            # Your home folder: not read-write; folders in it are fine.
+            self.assertIn("is your home folder", self.mount_error("rw", "~", **how) or "")
+            self.assertIn("is your home folder", self.mount_error("rw", "/home/agent-test", **how) or "")
+            self.assertIsNone(self.mount_error("rw", "~/projects", **how))
+            self.assertIsNone(self.mount_error("ro", "~", **how))
+        # A symlink to the apod folder is the apod folder.
+        link = self.dir.parent / f"{self.dir.name}-link"
+        link.symlink_to(root)
+        self.addCleanup(link.unlink)
+        err = self.mount_error("rw", link)
+        self.assertIn(f"is apod's folder {root.resolve()}", err or "")
+        self.assertIn("(" + str(root.resolve()) + ")", err)
+        # What it says, and the same for the old mounts file.
+        err = self.mount_error("rw", root / "work")
+        self.assertIn(str(self.pdir / "profile.toml"), err)
+        self.assertIn("is inside apod's folder", err)
+        self.assertIn("rewrite its own configuration", err)
+        self.assertIn(str(self.pdir / "mounts"), self.mount_error("rw", root, old=True))
+        self.assertTrue(self.mount_error("rw", root, cli=True).startswith("apod: --rw: rw mount"))
+        # The launch folder is mounted anyway: no check (a pod working on apod itself).
+        self.write("profile.toml", "")
+        r = subprocess.run([sys.executable, BROKER, "profile", "--profile-dir", str(self.pdir), "--project", str(HERE),
+                            "--rw", str(HERE)], env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     def test_needs_no_broker_and_no_extensions(self):
         # The old-files reading too: nothing is started, and the user's extensions aren't run.
         ext = self.dir / "broker-extensions"

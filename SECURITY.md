@@ -47,8 +47,19 @@ do and leaves a record of what it did.
     (read-write), which the main checkout and the other worktrees share;
   - the profile's own home (`~/.agent-pod/<profile>/home`, read-write);
   - its session's work log folder (`~/.agent-pod/worklog/<id>`, read-write);
-  - the profile's `mounts`, read-only unless marked `rw`;
+  - the profile's `[pod] ro` and `rw` mounts, and those of `--ro` and `--rw` (see the guard below);
   - your `~/.claude/CLAUDE.md` and `~/.claude/skills`, read-only.
+- **Apod's own files stay out of reach (the mount guard).** apod refuses to start a pod with a
+  mount that is, contains or is inside `~/.agent-pod` (`APOD_ROOT`) or the apod checkout, whether
+  it comes from the profile or from `--ro`/`--rw`, and a read-write mount of your home folder. A
+  pod that could write `~/.agent-pod/<profile>/profile.toml` could give itself a role, scope and
+  extensions on its next launch; one that could write the checkout could change the code the
+  broker runs on the host; and the folder holds every profile's login and the broker's state. The
+  only exceptions are read-only mounts of `worklog/`, `history.jsonl` and `broker/log.jsonl`, for
+  a pod that reviews them. The check follows symlinks and `..`, and nothing in a profile's folder
+  but `home/` (and `agent/`, the ssh-agent's socket) is mounted. It doesn't cover the project
+  folder, which is mounted read-write anyway (launching from `~` or from the apod checkout is up
+  to you), and it checks the paths when apod starts, not a symlink someone changes later.
 - **Processes:** the host's processes, other pods and their files are not visible.
 - **The desktop:** no display or Wayland socket is passed in. With `[clipboard] enabled`, the
   pod can ask the broker for an image on your clipboard (`clipboard:image`, checked like any
@@ -62,7 +73,7 @@ do and leaves a record of what it did.
 
 ### Credentials stay on the host (broker)
 
-With a `broker.toml`, a pod holds no GitHub token and no ssh, signing or Radicle key:
+With the broker (`broker = true` in `profile.toml`, the default), a pod holds no GitHub token and no ssh, signing or Radicle key:
 
 - **GitHub:** `gh` and git's github.com remotes go to the host's broker, which uses the host
   `gh` login the profile names (`[gh] user`). The token never enters the pod. A profile that names
@@ -78,7 +89,7 @@ With a `broker.toml`, a pod holds no GitHub token and no ssh, signing or Radicle
   pod gets a filtering agent that offers only the session's ssh keys. It signs only ssh login
   requests, never arbitrary data, and pods can't add, remove or lock its keys.
 - **Extensions are off unless set up.** Every extension is loaded, but is on for a pod only when
-  its `broker.toml` table sets it up (an account, a key, `[rad] autodetect`), it isn't
+  its `profile.toml` table sets it up (an account, a key, `[rad] autodetect`), it isn't
   `enabled = false`, and the pod's scope has something of its kind. A folder's `rad://` remote
   alone doesn't give a pod Radicle, and keys are unlocked only for roles that use them.
 - **The broker listens only on unix sockets.** There's a directory per pod, mounted into that pod
@@ -188,7 +199,7 @@ The broker turns each request into actions and targets, and checks them before a
   broker's log is), and text in them can try to steer whatever agent later reads them. Review
   them in a pod with the logs mounted read-only, not with an agent on the host.
 - **Network egress.** Pods can reach the internet, so a pod can send whatever it can read (the
-  project, its mounts, its own home) anywhere. With `network = host`, a pod can also reach the
+  project, its mounts, its own home) anywhere. With `[pod] network = "host"`, a pod can also reach the
   host's localhost services and your LAN or Tailscale hosts directly. The ssh agent still signs
   logins only for hosts in scope.
 - **Credentials that live in the pod's home:**
@@ -214,7 +225,7 @@ The broker turns each request into actions and targets, and checks them before a
   search across GitHub returns titles and numbers from every repository the account can read.
 - **SELinux is off for broker pods unless you install apod's module.** By default they run with
   `label=disable`, because SELinux stops a container from connecting to the broker's socket; the
-  same goes for pods with an `ssh-key`. `apod selinux install` loads a one-rule module that lets
+  same goes for pods with an `[ssh-agent]` key. `apod selinux install` loads a one-rule module that lets
   containers connect to sockets of unconfined processes, limited in practice to sockets mounted
   into a pod and served at level `s0` (the broker, per-run ssh-agents), so these pods keep SELinux
   labelling as ordinary containers. Other pods always
@@ -237,7 +248,7 @@ The broker turns each request into actions and targets, and checks them before a
 
 - Use the broker rather than tokens. Where you keep a token, make it fine-grained and limited to
   the repositories and permissions the profile needs.
-- On SELinux hosts, run `apod selinux install` so broker and `ssh-key` pods keep SELinux
+- On SELinux hosts, run `apod selinux install` so broker and `[ssh-agent]` pods keep SELinux
   labelling.
 - Give each profile the narrowest role and scope it needs. Grant extra access per session
   rather than per role when it's a one-off.

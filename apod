@@ -453,7 +453,9 @@ fi
 # The profile's settings, from its profile.toml (or its old files), checked: JSON from apod-broker
 # profile. pget runs a jq filter on it; plist one that prints NUL-terminated records.
 need_python
-pjson=$(python3 "$apoddir/apod-broker" profile --profile-dir "$root/$profile" --quiet) || exit 2
+ldargs=(--profile-dir "$root/$profile" --project "$proj" --quiet)  # --ro/--rw: refused if they'd expose apod's own files
+for e in "${climounts[@]}"; do ldargs+=(--"${e%% *}" "${e#* }"); done
+pjson=$(python3 "$apoddir/apod-broker" profile "${ldargs[@]}") || exit 2
 pget() { jq -r "$@" <<< "$pjson"; }
 plist() { jq -j "$1" <<< "$pjson"; }
 # Image: -i, else the profile's [pod] image, else $APOD_IMAGE, else apod.
