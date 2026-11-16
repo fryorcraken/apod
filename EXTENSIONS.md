@@ -34,7 +34,7 @@ You decide which units a pod may touch (`web`, not your others) and what it may 
 2. **A client** in the pod, named `systemctl` like the command it stands for: it hands its
    arguments to the broker and prints the answer. The agent needs nothing new to learn, only
    what's different (user services only, four commands).
-3. **Settings:** which units a profile's pods may touch (`broker.toml`), and which roles may
+3. **Settings:** which units a profile's pods may touch (`profile.toml`), and which roles may
    restart them (`roles.toml`).
 
 ### 1. The extension
@@ -107,7 +107,7 @@ def handle(h, sess, method):
 
 
 class Systemctl(Provider):
-    name = "systemctl"   # [systemctl] in broker.toml, systemctl = [...] in roles, systemctl:... actions
+    name = "systemctl"   # [systemctl] in profile.toml, systemctl = [...] in roles, systemctl:... actions
     description = "systemctl --user on the host, for the units in scope"   # apod broker extensions
     routes = [("POST", "/systemctl", handle)]
 
@@ -174,7 +174,7 @@ sys.exit(out["exit"])
 For a profile, and say which services its pods may touch:
 
 ```toml
-# ~/.agent-pod/work/broker.toml
+# ~/.agent-pod/work/profile.toml
 [systemctl]
 enabled = true
 units = ["web"]          # in scope for every pod of this profile; --scope unit:db adds one for a launch
@@ -243,7 +243,7 @@ what sort of thing it is, and which extension it belongs to; the value says whic
 `unit:web`. A target is in scope when an entry of its kind matches its value, with patterns
 (`gh:acme/*` covers every repository of `acme`, `unit:dev-*` every service starting with `dev-`).
 Entries come from the host's side only: `gh` adds the project's GitHub remotes, your `targets`
-added `units` from `broker.toml`, and the user adds others with `scope =` or `--scope unit:db`.
+added `units` from `profile.toml`, and the user adds others with `scope =` or `--scope unit:db`.
 
 `scope_kind("unit", ...)` is what makes `unit:` something users can write: it declares the kind,
 and its `parse` turns `unit:web` into `web.service`, the form the handler's targets use.
@@ -365,7 +365,8 @@ broker's own and may change at any time.
 2. Start `apod-broker serve` with `APOD_ROOT` set, and `APOD_BROKER_ASK_TIMEOUT=4` so that
    requests that wait fail quickly.
 3. `apod-broker register --profile test --profile-dir DIR --project /p --role ROLE`, with the
-   profile's `broker.toml` in `DIR`. It prints the registration as JSON: `dir` holds the pod's
+   profile's `profile.toml` in `DIR` (or the old files: `broker.toml`, `env`...; `apod-broker profile --profile-dir DIR`
+   shows how both are read). It prints the registration as JSON: `dir` holds the pod's
    `broker.sock`, plus `env`, `mounts`, `context`, `providers`.
 4. Call the socket, or run your client with `APOD_BROKER_SOCK` pointing at it. Cover what's
    allowed, what's out of scope, what the role doesn't allow, and input that's malformed.
@@ -386,7 +387,7 @@ object the same attributes:
 
 | Attribute                        |                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`                           | Required: lowercase letters, digits and `-`, unique, not a `roles.toml` key (`allow`, `deny`, `extends`, `description`) or `unscoped`. It names the `broker.toml` table, the role list and the action prefix.                                                                                                                                                                                                                                     |
+| `name`                           | Required: lowercase letters, digits and `-`, unique, not a `roles.toml` key (`allow`, `deny`, `extends`, `description`), `unscoped` or one of the profile's own tables (`pod`, `git`, `token`, `ssh-agent`). It names the `profile.toml` table, the role list and the action prefix.                                                                                                                                                              |
 | `routes`                         | `[(method, path, handler)]`. `method` is `GET`, `POST` or `CONNECT`. `path` matches a request's path exactly, or as a prefix that ends at a `/` or `?` (`/systemctl` takes `/systemctl` and `/systemctl/x`, not `/systemctlx`); `CONNECT` may use `""` for every CONNECT. A route that overlaps another provider's is refused. `/whoami` is the core's.                                                                                           |
 | `description`                    | One line for `apod broker extensions`: what the extension gives pods.                                                                                                                                                                                                                                                                                                                                                                             |
 | `guide`                          | Where its guide is, `"docs/guides.md#anchor"` in the apod checkout (the shipped extensions). Without one, `apod broker extensions NAME` shows your module's docstring, so write it as the extension's guide: what it does, its `broker.toml` settings, its actions.                                                                                                                                                                               |
@@ -397,15 +398,18 @@ object the same attributes:
 | `listen(sess)`                   | Optional. Start sockets of your own in `sess.dir`, e.g. one that doesn't speak HTTP (`ssh` serves its agent this way). Called for every provider, on or off, at registration and when the broker starts again, so check `sess.cfg` first. Return the servers; the core stops them when the session ends.                                                                                                                                          |
 | `close(session_id)`              | Optional. The session ended.                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `account(sess)`                  | Optional. The account it acts as for this pod (`gh`: the GitHub login), shown to the agent, in the TUI and in `/whoami`'s `accounts`.                                                                                                                                                                                                                                                                                                             |
-| `renamed_from`                   | Optional. The extension's earlier names: their `broker.toml` tables, role lists and actions keep working, with a warning (`git-sign` has `["sign"]`).                                                                                                                                                                                                                                                                                             |
-| `keys(cfg)`                      | Optional. `[(key path, confirm)]` named by your `broker.toml` table, for `apod broker keys` to list and load before any pod starts.                                                                                                                                                                                                                                                                                                               |
+| `renamed_from`                   | Optional. The extension's earlier names: their `profile.toml` tables, role lists and actions keep working, with a warning (`git-sign` has `["sign"]`).                                                                                                                                                                                                                                                                                            |
+| `keys(cfg)`                      | Optional. `[(key path, confirm)]` named by your `profile.toml` table, for `apod broker keys` to list and load before any pod starts.                                                                                                                                                                                                                                                                                                              |
 
 **`configure(sess, cfg, reg, out)`:**
 
 - `cfg` is your table: `~/.agent-pod/broker.toml`'s, overridden key by key by the profile's
-  (`{}` if neither has one). A table with `enabled = false` never reaches you: the broker
+  `profile.toml` table (`{}` if neither has one). What `configure` gets is the same however the
+  profile is written (`profile.toml` or the old files); `[pod]`, `[git]`, `[token]` and `[ssh-agent]`
+  are the profile's own tables, so don't name an extension that. A table with `enabled = false` never reaches you: the broker
   leaves your extension off for that profile and tells the agent so.
-- `reg` is the registration: `id`, `profile`, `profile_dir`, `project` (the host path), `role` and
+- `reg` is the registration: `id`, `profile`, `profile_dir`, `profile_file` (the file the settings
+  came from, for messages), `project` (the host path), `role` and
   `gh_user` (when given at launch), `scope` (the launch's `--scope` entries), `remotes` (the
   project's git remote URLs).
 - `configure` runs once per pod: after a broker restart, sessions come back from disk and only
@@ -490,10 +494,10 @@ arguments change that:
 | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `id`, `profile`, `role`, `project`, `created` | The registration.                                                                                                                                                                                  |
 | `sess.rules()`                                | `(allow, deny)` patterns: the role's, then the profile's own `allow` and `deny` (`sess.extra`). `check` and `allowed` use them.                                                                    |
-| `identity`                                    | `{"name", "emails"}`: the profile's git identity: the host's global git config, unless the profile's `env` overrides it.                                                                           |
+| `identity`                                    | `{"name", "emails"}`: the profile's git identity: the host's global git config, unless the profile's `[git]` overrides it.                                                                         |
 | `scope`, `entries(prefix)`                    | The scope entries, `{prefix: [values]}`; one kind's list.                                                                                                                                          |
 | `in_scope(target)`                            | Whether a `(kind, value)` target is in scope.                                                                                                                                                      |
-| `add_scope(target)`                           | Add an entry (through the kind's `grant`). Only from host-side facts: your `broker.toml` table, or something the broker created for the pod.                                                       |
+| `add_scope(target)`                           | Add an entry (through the kind's `grant`). Only from host-side facts: your `profile.toml` table, or something the broker created for the pod.                                                      |
 | `grants`                                      | What the user approved for the session: `{"actions": [...], "unscoped": [...]}`.                                                                                                                   |
 | `cfg[name]`                                   | Yours, for per-session state; saved with the session, so it survives a broker restart. Keys starting with `_` are the core's.                                                                      |
 | `accounts()`                                  | `{provider: account}`: who each extension that's on acts as for this pod (its `account(sess)`), such as `{"gh": "my-bot"}`.                                                                        |
@@ -542,7 +546,7 @@ an extension must not weaken.
   real effect. `gh` resolves GraphQL node ids on GitHub to find the repository; text in an issue
   body is not a target. If you can't tell what a request touches, use an `unscoped` target, so
   that it asks.
-- **Widen the scope only from the host's side:** your `broker.toml` table, or something the
+- **Widen the scope only from the host's side:** your `profile.toml` table, or something the
   broker itself created (a fork it made). Never from the pod's request, from `sess.dir`, or from
   the project folder (`reg["remotes"]` comes from the project's `.git/config`, which the pod can
   edit; the shipped extensions accept that for the user's own remotes).

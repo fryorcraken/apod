@@ -15,6 +15,7 @@ variable.
 - [Roles and scope](#roles-and-scope)
 - [Approving requests](#approving-requests)
 - [Without the broker: tokens](#without-the-broker-tokens)
+- [Migrating to profile.toml](#migrating-to-profiletoml)
 - [Mounts, network and images](#mounts-network-and-images)
 - [SELinux](#selinux)
 - [claude.ai connectors and MCP servers](#claudeai-connectors-and-mcp-servers)
@@ -29,16 +30,16 @@ no credentials. A broker on the host, `apod-broker`, acts for it through a socke
 mounted at `/run/apod-broker`, and checks every request against the pod's role (what it may do)
 and scope (where). Anything else waits for your approval.
 
-A pod uses the broker when its profile has a `broker.toml`, or when the launch passes `--role`,
+A pod uses the broker when its profile says so (`broker = true` in `profile.toml`, the default there; `broker = false` for a profile that uses a GitHub token instead), or when the launch passes `--role`,
 `--scope` or `--gh-user`. `--no-broker` turns it off for a run. The broker starts with the first
 pod that uses it and keeps running; its state is in `~/.agent-pod/broker/`.
 
 `apod new` writes a profile for you: it asks for the role first, then the GitHub account, the
 git identity (offering the account's noreply address), a signing key (or creates one), ssh
-hosts, Radicle, notifications, pasting images and more scope, offering to add to the role what
-it lacks for what you set up (`allow`, for that profile only), shows the `broker.toml` and `env`
-it would write, and writes nothing until you confirm. The guides below say what each part does;
-edit the files afterwards for the rest.
+hosts, Radicle, notifications, pasting images, more scope, extra mounts and an image, offering to
+add to the role what it lacks for what you set up (`allow`, for that profile only), shows the
+`profile.toml` it would write, and writes nothing until you confirm. The guides below say what each part does;
+edit the file afterwards for the rest.
 
 ### Built-in extensions
 
@@ -59,7 +60,7 @@ Everything the broker does for a pod is an extension. These ship with apod:
 registers its actions, its kinds of target and its routes, and that's all. Whether it does
 anything for a pod is decided at each launch, by the same rules for every extension:
 
-1. It isn't turned off: `[NAME] enabled = false` in the profile's (or the global) `broker.toml`
+1. It isn't turned off: `[NAME] enabled = false` in the profile's `profile.toml` (or the global `broker.toml`)
    turns it off for that profile's pods.
 2. It's set up: what its table needs is there (`[gh] user`, `[git-sign] key`, an `[ssh]` key,
    `[rad] autodetect`, `[notify] enabled`). Nothing is on just because a folder looks like it
@@ -80,12 +81,20 @@ extensions NAME` shows one's guide (its section here), what each role allows of 
 allowed, and its scope kinds. To write your own, or replace one, see
 [EXTENSIONS.md](../EXTENSIONS.md).
 
-A full profile `broker.toml` ([reference](reference.md#brokertoml) for every key):
+A full `profile.toml` ([reference](reference.md#profiletoml) for every key):
 
 ```toml
-# ~/.agent-pod/work/broker.toml
+# ~/.agent-pod/work/profile.toml
 role = "dev"
 scope = ["gh:fryorcraken/*", "gh-project:fryorcraken/1"]   # plus the project's GitHub and Radicle remotes
+
+[pod]
+image = "apod"
+ro = ["~/src/shared-libs"]
+
+[git]                                # the identity of its commits (default: yours)
+name = "work-bot"
+email = "12345+work-bot@users.noreply.github.com"
 
 [gh]
 user = "work-bot"                    # a host gh account (gh auth login); required for gh and GitHub remotes
@@ -101,14 +110,14 @@ with the hosts in its `scope`, next to the rest: `scope = ["gh:fryorcraken/*", "
 (before the first table).
 
 ```sh
-apod work ~/src/org/repo                                        # as broker.toml says
+apod work ~/src/org/repo                                        # as profile.toml says
 apod work --role maintainer --scope 'gh:fryorcraken/*' ~/src/org/repo
 apod broker                                                     # approve requests in a terminal UI
 ```
 
 **Settings for every profile.** `~/.agent-pod/broker.toml` takes the same tables (`[ssh]`,
 `[git-sign]`, `[rad]`, `[notify]`, your extensions'), for every profile that uses the broker. A
-profile's `broker.toml` overrides them key by key within each table. `role` and `scope` are
+profile's `profile.toml` overrides them key by key within each table. `role` and `scope` are
 ignored there, with a warning: what a pod may do comes only from its profile and its launch. The
 global file alone doesn't switch a token profile to the broker.
 
@@ -124,7 +133,7 @@ key = "~/.ssh/id_apod_broker_sign"
 launch, apod loads the ones it doesn't hold yet, of the extensions on for the pod and only when
 the role allows something that uses them, with `ssh-add`, which asks for their passphrases
 (an empty line skips a key: the pod starts, and the requests that need it fail); they expire after `APOD_SSH_TTL` (default `4h`). After a broker restart, or before launching,
-`apod broker keys` lists the keys named in the profiles' `broker.toml` tables (not those of
+`apod broker keys` lists the keys named in the profiles' `profile.toml` tables (not those of
 extensions turned off with `enabled = false`) and those running pods use, and loads the missing
 ones. A Radicle key is listed only once a pod uses it, unless a `[rad]` table names its home.
 One key can serve many hosts: the destination is checked per login.
@@ -147,10 +156,10 @@ account can do.
    ```
 
    The broker uses the account the profile names, whichever is active.
-3. **The profile:** the account in `broker.toml`:
+3. **The profile:** the account in `profile.toml`:
 
    ```toml
-   # ~/.agent-pod/bot/broker.toml
+   # ~/.agent-pod/bot/profile.toml
    role = "dev"
    [gh]
    user = "my-bot"
@@ -159,13 +168,14 @@ account can do.
    `--gh-user ACCOUNT` names another account for one launch. A profile that names none gets no
    `gh` and no GitHub remotes: the broker never falls back to your active login.
 4. **Optional: commit as the bot.** Pods commit with your host's git identity (`git config
-   --global user.name`, `user.email`). To have commits by the bot, override it in the profile's
-   `env`, which passes any variables you put there to the pod:
+   --global user.name`, `user.email`). To have commits by the bot, set `[git]` in the profile's
+   `profile.toml`, after the top-level keys:
 
-   ```sh
-   # ~/.agent-pod/bot/env
-   GIT_AUTHOR_NAME=my-bot
-   GIT_AUTHOR_EMAIL=12345+my-bot@users.noreply.github.com
+   ```toml
+   # ~/.agent-pod/bot/profile.toml
+   [git]
+   name = "my-bot"
+   email = "12345+my-bot@users.noreply.github.com"
    ```
 
 5. **The scope.** The project's GitHub remotes are in scope automatically. Add more with
@@ -190,7 +200,7 @@ those calls through the broker, which checks them and adds the token. It's off u
 on, and needs [GitHub](#github) set up:
 
 ```toml
-# ~/.agent-pod/bot/broker.toml
+# ~/.agent-pod/bot/profile.toml
 [gh]
 user = "my-bot"
 [gh-api]
@@ -215,7 +225,7 @@ enabled = true
 - They're logged like any request, marked `(direct)`: `apod broker log` shows them. Claude
   Code's PR status polls, so expect a few lines a minute while a branch has a PR.
 
-**Limits.** It's off with `network = host`: the pod then shares the host's network, where
+**Limits.** It's off with `[pod] network = "host"`: the pod then shares the host's network, where
 `api.github.com` can't point at the pod's relay. Only `api.github.com` is covered; `github.com`
 itself (git, web pages) goes the usual ways. The `reader` role's REST and GraphQL reads cover
 Claude Code's PR status, for the repositories in scope.
@@ -230,7 +240,7 @@ curl -s --cacert /run/apod-gh-api/ca.pem https://api.github.com/repos/OWNER/REPO
 
 ## Radicle
 
-**Radicle is off until you turn it on.** In the profile's `broker.toml` (or
+**Radicle is off until you turn it on.** In the profile's `profile.toml` (or
 `~/.agent-pod/broker.toml`, for every profile):
 
 ```toml
@@ -294,7 +304,7 @@ delegate, so its branches and patches show as another peer's.
 
 <a id="turning-radicle-off"></a>**Turning it off.** Leave `autodetect` and `enabled` out. To turn
 it off for one profile when the global `broker.toml` turns it on, in that profile's
-`broker.toml`:
+`profile.toml`:
 
 ```toml
 [rad]
@@ -318,9 +328,9 @@ broker signs with it on the host, and only for the repositories in the pod's sco
 `git-sign` extension (it was called `sign`; a `[sign]` table and `sign = [...]` role lists still
 work, with a warning).
 
-The profile's `broker.toml` says **which key signs**, in its `[git-sign]` table. **Whose commits
+The profile's `profile.toml` says **which key signs**, in its `[git-sign]` table. **Whose commits
 they are** is the pod's git identity: your host's (`git config --global user.name`,
-`user.email`), unless the profile's `env` overrides it (`GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`).
+`user.email`), unless the profile's `[git]` overrides it (`name`, `email`).
 
 A signature vouches for that email: the broker only signs commits whose author and committer
 are the profile's (anything else waits for you), and GitHub only shows "Verified" when the email
@@ -348,15 +358,16 @@ belongs to the GitHub account that has the key.
 ### Setup
 
 1. **Optional: the identity.** Commits are by your host's git identity unless the profile's
-   `env` says otherwise, as for a bot:
+   `[git]` says otherwise, as for a bot:
 
-   ```sh
-   # ~/.agent-pod/work/env
-   GIT_AUTHOR_NAME=work-bot
-   GIT_AUTHOR_EMAIL=12345+work-bot@users.noreply.github.com
+   ```toml
+   # ~/.agent-pod/work/profile.toml
+   [git]
+   name = "work-bot"
+   email = "12345+work-bot@users.noreply.github.com"
    ```
 
-2. **The key**, in the profile's `broker.toml` (or in `~/.agent-pod/broker.toml`, for every
+2. **The key**, in the profile's `profile.toml` (or in `~/.agent-pod/broker.toml`, for every
    profile):
 
    ```toml
@@ -465,10 +476,10 @@ route to them.
 Only port 22 or the host's configured ssh port goes through without asking; another port is a
 tunnel (`ssh:connect port`). Once logged in, the agent can do anything that account can.
 
-**Without the broker's ssh extension** (no broker, or no `[ssh]` key): a profile's `ssh-key` file names a passphrase-protected private key kept
+**Without the broker's ssh extension** (no broker, or no `[ssh]` key): a profile's `[ssh-agent]` `key` names a passphrase-protected private key kept
 outside the profile's home. apod starts an ssh-agent on the host for the run, asks for the
 passphrase, and passes only the agent socket into the pod; the key expires after `APOD_SSH_TTL`
-and the agent is killed when the pod exits. `ssh-confirm` (an empty file) confirms every use.
+and the agent is killed when the pod exits. `confirm = true` confirms every use.
 Host aliases go in the profile's `home/.ssh/config`. The pod can log in anywhere the key works.
 
 ## Notifications
@@ -477,7 +488,7 @@ Host aliases go in the profile's `home/.ssh/config`. The pod can log in anywhere
 with the agent session's name.
 
 ```toml
-# ~/.agent-pod/broker.toml (every profile) or a profile's broker.toml
+# ~/.agent-pod/broker.toml (every profile) or a profile's profile.toml
 [notify]
 enabled = true
 # command = ["notify-send", "-a", "apod"]   # the default; called with TITLE TEXT
@@ -502,7 +513,7 @@ extension lets it paste images from your clipboard, and only images: copied text
 included, never reaches the pod. It's off unless you turn it on:
 
 ```toml
-# a profile's broker.toml
+# a profile's profile.toml
 allow = ["clipboard:image"]   # paste without asking; without it each paste waits for you
 [clipboard]
 enabled = true
@@ -555,12 +566,12 @@ broker extensions NAME` what each role allows of one extension.
 A pod's role is `--role`, else its profile's `role =`, else `reader`. One profile can take
 different roles per launch: `apod bot --role pm ~/src/org/planning`.
 
-**Adding to the role, for one profile.** `allow` and `deny` in the profile's `broker.toml` add
+**Adding to the role, for one profile.** `allow` and `deny` in the profile's `profile.toml` add
 actions to its role or take them away, for that profile's pods only, whatever role they launch
 with. For a `dev` profile that also logs in to hosts:
 
 ```toml
-# ~/.agent-pod/work/broker.toml
+# ~/.agent-pod/work/profile.toml
 role = "dev"
 allow = ["ssh:connect", "ssh:login"]   # on top of dev: logins to the hosts in scope
 deny = ["github:push force"]           # never, for this profile
@@ -666,19 +677,20 @@ the agent's arguments partly shape.
 
 A profile with `broker = false` in its `profile.toml` (an old one without a `broker.toml`) can use a GitHub token instead: `apod token bot` stores a
 fine-grained one as the podman secret `gh-bot` (prompted without echo), and `gh` and `git push` in
-the pod have whatever it allows. A `github` file naming another profile uses that profile's token.
+the pod have whatever it allows. `[token] profile = "other"` uses another profile's token.
 Without either, `gh` and HTTPS pushes are unauthenticated.
 
 **Moving a profile from a token to the broker.** `apod profiles` shows each profile's token: `set`
-(its own), `gh-OTHER` (another profile's), or `unused` once a `broker.toml` replaces it, and lists
+(its own), `gh-OTHER` (another profile's), or `unused` once the broker replaces it, and lists
 tokens no profile launches with. For each profile:
 
 1. Log the token's GitHub account in to the host's `gh`, once per account ([GitHub](#github)).
-2. Add a `broker.toml` with a role, `[gh] user` and any extra scope. For `ssh-key` profiles, an
-   `[ssh]` table with the key and `hosts` replaces `ssh-key`, `ssh-confirm` and, if that was only
-   for ssh, `network`.
+2. In its `profile.toml`, remove `broker = false` and add a `role`, `[gh] user` and any extra scope
+   (top-level keys first). For a profile with an `[ssh-agent]` key, an `[ssh]` table with the key,
+   and the hosts as `scope = ["ssh:HOST"]` entries, replaces `[ssh-agent]` and, if that was only
+   for ssh, `[pod] network`. A profile still in the old files: `apod migrate PROFILE` first.
 3. Relaunch, check `gh auth status` and a push in the pod, then remove what the broker made
-   redundant: `apod token PROFILE --rm`, the `github` file, and the token itself on GitHub
+   redundant: `apod token PROFILE --rm`, `[token]`, and the token itself on GitHub
    (Settings → Developer settings → Personal access tokens).
 
 ## Migrating to profile.toml
@@ -716,7 +728,7 @@ are refused (see [SECURITY.md](../SECURITY.md#the-container)).
 ## Mounts, network and images
 
 **Mounts.** Only the project folder is mounted (read-write), plus the profile's home and
-`mounts` file, your `~/.claude/CLAUDE.md` and `~/.claude/skills` read-only, the session's
+`[pod] ro` and `rw` paths, your `~/.claude/CLAUDE.md` and `~/.claude/skills` read-only, the session's
 [work log](#work-logs) (`/run/apod-worklog`, read-write) and, with the broker, its folder
 (`/run/apod-broker`) and the extensions' commands (`gh`, `apod-sign`, ...).
 
@@ -724,41 +736,50 @@ When the project is a linked worktree (`git worktree add`, or herdr's worktrees)
 a file pointing into the main repository's `.git`, which holds the worktree's HEAD and index and
 the objects, refs, config and hooks they all share. apod mounts that `.git` read-write too, at
 the same path, once the main repository's record of the worktree points back at the folder (the
-pod can rewrite its `.git` file). A `mounts` entry or `--ro`/`--rw` naming that `.git` sets its
+pod can rewrite its `.git` file). A `[pod]` `ro`/`rw` entry or `--ro`/`--rw` naming that `.git` sets its
 mode instead (read-only, git in the pod can't commit). The main checkout's files stay out of the
 pod. Git in the pod lists the repository's worktrees that aren't mounted as prunable: the agent
 is told to leave them alone, and the pod's git config has `gc.worktreePruneExpire=never` so
 `git gc` doesn't prune them either.
 
-```
-# ~/.agent-pod/work/mounts
-~/src/shared-libs
-rw ~/src/work/tmp
+```toml
+# ~/.agent-pod/work/profile.toml
+[pod]
+ro = ["~/src/shared-libs"]
+rw = ["~/src/work/tmp"]
 ```
 
-For one run, `--ro PATH` (`-m`) and `--rw PATH`. A command-line entry overrides the file's mode
-for the same path; a missing command-line path is an error. The project folder stays writable
+For one run, `--ro PATH` (`-m`) and `--rw PATH`. A command-line entry overrides the profile's mode
+for the same path; a missing command-line path is an error, a missing profile path a warning.
+apod refuses mounts that would expose its own files: `~/.agent-pod`, the apod checkout, anything
+that contains them, and a read-write mount of your home folder. A read-only `~/.agent-pod/worklog`
+(or a folder in it), `history.jsonl` and `broker/log.jsonl` are fine, for a pod that reviews them. The project folder stays writable
 even inside a read-only entry. The first launch relabels mounted trees for SELinux (`:z`), which
 can take a while on big trees. A running pod can't gain mounts: exit and relaunch with
 `-- --continue`, or `apod resume`.
 
 **Network.** Pods use podman's default network (pasta). On some hosts (seen on Wi-Fi) pasta
 gives pods IPv6 only, so IPv4-only destinations such as Tailscale hosts are unreachable; a
-`network` file containing `host` shares the host's network instead, its localhost services
+`[pod] network = "host"` shares the host's network instead, its localhost services
 included.
 
 **Images.** `Containerfile` builds the base `apod` image (Fedora, Claude Code, opencode, gh, git,
-Node, Python). A profile's `image` file, `-i IMAGE` or `APOD_IMAGE` picks another. Two examples
+Node, Python). A profile's `[pod] image`, `-i IMAGE` or `APOD_IMAGE` picks another. Two examples
 build on it:
 
 - `Containerfile.logos-toolchain`: Rust 1.98.1 and RISC Zero (cargo-risczero/r0vm 3.0.5), for
   [logos-execution-zone](https://github.com/logos-blockchain/logos-execution-zone).
 - `Containerfile.dialectica`: logos-toolchain plus Qt 6.8.3, Node 24, yq, Nix 2.35.2 and
-  logos-scaffold 0.3.1. Pair it with a `volumes` entry for a persistent `/nix`.
+  logos-scaffold 0.3.1. Pair it with a `[pod] volumes` entry for a persistent `/nix`.
 
 ```sh
 podman build -t logos-toolchain -f ~/src/rad/apod/Containerfile.logos-toolchain ~/src/rad/apod
-echo logos-toolchain > ~/.agent-pod/work/image
+```
+
+```toml
+# ~/.agent-pod/work/profile.toml
+[pod]
+image = "logos-toolchain"
 ```
 
 Tools live under `/opt` so the mounted home can't hide them. Rebuild derived images after
@@ -794,7 +815,7 @@ running these pods with labelling off.
 
 claude.ai connectors (Notion, Google Docs, …) come with the Claude account and act as you, so apod
 turns them off unless enabled for the run with `-c` (comma-separated, repeatable) or the profile's
-`connectors` file; `-c none` turns them off. This, and the local MCP servers below, apply to
+`[pod] connectors`; `-c none` turns them off. This, and the local MCP servers below, apply to
 Claude only: opencode and bash ignore `-c`, with a warning.
 
 Groups: `notion`, `gdoc` (Docs, Drive, Sheets), `todoist`, `canva`, `lovable`, `utsjitsu`,

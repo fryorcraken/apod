@@ -20,7 +20,7 @@ _apod_first() {
         'history:folders and profiles launched, most recent first'
         'ps:running pods with their profile, folder and session'
         'broker:the broker: approvals, request log, sessions, keys'
-        'selinux:let broker and ssh-key pods keep SELinux labelling (install, remove, status)')
+        'selinux:let broker and ssh-agent pods keep SELinux labelling (install, remove, status)')
   _describe -t commands 'command' cmds
   _apod_profiles
 }

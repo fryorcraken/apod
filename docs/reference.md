@@ -23,7 +23,7 @@ apod ps                                          running pods: profile, session,
 apod profiles                                    profiles: broker role, GitHub token, Google login
 apod token <profile> [--rm]                      set, replace or remove a profile's GitHub token
 apod google-auth <profile>                       sign a profile in to Google for google-docs-mcp
-apod selinux [install|remove|status]             SELinux labelling for broker and ssh-key pods
+apod selinux [install|remove|status]             SELinux labelling for broker and ssh-agent pods
 apod broker ...                                  the broker (apod gh ... is the same)
 ```
 
