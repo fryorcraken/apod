@@ -59,6 +59,8 @@ KEEP=1 python3 tests/test_broker.py     # keep the temporary folders to look at 
 bash -n apod && shellcheck apod && zsh -n _apod
 ```
 
+GitHub Actions runs the same on every push to the GitHub mirror (`.github/workflows/tests.yml`).
+
 The tests run git with your identity and git config switched off, so in an apod pod they never
 ask your broker to sign their commits. The legacy layout's tests put their sockets under `tmp/`:
 if the checkout's path is too long for that, `APOD_TEST_TMP=/tmp/x` puts the temporary folders

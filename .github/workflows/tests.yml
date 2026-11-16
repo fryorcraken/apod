@@ -1,0 +1,37 @@
+# The tests of CONTRIBUTING.md, on every push and pull request. The repository lives on Radicle;
+# this runs on its GitHub mirror.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.14"]  # the oldest apod supports (README), and the newest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install zsh (for zsh -n _apod)
+        run: sudo apt-get update -q && sudo apt-get install -y -q zsh
+      # The tests commit in throwaway repositories; the runner's git has no identity of its own.
+      - name: git identity
+        run: |
+          git config --global user.name "apod CI"
+          git config --global user.email "ci@apod.invalid"
+      - name: Launcher syntax
+        run: bash -n apod && zsh -n _apod
+      - name: Broker tests
+        run: python3 tests/test_broker.py
+      - name: Launcher tests
+        if: success() || failure()  # whatever the broker tests did
+        run: python3 tests/test_apod.py
+      - name: shellcheck
+        if: success() || failure()  # its notes don't hold up the tests
+        run: shellcheck apod
