@@ -1545,8 +1545,101 @@ def extension_info(name):
     return "\n".join(out) + "\n"
 
 
+def group_actions(actions):
+    """["gh:pr list", "gh:pr view", "github:fetch"] -> {"gh": [("pr", ["list", "view"])], "github":
+    [("", ["fetch"])]}: by provider, then by command (two words for api and graphql: "api GET",
+    "graphql query"); actions alone in their group go together, under "", at the end."""
+    by = {}
+    for a in dict.fromkeys(actions):
+        prov, _, act = a.partition(":")
+        words = act.split(" ")
+        n = 2 if words[0] in ("api", "graphql") and len(words) > 2 else 1
+        by.setdefault(prov, {}).setdefault(" ".join(words[:n]), []).append(" ".join(words[n:]))
+    out = {}
+    for prov, groups in by.items():
+        lines, solo = [], []
+        for key, rests in groups.items():
+            if "" in rests or len(rests) == 1:  # "fetch, fetch public"; a command on its own
+                solo += [f"{key} {r}".strip() for r in rests]
+            else:
+                lines.append((key, rests))
+        out[prov] = lines + ([("", solo)] if solo else [])
+    return out
+
+
+def pack(items, first, rest, width):
+    """Lines of items joined by ", ", starting with first, then rest; an item is never split."""
+    lines, cur = [], first
+    for i, it in enumerate(items):
+        piece = it + ("," if i < len(items) - 1 else "")
+        if cur.strip() and len(cur) + 1 + len(piece) > width and cur not in (first, rest):
+            lines.append(cur)
+            cur = rest
+        cur += ("" if cur in (first, rest) else " ") + piece
+    return lines + [cur]
+
+
+def roles_text(only=None, width=None):
+    """apod broker roles: what each role adds to the roles it extends, by provider and command;
+    with only=NAME, everything that role allows, inherited included."""
+    import textwrap
+    raw = load_roles()
+    if only is not None and only not in raw:
+        raise BrokerError(f"no role {only} (known: {', '.join(raw)})")
+    width = width or min(shutil.get_terminal_size((100, 24)).columns, 110)
+    tty = sys.stdout.isatty()
+    bold = (lambda t: f"\x1b[1m{t}\x1b[0m") if tty else (lambda t: t)
+    dim = (lambda t: f"\x1b[2m{t}\x1b[0m") if tty else (lambda t: t)
+    grants = load_grants()["roles"]
+    pw = max([len(x) for x in PROVIDERS] + [6]) + 2
+
+    def block(actions):
+        lines = []
+        for prov, groups in group_actions(actions).items():
+            for n, (key, items) in enumerate(groups):
+                col = f"    {prov:<{pw}}" if n == 0 else " " * (4 + pw)
+                lead = col + (f"{key}: " if key else "")
+                lines += pack(items, lead, " " * len(lead), width)
+        return lines
+
+    out = []
+    for name in ([only] if only else raw):
+        r = raw[name]
+        ext = r.get("extends", [])
+        ext = [ext] if isinstance(ext, str) else list(ext)
+        allow, deny = role_rules(name, raw)
+        saved = list(grants.get(name, []))
+        desc = r.get("description", "")
+        if ext and not only and not desc.startswith(ext[0]):
+            desc = f"{' + '.join(ext)} + " + desc
+        out += [bold(name)] + textwrap.wrap(desc, width, initial_indent="  ", subsequent_indent="  ")
+        if only:
+            mine = [a for a in allow if a not in saved]
+        else:
+            inherited = {a for b in ext if b in raw for a in role_rules(b, raw)[0]}
+            mine = [a for a in allow if a not in inherited and a not in saved]
+            if ext:
+                out.append(dim(f"  on top of {', '.join(ext)}:"))
+        out += block(mine) or ["    (nothing of its own)"]
+        if saved:
+            out += [dim("  approved for the role in the TUI (apod broker grants rm ROLE ACTION):")] + block(saved)
+        if deny:
+            out += [dim("  never, even if allowed above (deny):")] + block(deny)
+        out.append("")
+    if not only:
+        out.append(dim("Everything one role allows, inherited included: apod broker roles NAME."))
+    return "\n".join(out).rstrip() + "\n"
+
+
+def roles_plain():
+    """For scripts (apod's wizard and completion): NAME<TAB>description<TAB>allowed actions, comma-separated."""
+    raw = load_roles()
+    return "".join(f"{n}\t{raw[n].get('description', '')}\t{','.join(dict.fromkeys(role_rules(n, raw)[0]))}\n"
+                   for n in raw)
+
+
 USAGE = """usage: apod broker [ui]                      approve requests in a terminal UI
-       apod broker log [-f] [-n N] | pending | sessions | roles | scopes | extensions [NAME]
+       apod broker log [-f] [-n N] | pending | sessions | roles [NAME] | scopes | extensions [NAME]
        apod broker allow ID [--session|--role] | deny ID
        apod broker grants [rm ROLE ACTION] | keys | restart | stop"""
 
@@ -1638,11 +1731,12 @@ def main(argv, script):
                 for a in lst:
                     print(f"{p:<12} {a}")
         elif cmd in ("roles", "personas"):
-            raw = load_roles()
-            for name in raw:
-                allow, deny = role_rules(name, raw)
-                print(f"{name}: {raw[name].get('description', '')}\n  allow: {', '.join(allow)}"
-                      + (f"\n  deny: {', '.join(deny)}" if deny else ""))
+            if args[:1] == ["--plain"]:
+                print(roles_plain(), end="")
+            else:
+                if len(args) > 1:
+                    raise IndexError
+                print(roles_text(args[0] if args else None), end="")
         elif cmd == "scopes":
             # The scope kinds the extensions declare (this process loads the same ones as the broker).
             for p, k in SCOPES.items():

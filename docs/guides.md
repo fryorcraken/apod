@@ -540,8 +540,9 @@ A role is a list of **actions**: what a pod may do without asking (`gh:pr create
 profile, `gh` alone has dozens, so apod ships roles that bundle them by job, and a profile
 names one. Pick the closest, then add or remove actions in your own `roles.toml` (below).
 
-**Choosing a role.** `apod broker roles` lists what each allows, and `apod broker extensions
-NAME` what each role allows of one extension.
+**Choosing a role.** `apod broker roles` lists what each allows, by extension and command (what
+a role adds to the ones it extends; `apod broker roles NAME` for all of one role's), and `apod
+broker extensions NAME` what each role allows of one extension.
 
 | Role         | For                            | May                                                                                                                                                     |
 | ------------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |

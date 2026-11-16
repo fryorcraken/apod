@@ -44,7 +44,7 @@ pane_id() {
 # This checkout: the broker (apod-broker, broker/) lives next to apod.
 apoddir=$(dirname "$(realpath "${BASH_SOURCE[0]}")")
 # For shell completion.
-if [ "${1:-}" = --list-roles ]; then python3 "$apoddir/apod-broker" roles 2>/dev/null | sed -n 's/^\([^ :]*\):.*/\1/p'; exit 0; fi
+if [ "${1:-}" = --list-roles ]; then python3 "$apoddir/apod-broker" roles --plain 2>/dev/null | cut -f1; exit 0; fi
 if [ "${1:-}" = --list-connectors ]; then printf '%s\n' "${!connector_servers[@]}" "${local_mcps[@]}" | sort; exit 0; fi
 
 # Subcommands: manage a profile's GitHub token (podman secret gh-<profile>) and Google login,
@@ -223,18 +223,16 @@ case ${1:-} in
     note "What the agent may do without asking; anything else waits for your approval. The steps"
     note "below offer to add what it lacks for what you set up, for this profile only (allow = [...])."
     declare -A roleallow=(); roles=()
-    while IFS= read -r l; do
-      if [[ $l =~ ^([^\ :]+):\ (.*)$ ]]; then
-        r=${BASH_REMATCH[1]}; roles+=("$r"); printf '  %s%-12s%s %s\n' "$cb" "$r" "$cr" "${BASH_REMATCH[2]}" >&2
-      elif [[ $l =~ ^\ +allow:\ (.*)$ ]]; then roleallow[$r]=${BASH_REMATCH[1]}; fi
-    done < <(python3 "$apoddir/apod-broker" roles 2>/dev/null)
+    while IFS=$'\t' read -r r desc acts; do
+      roles+=("$r"); roleallow[$r]=$acts; printf '  %s%-12s%s %s\n' "$cb" "$r" "$cr" "$desc" >&2
+    done < <(python3 "$apoddir/apod-broker" roles --plain 2>/dev/null)
     role=""
     while :; do ask role "Role:" dev; [[ " ${roles[*]} " == *" $role "* ]] && break; warn "No role $role."; done
     extra=()  # the profile's additions to the role
     role_has() {  # role_has ACTION: the role, or what this profile adds, allows it
       local p pats; IFS=, read -ra pats <<< "${roleallow[$role]:-}"
       # shellcheck disable=SC2053 # the role's entries are patterns
-      for p in "${pats[@]}" "${extra[@]}"; do p=${p# }; [[ $1 == $p ]] && return 0; done
+      for p in "${pats[@]}" "${extra[@]}"; do [[ $1 == $p ]] && return 0; done
       return 1
     }
     offer() {  # offer WHAT ACTION...: when the role lacks the first action, add them for this profile?

@@ -1210,10 +1210,19 @@ class BrokerTest(unittest.TestCase):
     def test_your_roles_add_to_built_in_ones(self):
         (self.root / "roles.toml").write_text('[roles.dev]\nsign = ["other"]\n')
         self.addCleanup((self.root / "roles.toml").unlink)
+        plain = {f[0]: f[2] for f in (l.split("\t") for l in self.admin("roles", "--plain").stdout.splitlines())}
+        self.assertIn("git-sign:other", plain["dev"].split(","))  # sign = [...]: the old name still works
+        self.assertIn("gh:pr create", plain["dev"].split(","))
+        self.assertIn("gh:pr view", plain["dev"].split(","))  # inherited from reader
+        # Readable: by provider and command; what dev adds on top of reader, not reader's again.
         out = self.admin("roles").stdout
-        dev = out.split("dev:", 1)[1].split("\n  allow: ", 1)[1].split("\n", 1)[0]
-        self.assertIn("git-sign:other", dev)  # sign = [...]: the extension's old name still works
-        self.assertIn("gh:pr create", dev)
+        dev = out.split("\ndev\n", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("on top of reader:", dev)
+        self.assertRegex(dev, r"git-sign +commit, tag, other")
+        self.assertRegex(dev, r"pr: create, edit, comment, ready")
+        self.assertNotRegex(dev, r"\bview\b")
+        full = self.admin("roles", "dev").stdout
+        self.assertRegex(full, r"pr: create, edit, comment, ready, list, view")
 
     def test_ssh_agent_signs_only_for_hosts_in_scope(self):
         sess = self.register("ops", ["ssh:devbox"], toml=f'[ssh]\nkey = "{self.tmp}/userkey"\n')
