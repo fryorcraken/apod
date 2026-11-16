@@ -48,7 +48,7 @@ do and leaves a record of what it did.
   - the profile's own home (`~/.local/share/apod/profiles/<profile>/home`, read-write;
     `~/.agent-pod/<profile>/home` in the legacy layout);
   - its session's work log folder (`~/.local/share/apod/worklog/<id>`, read-write;
-    `~/.agent-pod/worklog/<id>`);
+    `~/.agent-pod/worklog/<id>` in the legacy layout);
   - with the broker, its own folder of the broker's runtime folder (`sessions/<id>/`, read-write, at
     `/run/apod-broker`), the pod-side commands (read-only) and what the extensions on for it mount
     (read-only: the gh-api CA's certificate, never its key);
@@ -97,7 +97,7 @@ With the broker (`broker = true` in `profile.toml`, the default), a pod holds no
   no account gets no GitHub access through the broker; it never falls back to your active login.
 - **gh-api** (off unless `[gh-api] enabled`): the pod's `api.github.com` resolves to a relay in
   the pod, and the broker ends TLS with a certificate from its own CA, which the pod trusts
-  (`NODE_EXTRA_CA_CERTS`). The CA's key stays in `~/.agent-pod/broker/gh-api/` (mode 0700), and
+  (`NODE_EXTRA_CA_CERTS`). The CA's key stays in `~/.local/state/apod/broker/gh-api/` (mode 0700), and
   the CA is name-constrained to `api.github.com`, so even a leaked CA key can't impersonate
   another site to a client that checks constraints. `gh auth token` in the pod prints a
   placeholder; the broker adds the real token to requests it allows, checked like `gh api`, and
@@ -171,19 +171,19 @@ The broker turns each request into actions and targets, and checks them before a
 
 ### Auditing
 
-- **Every request is logged** to `~/.agent-pod/broker/log.jsonl`: what was asked, the actions and
+- **Every request is logged** to `~/.local/state/apod/broker/log.jsonl`: what was asked, the actions and
   targets, the decision and the exit code.
 - **You can follow it live:** in `apod broker` (the TUI), or with `apod broker log -f`.
 - **You can withdraw approvals:** approvals for a session end with the pod, and you can remove a
   scope entry or grant in the TUI. Approvals for a role are kept in
-  `~/.agent-pod/broker/grants.json` and apply to every profile with that role.
+  `~/.local/state/apod/broker/grants.json` and apply to every profile with that role.
 
 ## What apod assumes
 
 - **The host is trusted and up to date,** especially the kernel and podman: container isolation
   is only as strong as they are.
 - **The apod checkout and your extensions are trusted.** The broker runs from the checkout, with
-  its shipped extensions (`extensions/`), and runs yours from `~/.agent-pod/broker-extensions/`,
+  its shipped extensions (`extensions/`), and runs yours from `~/.config/apod/extensions/`,
   where a file can replace a shipped extension. Pods can't write to any of them, as long as you
   don't mount them into a pod.
 - **You read what you approve.** Approve by the actions and targets the broker lists, not by the
@@ -277,7 +277,8 @@ The broker turns each request into actions and targets, and checks them before a
 - Use a dedicated host account for agent ssh logins, and `ssh:USER@HOST` scope entries.
 - Use a separate key for pods' commit signatures, and a separate Radicle identity if pods
   shouldn't publish as you.
-- Keep `~/.agent-pod`, the apod checkout and `~/.agent-pod/broker-extensions` out of every pod's
+- Keep apod's folders (`~/.config/apod`, with your extensions, `~/.local/share/apod`,
+  `~/.local/state/apod`; `~/.agent-pod` in the legacy layout) and the apod checkout out of every pod's
   mounts.
-- Review `~/.agent-pod/broker/grants.json` from time to time, and look at the log
+- Review `~/.local/state/apod/broker/grants.json` from time to time, and look at the log
   (`apod broker log`) after long unattended runs.

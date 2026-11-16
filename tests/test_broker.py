@@ -371,7 +371,7 @@ class BrokerTest(unittest.TestCase):
                                          "class P(Provider):\n    name = 'badroute'\n    routes = [('POST', '/gh/x', print)]\n"
                                          "provider(P())\n")
         # EXTENSIONS.md's tutorial, as the guide has it, with a systemctl that records its args.
-        for name, code in md_code_blocks(HERE / "EXTENSIONS.md", "~/.agent-pod/broker-extensions/").items():
+        for name, code in md_code_blocks(HERE / "EXTENSIONS.md", "~/.config/apod/extensions/").items():
             (ext / name).write_text(code)
             (ext / name).chmod(0o755)
         (bin_ / "systemctl").write_text(f"#!/bin/sh\nprintf '%s ' \"$@\" >> {cls.tmp}/systemctl\necho active\n")
@@ -1827,7 +1827,7 @@ class ProfileLoaderTest(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp(prefix="apod-profile-"))
         self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
-        self.env = dict(os.environ, APOD_ROOT=str(self.dir), HOME="/home/agent-test")
+        self.env = host_env(APOD_ROOT=str(self.dir), HOME="/home/agent-test")
         self.pdir = self.dir / "work"
         (self.pdir / "home").mkdir(parents=True)
 

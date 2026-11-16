@@ -174,7 +174,7 @@ used and the old files are ignored, with a warning.
 ## roles.toml
 
 The built-in roles are in `roles.toml` in the apod checkout, and change when you update apod;
-nothing is copied at install. `~/.agent-pod/roles.toml` adds to them:
+nothing is copied at install. `~/.config/apod/roles.toml` adds to them:
 
 - a role there with a built-in's name adds its lists to the built-in one (its `description`
   replaces it);

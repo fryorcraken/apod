@@ -4,7 +4,7 @@ one). Off unless the profile has [gh-api] enabled = true; it needs gh (the accou
 
 How: in the pod, api.github.com resolves to 127.0.0.1, where apod-gh-api-relay passes each
 connection to the broker. The broker ends TLS there with a certificate from a CA of its own (in
-~/.agent-pod/broker/gh-api/: its key never leaves the host, and it is constrained to vouch for
+~/.local/state/apod/broker/gh-api/: its key never leaves the host, and it is constrained to vouch for
 api.github.com only; the pod trusts it through NODE_EXTRA_CA_CERTS). It checks each request as it
 would `gh api` (the role's actions and the scope; it never waits for approval: what isn't
 allowed outright is refused at once) and sends it on with the account's token. `gh auth token`

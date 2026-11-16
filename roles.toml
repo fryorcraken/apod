@@ -1,7 +1,7 @@
 # Roles for the apod broker: what a pod may do without asking, on what's in its scope; anything
-# else waits for your approval. A pod's role is its profile's broker.toml role, or --role, else
-# reader. Add roles in ~/.agent-pod/roles.toml; a role there with a name used here adds its lists
-# to this one. Approvals "for the role" are saved in ~/.agent-pod/broker/grants.json.
+# else waits for your approval. A pod's role is its profile's role (profile.toml), or --role, else
+# reader. Add roles in ~/.config/apod/roles.toml; a role there with a name used here adds its lists
+# to this one. Approvals "for the role" are saved in ~/.local/state/apod/broker/grants.json.
 #
 # One list per provider; entries are shell-style patterns (* matches anything, including /):
 #   gh      gh commands ("pr create", "project item-edit"; risky flags add "<command> --<flag>",

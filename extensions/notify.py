@@ -6,13 +6,13 @@ notify-send on the host, titled with the agent session's name.
 
 It's shipped, so it's always loaded; it's active for profiles that turn it on:
 
-    # ~/.agent-pod/<profile>/profile.toml (or ~/.agent-pod/broker.toml for every profile)
+    # ~/.config/apod/profiles/<profile>.toml (or ~/.config/apod/config.toml for every profile)
     [notify]
     enabled = true
     # command = ["notify-send", "-a", "apod"]    # the default; called with TITLE TEXT
     # urgent = ["-u", "critical"]                 # added to the command for --urgent
 
-    # ~/.agent-pod/roles.toml: let dev pods send notifications without asking (this adds to
+    # ~/.config/apod/roles.toml: let dev pods send notifications without asking (this adds to
     # the built-in dev role)
     [roles.dev]
     notify = ["send"]

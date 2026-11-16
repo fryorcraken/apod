@@ -40,7 +40,7 @@ You decide which units a pod may touch (`web`, not your others) and what it may 
 ### 1. The extension
 
 ```python
-# ~/.agent-pod/broker-extensions/systemctl.py
+# ~/.config/apod/extensions/systemctl.py
 """systemctl: pods run the host's systemctl --user, for a few commands on the units in scope.
 Actions: systemctl:status, systemctl:start, systemctl:stop, systemctl:restart. Targets:
 unit:NAME.service."""
@@ -143,7 +143,7 @@ they mean, and prints the answer.
 
 ```python
 #!/usr/bin/env python3
-# ~/.agent-pod/broker-extensions/systemctl
+# ~/.config/apod/extensions/systemctl
 """systemctl in the pod: the arguments go to the host's apod broker, which runs systemctl --user."""
 import http.client
 import json
@@ -174,7 +174,7 @@ sys.exit(out["exit"])
 For a profile, and say which services its pods may touch:
 
 ```toml
-# ~/.agent-pod/work/profile.toml
+# ~/.config/apod/profiles/work.toml
 [systemctl]
 enabled = true
 units = ["web"]          # in scope for every pod of this profile; --scope unit:db adds one for a launch
@@ -183,7 +183,7 @@ units = ["web"]          # in scope for every pod of this profile; --scope unit:
 And let a role use it. The built-in roles know nothing about `systemctl`, so add its actions:
 
 ```toml
-# ~/.agent-pod/roles.toml: adds to the built-in dev role
+# ~/.config/apod/roles.toml: adds to the built-in dev role
 [roles.dev]
 systemctl = ["status", "start", "stop", "restart"]
 ```
@@ -336,7 +336,7 @@ The pod side needs no changes to `apod`: at registration a provider says what to
 - **Shipped:** [`extensions/`](extensions/) in the apod checkout: `gh`, `github`, `rad`,
   `git-sign`, `ssh`, `notify`, `gh-api` and `clipboard`. They're defaults, loaded like any other extension. A file's
   name is a Python module name, so `git-sign` is in `git_sign.py`.
-- **Yours:** `~/.agent-pod/broker-extensions/*.py`.
+- **Yours:** `~/.config/apod/extensions/*.py`.
   - A file with a shipped extension's name (`ssh.py`) replaces it.
   - An empty file with that name turns it off.
   - A name can't be one of Python's own modules (`json.py`) or the broker's (`api`, `core`,
@@ -347,7 +347,7 @@ order. Extensions import each other by name: `github` does `from gh import gh_qu
 replacement `gh.py` is the one `github` gets, and it has to keep those functions.
 
 An extension that fails to load is skipped. What it registered before failing is undone, and the
-error goes to `~/.agent-pod/broker/broker.log`. Run `apod broker restart` after adding or
+error goes to `~/.local/state/apod/broker/broker.log`. Run `apod broker restart` after adding or
 changing one; `apod broker scopes` lists the scope kinds and which file each extension came from.
 
 Import from `api` (the [reference](#reference) lists every name). `api.API_VERSION` changes
@@ -356,24 +356,27 @@ broker's own and may change at any time.
 
 ## Testing
 
-[`tests/test_broker.py`](tests/test_broker.py) runs a real broker against a throwaway
-`APOD_ROOT`, with stub programs first on `PATH`. The tutorial's extension is one of its tests
-(`test_extensions_md_tutorial`, which loads the code above from this file). The pattern:
+[`tests/test_broker.py`](tests/test_broker.py) runs a real broker in throwaway folders
+(`APOD_CONFIG_DIR`, `APOD_DATA_DIR`, `APOD_STATE_DIR`, and `XDG_RUNTIME_DIR` or
+`APOD_RUNTIME_DIR` for its sockets), with stub programs first on `PATH`. The tutorial's extension
+is one of its tests (`test_extensions_md_tutorial`, which loads the code above from this file).
+The pattern:
 
-1. Write your extension into `APOD_ROOT/broker-extensions/`, and a stub for what it runs on the
+1. Write your extension into `$APOD_CONFIG_DIR/extensions/`, and a stub for what it runs on the
    host (`systemctl` here) that records its arguments.
-2. Start `apod-broker serve` with `APOD_ROOT` set, and `APOD_BROKER_ASK_TIMEOUT=4` so that
+2. Start `apod-broker serve` with those variables set, and `APOD_BROKER_ASK_TIMEOUT=4` so that
    requests that wait fail quickly.
-3. `apod-broker register --profile test --profile-dir DIR --project /p --role ROLE`, with the
-   profile's `profile.toml` in `DIR` (or the old files: `broker.toml`, `env`...; `apod-broker profile --profile-dir DIR`
-   shows how both are read). It prints the registration as JSON: `dir` holds the pod's
+3. `apod-broker register --profile test --profile-file FILE --project /p --role ROLE`, with the
+   profile in `FILE` (`NAME.toml`; or `--profile-dir DIR`, a legacy profile folder, with its
+   `profile.toml` or the old files: `broker.toml`, `env`...; `apod-broker profile --profile-file
+   FILE` shows how it's read). It prints the registration as JSON: `dir` holds the pod's
    `broker.sock`, plus `env`, `mounts`, `context`, `providers`.
 4. Call the socket, or run your client with `APOD_BROKER_SOCK` pointing at it. Cover what's
    allowed, what's out of scope, what the role doesn't allow, and input that's malformed.
 
 ```sh
 python3 tests/test_broker.py            # all of them, about two minutes
-KEEP=1 python3 tests/test_broker.py     # keep the temporary APOD_ROOT (its broker.log, log.jsonl)
+KEEP=1 python3 tests/test_broker.py     # keep the temporary folders (the broker's broker.log, log.jsonl)
 ```
 
 ## Reference
@@ -390,7 +393,7 @@ object the same attributes:
 | `name`                           | Required: lowercase letters, digits and `-`, unique, not a `roles.toml` key (`allow`, `deny`, `extends`, `description`), `unscoped` or one of the profile's own tables (`pod`, `git`, `token`, `ssh-agent`). It names the `profile.toml` table, the role list and the action prefix.                                                                                                                                                              |
 | `routes`                         | `[(method, path, handler)]`. `method` is `GET`, `POST` or `CONNECT`. `path` matches a request's path exactly, or as a prefix that ends at a `/` or `?` (`/systemctl` takes `/systemctl` and `/systemctl/x`, not `/systemctlx`); `CONNECT` may use `""` for every CONNECT. A route that overlaps another provider's is refused. `/whoami` is the core's.                                                                                           |
 | `description`                    | One line for `apod broker extensions`: what the extension gives pods.                                                                                                                                                                                                                                                                                                                                                                             |
-| `guide`                          | Where its guide is, `"docs/guides.md#anchor"` in the apod checkout (the shipped extensions). Without one, `apod broker extensions NAME` shows your module's docstring, so write it as the extension's guide: what it does, its `broker.toml` settings, its actions.                                                                                                                                                                               |
+| `guide`                          | Where its guide is, `"docs/guides.md#anchor"` in the apod checkout (the shipped extensions). Without one, `apod broker extensions NAME` shows your module's docstring, so write it as the extension's guide: what it does, its `profile.toml` settings, its actions.                                                                                                                                                                              |
 | `requires`                       | Names of providers this one needs. It's configured after them, and only when they're on for the pod (`github` requires `gh`).                                                                                                                                                                                                                                                                                                                     |
 | `targets(cfg, reg)`              | Optional. `[(kind, value)]`: scope entries of your kinds that your table or the launch implies (the `systemctl` units, `ssh`'s hosts, `gh`'s remotes, `git-sign`'s folder). Runs for every provider before any `configure`, so that the rules below see the whole scope.                                                                                                                                                                          |
 | `needs_target`                   | Default `True`: when you declare scope kinds, you're off for a pod whose scope has no entry of them. `False` to be on without one, if you act on what isn't known up front (`gh`: `gh repo create`, `gh search`).                                                                                                                                                                                                                                 |
@@ -403,13 +406,14 @@ object the same attributes:
 
 **`configure(sess, cfg, reg, out)`:**
 
-- `cfg` is your table: `~/.agent-pod/broker.toml`'s, overridden key by key by the profile's
+- `cfg` is your table: `~/.config/apod/config.toml`'s, overridden key by key by the profile's
   `profile.toml` table (`{}` if neither has one). What `configure` gets is the same however the
   profile is written (`profile.toml` or the old files); `[pod]`, `[git]`, `[token]` and `[ssh-agent]`
   are the profile's own tables, so don't name an extension that. A table with `enabled = false` never reaches you: the broker
   leaves your extension off for that profile and tells the agent so.
-- `reg` is the registration: `id`, `profile`, `profile_dir`, `profile_file` (the file the settings
-  came from, for messages), `project` (the host path), `role` and
+- `reg` is the registration: `id`, `profile`, `profile_file` (the file the settings came from, or
+  would be, for messages: `profiles/NAME.toml`), `profile_dir` (the profile's folder, in the legacy
+  layout only), `project` (the host path), `role` and
   `gh_user` (when given at launch), `scope` (the launch's `--scope` entries), `remotes` (the
   project's git remote URLs).
 - `configure` runs once per pod: after a broker restart, sessions come back from disk and only
@@ -561,7 +565,7 @@ an extension must not weaken.
 
 ## Debugging
 
-- `~/.agent-pod/broker/broker.log`: extensions that didn't load, and the tracebacks of handlers
+- `~/.local/state/apod/broker/broker.log`: extensions that didn't load, and the tracebacks of handlers
   that failed.
 - `apod broker extensions`: the extensions that loaded, and from where; `apod broker extensions
   NAME`: its guide (your module's docstring), what each role allows of it, its scope kinds.
