@@ -48,6 +48,11 @@ do and leaves a record of what it did.
   - the profile's `mounts`, read-only unless marked `rw`;
   - your `~/.claude/CLAUDE.md` and `~/.claude/skills`, read-only.
 - **Processes:** the host's processes, other pods and their files are not visible.
+- **The desktop:** no display or Wayland socket is passed in. With `[clipboard] enabled`, the
+  pod can ask the broker for an image on your clipboard (`clipboard:image`, checked like any
+  request) and learn whether one is there; it never gets the clipboard's text. An allowed paste
+  hands the pod whatever image is copied at that moment, a screenshot of something private
+  included.
 - **Profiles are separate:** each has its own home, so its own Claude login, history and
   settings. One profile's pod can't read another's.
 - **The agent is told what it can see:** Claude's system prompt lists the mounts and, with the

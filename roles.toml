@@ -21,6 +21,8 @@
 #           "login" (the agent signs a login);
 #           which hosts is the scope's business (scope = ["ssh:HOST"], --scope ssh:HOST). Only
 #           ops logs in: a login is a shell on the host, beyond what the broker can check.
+#   notify  "send", "urgent" (apod-notify); no built-in role has them
+#   clipboard "image" (pasting an image from the host's clipboard); no built-in role has it
 
 [roles.reader]
 description = "Read code, PRs, issues and CI; fetch"

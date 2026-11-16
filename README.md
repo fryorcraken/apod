@@ -185,6 +185,8 @@ Everything the broker does for a pod is an extension, each with its own guide:
 - **gh-api:** `api.github.com` from the pod through the broker, for tools that call GitHub's API
   themselves, like Claude Code's PR status; off until `[gh-api] enabled = true`
   ([GitHub API from the pod](docs/guides.md#github-api-from-the-pod)).
+- **clipboard:** Ctrl+V pastes images from the host's clipboard, never its text; off until
+  `[clipboard] enabled = true` ([Pasting images](docs/guides.md#pasting-images)).
 
 The broker loads them all, but each is on for a pod only when it's set up and has something in
 the pod's scope to act on. The [overview](docs/guides.md#built-in-extensions) has the rules,

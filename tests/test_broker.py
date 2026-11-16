@@ -361,6 +361,11 @@ class BrokerTest(unittest.TestCase):
         (ext / "json.py").write_text("raise RuntimeError('should never load')\n")
         (bin_ / "fake-notify").write_text(f"#!/bin/sh\nprintf '%s|' \"$@\" >> {cls.tmp}/notified\n")
         (bin_ / "fake-notify").chmod(0o755)
+        # The host's clipboard, for the clipboard extension: wl-paste reads the test's files.
+        (bin_ / "wl-paste").write_text(f"#!/bin/sh\ncase \"$1\" in\n--list-types) cat {cls.tmp}/clip-types ;;\n"
+                                       f"--no-newline) [ \"$3\" = \"$(cat {cls.tmp}/clip-is)\" ] && cat {cls.tmp}/clip-data ;;\n"
+                                       "*) exit 2 ;;\nesac\n")
+        (bin_ / "wl-paste").chmod(0o755)
         cls.n = itertools.count()
         # The host's ssh setup: a config entry for "devbox" (an echo server stands in for sshd) and
         # its host key in known_hosts; a user key for logins and one for signing.
@@ -403,7 +408,7 @@ class BrokerTest(unittest.TestCase):
         cls.gh_api_certs = make_gh_api_certs(cls.root / "broker/gh-api")
         cls.env = dict(os.environ, APOD_ROOT=str(cls.root), APOD_GH_BIN=str(bin_ / "gh"),
                        APOD_GH_API_UPSTREAM=f"http://127.0.0.1:{cls.api.server_address[1]}",
-                       APOD_BROKER_ASK_TIMEOUT="4", HOME=str(home), APOD_SSH_CONFIG=str(home / ".ssh/config"),
+                       APOD_BROKER_ASK_TIMEOUT="4", HOME=str(home), WAYLAND_DISPLAY="wayland-test", APOD_SSH_CONFIG=str(home / ".ssh/config"),
                        APOD_GH_GIT_UPSTREAM=f"http://127.0.0.1:{cls.upstream.server_address[1]}",
                        FAKE_RAD_ONWARD=str(cls.tmp / "radstore"), FAKE_RAD_NID=NID,
                        PATH=f"{bin_}:{os.environ['PATH']}")
@@ -982,6 +987,46 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertNotIn("gh-api", json.loads(r.stdout)["providers"])
         self.assertIn("shares the host's network", r.stderr)
+
+    def test_clipboard(self):
+        self.assertNotIn("clipboard", self.sess["providers"])  # off by default
+        sess = self.register("dev", [], toml='allow = ["clipboard:image"]\n[clipboard]\nenabled = true\n')
+        self.assertIn("clipboard", sess["providers"])
+        self.assertIn([str(HERE / "extensions/apod-clipboard"), "/usr/local/bin/wl-paste", "ro"], sess["mounts"])
+        e = dict(self.env, APOD_BROKER_SOCK=str(Path(sess["dir"]) / "broker.sock"))
+        paste = lambda *a: subprocess.run([sys.executable, HERE / "extensions/apod-clipboard", *a], env=e,
+                                          capture_output=True)
+        img = b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 4
+        (self.tmp / "clip-types").write_text("text/plain\nUTF8_STRING\nimage/png\n")
+        (self.tmp / "clip-is").write_text("image/png")
+        (self.tmp / "clip-data").write_bytes(img)
+        # What Claude Code runs: the image types (never the text ones), then the image.
+        r = paste("-l")
+        self.assertEqual((r.returncode, r.stdout), (0, b"image/png\n"), r.stderr)
+        r = paste("--type", "image/png")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, img)
+        # Text is refused in the pod, and by the broker.
+        for args in ((), ("--type", "text/plain"), ("-p",), ("--watch", "cat")):
+            r = paste(*args)
+            self.assertEqual((r.returncode, r.stdout), (1, b""), args)
+        with socket.socket(socket.AF_UNIX) as s:
+            s.connect(e["APOD_BROKER_SOCK"])
+            body = b'{"type": "text/plain"}'
+            s.sendall(b"POST /clipboard/read HTTP/1.0\r\nContent-Length: %d\r\n\r\n" % len(body) + body)
+            self.assertIn(b" 400", b"".join(iter(lambda: s.recv(65536), b"")).split(b"\r\n")[0])
+        # Nothing but text on the clipboard: no types, so Claude Code says there's no image.
+        (self.tmp / "clip-types").write_text("text/plain\n")
+        self.assertEqual(paste("-l").returncode, 1)
+        r = paste("--type", "image/png")
+        self.assertIn(b"no image/png on the host's clipboard", r.stderr)
+        # Without the action in the role or the profile, a paste waits for approval (and times out).
+        sess = self.register("dev", [], toml="[clipboard]\nenabled = true\n")
+        e["APOD_BROKER_SOCK"] = str(Path(sess["dir"]) / "broker.sock")
+        (self.tmp / "clip-types").write_text("image/png\n")
+        r = paste("--type", "image/png")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(b"not allowed for role dev: clipboard:image", r.stderr)
 
     def test_ssh_hosts_old_form(self):
         # [ssh] hosts, before hosts were scope entries: still in scope, with a warning.

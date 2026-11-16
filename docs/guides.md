@@ -11,6 +11,7 @@ variable.
 - [Signing commits](#signing-commits)
 - [SSH](#ssh)
 - [Notifications](#notifications)
+- [Pasting images](#pasting-images)
 - [Roles and scope](#roles-and-scope)
 - [Approving requests](#approving-requests)
 - [Without the broker: tokens](#without-the-broker-tokens)
@@ -34,24 +35,25 @@ pod that uses it and keeps running; its state is in `~/.agent-pod/broker/`.
 
 `apod new` writes a profile for you: it asks for the role first, then the GitHub account, the
 git identity (offering the account's noreply address), a signing key (or creates one), ssh
-hosts, Radicle, notifications and more scope, offering to add to the role what it lacks for what
-you set up (`allow`, for that profile only), shows the `broker.toml` and `env` it would write, and
-writes nothing until you confirm. The guides below say what each part does; edit the files
-afterwards for the rest.
+hosts, Radicle, notifications, pasting images and more scope, offering to add to the role what
+it lacks for what you set up (`allow`, for that profile only), shows the `broker.toml` and `env`
+it would write, and writes nothing until you confirm. The guides below say what each part does;
+edit the files afterwards for the rest.
 
 ### Built-in extensions
 
 Everything the broker does for a pod is an extension. These ship with apod:
 
-| Extension  | In the pod                                                                           | Set up with                                                             |
-| ---------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
-| `gh`       | `gh` is a shim; the broker runs the real `gh` as the host account the profile names. | `[gh] user`: [GitHub](#github)                                          |
-| `github`   | git's github.com remotes go through the broker, with that account's token.           | `[gh] user`                                                             |
-| `rad`      | `rad://` remotes go through the broker, which pushes as the host's Radicle identity. | `[rad] autodetect` or `enabled`: [Radicle](#radicle)                    |
-| `git-sign` | git signs commits and tags with a key the broker holds.                              | `[git-sign] key`: [Signing commits](#signing-commits)                   |
-| `ssh`      | `ssh HOST` logs in with the broker's agent, to the hosts in scope, through the host. | an `[ssh]` key, and hosts in scope: [SSH](#ssh)                         |
-| `notify`   | `apod-notify TEXT` sends you a desktop notification.                                 | `[notify] enabled`: [Notifications](#notifications)                     |
-| `gh-api`   | `https://api.github.com` goes through the broker (Claude Code's PR status).          | `[gh-api] enabled`: [GitHub API from the pod](#github-api-from-the-pod) |
+| Extension   | In the pod                                                                           | Set up with                                                             |
+| ----------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| `gh`        | `gh` is a shim; the broker runs the real `gh` as the host account the profile names. | `[gh] user`: [GitHub](#github)                                          |
+| `github`    | git's github.com remotes go through the broker, with that account's token.           | `[gh] user`                                                             |
+| `rad`       | `rad://` remotes go through the broker, which pushes as the host's Radicle identity. | `[rad] autodetect` or `enabled`: [Radicle](#radicle)                    |
+| `git-sign`  | git signs commits and tags with a key the broker holds.                              | `[git-sign] key`: [Signing commits](#signing-commits)                   |
+| `ssh`       | `ssh HOST` logs in with the broker's agent, to the hosts in scope, through the host. | an `[ssh]` key, and hosts in scope: [SSH](#ssh)                         |
+| `notify`    | `apod-notify TEXT` sends you a desktop notification.                                 | `[notify] enabled`: [Notifications](#notifications)                     |
+| `gh-api`    | `https://api.github.com` goes through the broker (Claude Code's PR status).          | `[gh-api] enabled`: [GitHub API from the pod](#github-api-from-the-pod) |
+| `clipboard` | Ctrl+V pastes images from the host's clipboard (never its text).                     | `[clipboard] enabled`: [Pasting images](#pasting-images)                |
 
 **Loaded, then on per pod.** The broker loads every extension when it starts: each one
 registers its actions, its kinds of target and its routes, and that's all. Whether it does
@@ -492,6 +494,44 @@ notify = ["send", "urgent"]
 ```
 
 Or approve the first one "for the role" in the TUI (`r`).
+
+## Pasting images
+
+The pod can't see your desktop, so Claude Code's Ctrl+V finds no image there. The `clipboard`
+extension lets it paste images from your clipboard, and only images: copied text, passwords
+included, never reaches the pod. It's off unless you turn it on:
+
+```toml
+# a profile's broker.toml
+allow = ["clipboard:image"]   # paste without asking; without it each paste waits for you
+[clipboard]
+enabled = true
+```
+
+**How it works.** On Linux, Claude Code pastes an image by running `wl-paste -l`, then
+`wl-paste --type image/png`. In the pod, `wl-paste` is `apod-clipboard`, which asks the broker.
+The broker answers `-l` with the image types on the clipboard only (`image/png`, `image/jpeg`,
+`image/gif`, `image/webp`, `image/bmp`), without asking. Reading the image is the
+`clipboard:image` action: allowed by the role or the profile's `allow`, or it waits for your
+approval while Claude Code waits for the paste. The broker then runs the host's `wl-paste`
+(Wayland) or `xclip` (X11) with a fixed command, and passes the image back (up to 20 MB).
+
+**On the host** it needs `wl-clipboard` (Wayland) or `xclip` (X11), and a broker started in
+your desktop session: it reads the clipboard with the environment it was started in
+(`WAYLAND_DISPLAY` or `DISPLAY`), so start it from a terminal on your desktop, and run
+`apod broker restart` after logging out and back in. Without either, the extension stays off,
+with a warning at launch.
+
+**Without it,** paste the image's path instead: Claude Code attaches an image when you paste
+an absolute path to a `.png`, `.jpg`, `.gif` or `.webp` file (drag the file onto the terminal),
+if the pod can see the file (a mount, such as your screenshots folder).
+
+**Check it:** copy an image, then in the pod (`apod NAME -a bash`):
+
+```sh
+wl-paste -l                                        # image/png
+wl-paste --type image/png > /tmp/p.png && file /tmp/p.png
+```
 
 ## Roles and scope
 

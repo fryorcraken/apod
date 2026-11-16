@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""wl-paste in the pod (the pod side of extensions/clipboard.py): images from the host's
+clipboard, through the apod broker. It answers what Claude Code's image paste runs:
+
+    wl-paste -l                    the clipboard's image types, one per line
+    wl-paste --type image/png      the image itself, on stdout
+
+Text, the primary selection and --watch are refused: only images come from the host. Blocks while
+a read waits for approval."""
+import base64
+import http.client
+import json
+import os
+import socket
+import sys
+
+USAGE = "usage: wl-paste -l | wl-paste --type image/png (apod: images from the host's clipboard only)"
+
+
+class UnixHTTP(http.client.HTTPConnection):
+    def __init__(self):
+        super().__init__("localhost")
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.connect(os.environ.get("APOD_BROKER_SOCK", "/run/apod-broker/broker.sock"))
+
+
+def broker(method, path, body=None):
+    c = UnixHTTP()
+    c.request(method, path, json.dumps(body) if body is not None else None,
+              {"Content-Type": "application/json"} if body is not None else {})
+    r = c.getresponse()
+    data = r.read()
+    try:
+        return r.status, json.loads(data or b"{}")
+    except ValueError:
+        return r.status, {"error": data.decode("utf-8", "replace").strip()}
+
+
+def parse(args):
+    """(list_types, mime) from wl-paste's options; raises ValueError for what isn't served."""
+    listing, mime = False, None
+    it = iter(args)
+    for a in it:
+        if a in ("-l", "--list-types"):
+            listing = True
+        elif a in ("-t", "--type"):
+            mime = next(it, None)
+            if mime is None:
+                raise ValueError(f"{a} needs a type")
+        elif a.startswith("--type="):
+            mime = a.split("=", 1)[1]
+        elif a.startswith("-t") and len(a) > 2:
+            mime = a[2:]
+        elif a in ("-n", "--no-newline"):
+            pass
+        else:
+            raise ValueError(f"{a} isn't supported")
+    if not listing and not (mime or "").startswith("image/"):
+        raise ValueError("only images come from the host's clipboard (--type image/png)")
+    return listing, mime
+
+
+def main(args):
+    try:
+        listing, mime = parse(args)
+    except ValueError as e:
+        print(f"wl-paste (apod): {e}\n{USAGE}", file=sys.stderr)
+        return 1
+    try:
+        if listing:
+            status, out = broker("GET", "/clipboard/types")
+        else:
+            status, out = broker("POST", "/clipboard/read", {"type": mime})
+    except OSError as e:
+        print(f"wl-paste (apod): can't reach the apod broker: {e}", file=sys.stderr)
+        return 1
+    if status != 200:
+        print(f"wl-paste (apod): {out.get('error', status)}", file=sys.stderr)
+        return 1
+    if listing:
+        if not out.get("types"):
+            print("wl-paste (apod): no image on the host's clipboard", file=sys.stderr)
+            return 1
+        print("\n".join(out["types"]))
+        return 0
+    sys.stdout.buffer.write(base64.b64decode(out["data"]))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

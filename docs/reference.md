@@ -106,6 +106,7 @@ every profile; key by key within each table; `role`, `scope`, `allow` and `deny`
 | `[rad] confirm`              | `true`: confirm each use of the Radicle key.                                                                                                                                                           |
 | `[rad] nid`, `[rad] storage` | The node id and storage folder, when `rad` can't tell (default: `rad self --nid`, `home/storage`).                                                                                                     |
 | `[gh-api] enabled`           | `true`: `https://api.github.com` from the pod goes through the broker, checked and with the account's token ([guide](guides.md#github-api-from-the-pod)). Needs `[gh] user` and `openssl` on the host. |
+| `[clipboard] enabled`        | `true`: Ctrl+V in the pod pastes images from the host's clipboard, never its text ([guide](guides.md#pasting-images)). Needs `wl-clipboard` or `xclip` on the host.                                    |
 | `[notify] enabled`           | `true`: pods may send desktop notifications (`apod-notify`).                                                                                                                                           |
 | `[notify] command`           | The command, called with TITLE TEXT (default `["notify-send", "-a", "apod"]`).                                                                                                                         |
 | `[notify] urgent`            | Arguments added for `apod-notify --urgent` (default `["-u", "critical"]`).                                                                                                                             |
@@ -188,6 +189,8 @@ The broker turns each request into actions (what it does) and targets (what it t
   config for the name (`HostName`, `Port`, and `User` unless the entry is `USER@NAME`);
   `ssh:connect port` for a port other than the host's ssh port.
 - **notify**: `notify:send`, `notify:urgent`; no target.
+- **clipboard**: `clipboard:image` to read an image from the host's clipboard; no target.
+  Listing its image types isn't checked.
 
 ## Environment variables
 

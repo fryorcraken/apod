@@ -334,7 +334,7 @@ The pod side needs no changes to `apod`: at registration a provider says what to
 ## Where extensions live
 
 - **Shipped:** [`extensions/`](extensions/) in the apod checkout: `gh`, `github`, `rad`,
-  `git-sign`, `ssh` and `notify`. They're defaults, loaded like any other extension. A file's
+  `git-sign`, `ssh`, `notify`, `gh-api` and `clipboard`. They're defaults, loaded like any other extension. A file's
   name is a Python module name, so `git-sign` is in `git_sign.py`.
 - **Yours:** `~/.agent-pod/broker-extensions/*.py`.
   - A file with a shipped extension's name (`ssh.py`) replaces it.

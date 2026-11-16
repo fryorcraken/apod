@@ -308,7 +308,14 @@ case ${1:-} in
     confirm "May the agent send you desktop notifications?" n && notify=1
     [ -z "$notify" ] || offer "send notifications" notify:send
 
-    broker=; [ -z "$ghuser$signkey$sshkey$rad$notify" ] || broker=1
+    section "Pasting images"
+    note "Images you paste into the agent (Ctrl+V) come from your clipboard through the broker;"
+    note "text never does."
+    clip=
+    confirm "Paste images from your clipboard?" n && clip=1
+    [ -z "$clip" ] || offer "read the clipboard's image" clipboard:image
+
+    broker=; [ -z "$ghuser$signkey$sshkey$rad$notify$clip" ] || broker=1
     scope=()
     if [ -n "$broker" ]; then
       section "Scope"
@@ -337,6 +344,7 @@ case ${1:-} in
       [ -z "$sshkey" ] || toml+=$'\n[ssh]\n'"key = $(tq "$(tilde "$sshkey")")"$'\n'
       [ -z "$rad" ] || toml+=$'\n[rad]\nautodetect = true\n'
       [ -z "$notify" ] || toml+=$'\n[notify]\nenabled = true\n'
+      [ -z "$clip" ] || toml+=$'\n[clipboard]\nenabled = true\n'
     fi
     [ -z "$gemail" ] || envf="GIT_AUTHOR_NAME=$gname"$'\n'"GIT_AUTHOR_EMAIL=$gemail"$'\n'
 
