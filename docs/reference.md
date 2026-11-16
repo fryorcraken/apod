@@ -139,7 +139,7 @@ each table; a profile's own value wins; it has no `role`, `scope`, `allow`, `den
 Next to `profile.toml`, a profile folder has `home/` (the pod's persistent `$HOME`: the agent's login, settings
 and history, and the Google login; every pod of the profile shares it), `google-credentials.json` (an OAuth
 client for google-docs-mcp, instead of the checkout's) and, while a pod with a `[ssh-agent]` key runs, `agent/`.
-Nothing else in the folder is mounted in a pod, so a pod can't change its own `profile.toml`.
+Nothing else in the folder is mounted in a pod, so a pod can't change its own `profile.toml`. A folder with no settings file at all (a bare `mkdir ~/.agent-pod/me`) launches without the broker, as `broker = false` does.
 
 ### The old files
 
