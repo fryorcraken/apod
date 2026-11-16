@@ -688,6 +688,16 @@ tokens no profile launches with. For each profile:
 [work log](#work-logs) (`/run/apod-worklog`, read-write) and, with the broker, its folder
 (`/run/apod-broker`) and the extensions' commands (`gh`, `apod-sign`, ...).
 
+When the project is a linked worktree (`git worktree add`, or herdr's worktrees), its `.git` is
+a file pointing into the main repository's `.git`, which holds the worktree's HEAD and index and
+the objects, refs, config and hooks they all share. apod mounts that `.git` read-write too, at
+the same path, once the main repository's record of the worktree points back at the folder (the
+pod can rewrite its `.git` file). A `mounts` entry or `--ro`/`--rw` naming that `.git` sets its
+mode instead (read-only, git in the pod can't commit). The main checkout's files stay out of the
+pod. Git in the pod lists the repository's worktrees that aren't mounted as prunable: the agent
+is told to leave them alone, and the pod's git config has `gc.worktreePruneExpire=never` so
+`git gc` doesn't prune them either.
+
 ```
 # ~/.agent-pod/work/mounts
 ~/src/shared-libs

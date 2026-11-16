@@ -43,6 +43,8 @@ do and leaves a record of what it did.
 - **Files on the host:** the pod sees only these, and nothing else from your home or the
   filesystem:
   - the project folder (read-write);
+  - when the project is a linked worktree (`git worktree add`), its repository's `.git`
+    (read-write), which the main checkout and the other worktrees share;
   - the profile's own home (`~/.agent-pod/<profile>/home`, read-write);
   - its session's work log folder (`~/.agent-pod/worklog/<id>`, read-write);
   - the profile's `mounts`, read-only unless marked `rw`;
@@ -175,7 +177,13 @@ The broker turns each request into actions and targets, and checks them before a
   `.git/hooks`, `.git/config`, `.envrc`, `.claude/settings.json`, `Makefile`s and other files
   that run code when *you* later use the repository on the host. Give pods their own worktrees,
   point `core.hooksPath` at an empty directory, and review what a pod changed before running
-  anything from it.
+  anything from it. A linked worktree doesn't shield the main checkout: the hooks and config are
+  in the repository's `.git`, which the pod gets read-write. Use a separate clone for that.
+- **Remotes a pod adds join later pods' scope.** At launch, the project's git remotes join the
+  scope, and a pod can edit them. A pod can put a repository in a later pod's scope, under any
+  profile: one launched in the same folder or, since linked worktrees share their config, in
+  the main checkout or any other worktree of the repository. Check `git remote -v` before
+  launching a more powerful profile there.
 - **Work logs are written by pods.** They're the agent's account of its work, not a record (the
   broker's log is), and text in them can try to steer whatever agent later reads them. Review
   them in a pod with the logs mounted read-only, not with an agent on the host.
@@ -220,6 +228,10 @@ The broker turns each request into actions and targets, and checks them before a
   follow (treat the pod's input as hostile, classify by effect, widen the scope only from the
   host's side, fail closed) are in [EXTENSIONS.md](EXTENSIONS.md#security-rules).
 - **Two pods on one checkout** can interfere with each other. Use a worktree per pod.
+- **Other worktrees look abandoned from a pod.** Their folders aren't mounted, so git in the pod
+  lists them as prunable. apod tells the agent not to prune them and sets
+  `gc.worktreePruneExpire=never` so `git gc` doesn't, but nothing stops a `git worktree prune`,
+  which deletes their metadata on the host. `git worktree lock` on the host protects one.
 
 ## Hardening checklist
 
@@ -229,8 +241,8 @@ The broker turns each request into actions and targets, and checks them before a
   labelling.
 - Give each profile the narrowest role and scope it needs. Grant extra access per session
   rather than per role when it's a one-off.
-- Give pods their own worktrees, and set `core.hooksPath` on the host for repositories that pods
-  write to.
+- Give pods their own worktrees, or their own clones where the main checkout must stay out of
+  reach, and set `core.hooksPath` on the host for repositories that pods write to.
 - Use a dedicated host account for agent ssh logins, and `ssh:USER@HOST` scope entries.
 - Use a separate key for pods' commit signatures, and a separate Radicle identity if pods
   shouldn't publish as you.

@@ -586,6 +586,60 @@ fi
 for e in "${climounts[@]}"; do
   want_mount "${e%% *}" "${e#* }" || { echo "apod: no such path: ${e#* }" >&2; exit 2; }
 done
+# A linked worktree (git worktree add; herdr makes these): its .git is a file pointing into the
+# main repository's .git, which holds the worktree's HEAD and index (worktrees/NAME), and the
+# objects, refs, config and hooks of them all. That .git is mounted read-write too, or git fails
+# in the pod. The pod can rewrite its .git file and, once mounted, that .git: it's followed only
+# when the main repository's own record of the worktree (worktrees/NAME/gitdir) points back at
+# this folder, its commondir (if any) at that repository, and the repository doesn't contain
+# the project (which would mount the tree around it).
+firstline() { sed -n '1{s/\r$//;p;q}' "$1"; }
+inpod() {  # <path>: in the project or an extra mount
+  local m; for m in "$proj" "${!mmode[@]}"; do [[ $1/ == "$m"/* ]] && return 0; done; return 1
+}
+linked() {  # <gitdir> <common>: is <gitdir> the project's entry in <common>/worktrees?
+  local back cm
+  [ "$(basename "$(dirname "$1")")" = worktrees ] && [ -f "$1/gitdir" ] && [ -d "$2/objects" ] && [ -d "$2/refs" ] || return 1
+  [[ $proj/ == "$2"/* ]] && return 1
+  back=$(firstline "$1/gitdir"); [[ $back == /* ]] || back=$1/$back
+  [ "$(realpath -m -- "$back")" = "$proj/.git" ] || return 1
+  [ -f "$1/commondir" ] || return 0
+  cm=$(firstline "$1/commondir"); [[ $cm == /* ]] || cm=$1/$cm
+  [ "$(realpath -m -- "$cm")" = "$2" ]
+}
+gitcommon=; wtself=; gd=
+if [ -f "$proj/.git" ]; then
+  gd=$(sed -n '1{s/\r$//;s/^gitdir: *//p;q}' "$proj/.git")
+  [ -z "$gd" ] || gd=$(cd "$proj" && realpath -e -- "$gd" 2>/dev/null) || gd=
+  if [ -n "$gd" ] && linked "$gd" "$(dirname "$(dirname "$gd")")"; then
+    gitcommon=$(dirname "$(dirname "$gd")"); wtself=$(basename "$gd")
+    if [[ $gitcommon/ == "$proj"/* ]]; then :  # in the project: mounted already
+    elif [ -n "${mmode[$gitcommon]+x}" ]; then  # the mounts name it: their mode stands
+      [ "${mmode[$gitcommon]}" = rw ] || echo "apod: $gitcommon is mounted read-only, as the mounts say: git in the pod can't commit" >&2
+    else morder+=("$gitcommon"); mmode[$gitcommon]=rw; fi
+  elif [ -z "$gd" ]; then
+    echo "apod: $proj/.git points to no folder; git won't work in the pod" >&2
+  elif ! inpod "$gd"; then  # in the project (a bare-repo layout) or a mount (a submodule's), git works
+    echo "apod: $proj/.git points to $gd, which isn't mounted, and this folder isn't a worktree of a repository there; git won't work in the pod" >&2
+  fi
+fi
+# The repository's other worktrees whose folders aren't in the pod: git there lists them as
+# prunable (locked ones excepted).
+wtdir=; [ -n "$gitcommon" ] && wtdir=$gitcommon/worktrees
+[ -z "$wtdir" ] && [ -d "$proj/.git" ] && wtdir=$proj/.git/worktrees
+[ -z "$wtdir" ] && [ -n "$gd" ] && [ -d "$gd/worktrees" ] && wtdir=$gd/worktrees  # .git file to a repository
+wtothers=0
+if [ -n "$wtdir" ]; then
+  for d in "$wtdir"/*/; do
+    d=${d%/}
+    [ -d "$d" ] && [ "$(basename "$d")" != "$wtself" ] && [ ! -e "$d/locked" ] || continue
+    if [ -f "$d/gitdir" ]; then
+      back=$(firstline "$d/gitdir"); [[ $back == /* ]] || back=$d/$back
+      inpod "$(dirname "$(realpath -m -- "$back")")" && continue
+    fi
+    wtothers=$((wtothers + 1))
+  done
+fi
 
 # Extra mounts go before the project so a project nested inside a read-only tree stays writable.
 mounts=(-v "$phome:/home/agent:z" -v "$root/worklog/$worklog:/run/apod-worklog:z")
@@ -664,8 +718,14 @@ fi
 # Tell the agent where it is and what it can see (Claude: appended to its system prompt).
 context="You are running inside an apod container (podman), profile \"$profile\". Only these host paths are mounted:
 - $proj (read-write, the project)"
-for p in "${rwmounts[@]}"; do context+=$'\n'"- $p (read-write)"; done
+for p in "${rwmounts[@]}"; do
+  if [ "$p" = "$gitcommon" ]; then context+=$'\n'"- $p (read-write, the git directory of the repository the project is a linked worktree of)"
+  else context+=$'\n'"- $p (read-write)"; fi
+done
 for p in "${romounts[@]}"; do context+=$'\n'"- $p (read-only)"; done
+if [ "$wtothers" -gt 0 ]; then
+  context+=$'\n'"Other worktrees of this repository aren't mounted, so git worktree list shows them as prunable: they are in use on the host. Never run git worktree prune, nor git worktree remove on them."
+fi
 if [ -n "$binfo" ]; then
   gh_note=$(jq -r .context <<< "$binfo")
 elif [ ${#ghsecret[@]} -gt 0 ]; then gh_note="gh and git push over HTTPS use this profile's GitHub token."
@@ -729,6 +789,9 @@ idenv=()
 [ -n "$cemail" ] || [ -z "$gemail" ] || idenv+=(-e "GIT_COMMITTER_EMAIL=$gemail")
 [ -z "$gname" ] || gitkv+=(user.name "$gname")
 [ -z "$gemail" ] || gitkv+=(user.email "$gemail")
+# git gc prunes worktrees whose folder is missing, and in a pod the repository's other worktrees
+# are: never, or it deletes their metadata on the host.
+gitkv+=(gc.worktreePruneExpire never)
 gitenv=(-e "GIT_CONFIG_COUNT=$((${#gitkv[@]} / 2))")
 for ((i = 0; i < ${#gitkv[@]}; i += 2)); do
   gitenv+=(-e "GIT_CONFIG_KEY_$((i / 2))=${gitkv[i]}" -e "GIT_CONFIG_VALUE_$((i / 2))=${gitkv[i + 1]}")
