@@ -30,6 +30,8 @@ import tomllib
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
+import herdr
+
 ROOT = Path(os.environ.get("APOD_ROOT") or Path.home() / ".agent-pod")
 BDIR = ROOT / "broker"
 SDIR = BDIR / "sessions"
@@ -268,7 +270,7 @@ def extension_files():
         for f in sorted(d.glob("*.py")) if d.is_dir() else []:
             # Extensions are imported by name, so one can't take the name of a module the broker
             # or Python uses (json.py would replace json for everything).
-            if f.stem in sys.stdlib_module_names or f.stem in ("api", "core", "gitwire", "tui") or not f.stem.isidentifier():
+            if f.stem in sys.stdlib_module_names or f.stem in ("api", "core", "gitwire", "herdr", "tui") or not f.stem.isidentifier():
                 print(f"apod-broker: extension {f} not loaded: {f.stem} is the name of a Python or broker module",
                       file=sys.stderr, flush=True)
                 continue
@@ -700,7 +702,11 @@ def authorize(sess, req, ev, waiting=None, ask=True):
     if waiting:
         waiting(ev)
     desktop_notify(ev)
-    got = p.done.wait(ASK_TIMEOUT)
+    try:
+        herdr.blocked(sess, ev)  # the agent's herdr pane shows "needs you" while this waits
+        got = p.done.wait(ASK_TIMEOUT)
+    finally:
+        herdr.unblocked(sess, ev)
     with LOCK:
         PENDING.pop(ev["id"], None)
     if not got:
@@ -1058,6 +1064,10 @@ def register(r):
     sess = Session({"id": sid, "profile": r.get("profile", ""), "role": role,
                     "project": r.get("project", ""), "created": now(), "identity": identity,
                     "cfg": {"_home": str(pdir / "home")}})
+    # Launched from a herdr pane: requests waiting for approval show that pane as blocked.
+    hz = herdr.target(r.get("herdr_pane"), r.get("herdr_socket"), r.get("herdr_agent"))
+    if hz:
+        sess.cfg["_herdr"] = hz
     # The profile's additions to its role: allow = [...], deny = [...], as in roles.toml.
     toml = Path(pdir) / "broker.toml"
     for k in ("allow", "deny"):
@@ -1370,6 +1380,7 @@ def serve():
             f.unlink(missing_ok=True)
             shutil.rmtree(SDIR / f.stem, ignore_errors=True)
 
+    herdr.release_all(SESSIONS.values())
     threading.Thread(target=prune_loop, daemon=True).start()
 
     def term(*_):

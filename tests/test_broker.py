@@ -439,7 +439,7 @@ class BrokerTest(unittest.TestCase):
             shutil.rmtree(cls.tmp, ignore_errors=True)
 
     @classmethod
-    def register(cls, role, scope, user="agentbot", toml="", remotes=(), warnings=None, project=None):
+    def register(cls, role, scope, user="agentbot", toml="", remotes=(), warnings=None, project=None, extra=()):
         pdir = cls.tmp / "profiles" / f"p{next(cls.n)}"
         pdir.mkdir(parents=True)
         (pdir / "env").write_text("GIT_AUTHOR_NAME=Agent\nGIT_AUTHOR_EMAIL=agent@example.com\n"
@@ -453,6 +453,7 @@ class BrokerTest(unittest.TestCase):
             args += ["--scope", s]
         for u in remotes:
             args += ["--remote", u]
+        args += list(extra)
         r = subprocess.run([sys.executable, BROKER, *args], env=cls.env, capture_output=True, text=True)
         assert r.returncode == 0, r.stderr
         if warnings is not None:
@@ -722,6 +723,67 @@ class BrokerTest(unittest.TestCase):
         eid = r.stderr.split("apod broker allow ")[1].split()[0]
         self.assertEqual(self.admin("allow", eid, "--session").returncode, 0)
         self.gh("pr", "merge", "8")
+
+    def test_herdr_pane_blocked_while_waiting(self):
+        """A pod launched from a herdr pane: the pane is reported blocked while a request waits for
+        approval, and released when it's decided or times out (or the herdr socket is gone)."""
+        calls = []
+        path = str(self.tmp / "herdr.sock")
+        srv = socketserver.ThreadingUnixStreamServer(path, type("H", (socketserver.StreamRequestHandler,), {
+            "handle": lambda h: (calls.append(json.loads(h.rfile.readline())),
+                                 h.wfile.write(json.dumps({"id": calls[-1]["id"], "result": {}}).encode() + b"\n"))}))
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        sess = self.register("dev", ["gh:acme/widget"], extra=["--herdr-pane", "w1:p2", "--herdr-socket", path,
+                                                              "--herdr-agent", "claude"])
+        env = dict(self.env, APOD_BROKER_SOCK=str(Path(sess["dir"]) / "broker.sock"))
+
+        def merge(n):
+            return subprocess.Popen([sys.executable, SHIM, "pr", "merge", n], cwd=self.work, env=env,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        def methods(n=0):
+            """The methods called so far; with n, once there are that many (calls go out in the background)."""
+            for _ in range(50 if n else 1):
+                if len(calls) >= n:
+                    break
+                time.sleep(0.1)
+            return [c["method"] for c in calls]
+
+        def waiting():
+            for _ in range(40):
+                time.sleep(0.1)
+                if "pane.report_agent" in methods():
+                    return
+            self.fail("the pane wasn't reported")
+
+        # Allowed once: blocked, then released.
+        p = merge("21")
+        waiting()
+        c = calls[0]
+        self.assertEqual((c["method"], c["params"]["pane_id"], c["params"]["state"], c["params"]["agent"]),
+                         ("pane.report_agent", "w1:p2", "blocked", "claude"))
+        self.assertTrue(c["params"]["source"].startswith("apod:"))
+        self.assertIn("pr merge", c["params"]["message"])
+        self.assertEqual(methods(), ["pane.report_agent"])  # still waiting: not released
+        eid = next(l.split()[0] for l in self.admin("pending").stdout.splitlines() if "pr merge 21" in l)
+        self.admin("deny", eid)
+        p.communicate(timeout=10)
+        self.assertEqual(methods(2), ["pane.report_agent", "pane.release_agent"])
+        self.assertEqual(calls[1]["params"]["pane_id"], "w1:p2")
+        # Nobody answers: released when it times out (APOD_BROKER_ASK_TIMEOUT is 4).
+        del calls[:]
+        p = merge("22")
+        p.communicate(timeout=15)
+        self.assertEqual(methods(2), ["pane.report_agent", "pane.release_agent"])
+        # herdr gone: the request still waits and is decided as usual.
+        srv.shutdown()
+        os.unlink(path)
+        del calls[:]
+        out, err = merge("23").communicate(timeout=15)
+        self.assertEqual(calls, [])
+        self.assertIn("timed out", err)
 
     def test_api_rest(self):
         self.ran("api", "repos/{owner}/{repo}/pulls")

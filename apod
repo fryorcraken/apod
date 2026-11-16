@@ -674,6 +674,11 @@ if [ -n "$usebroker" ]; then
   [ -z "$role" ] || regargs+=(--role "$role")
   [ -z "$ghuser" ] || regargs+=(--gh-user "$ghuser")
   [ -z "$network" ] || regargs+=(--network "$network")
+  # In a herdr pane: the broker shows the pane as blocked while a request waits for approval.
+  # Only for the agents herdr knows (the others, such as bash, have no state to report).
+  [ "${APOD_HERDR:-1}" = 0 ] || [ -z "${HERDR_PANE_ID:-}" ] || [ -z "${HERDR_SOCKET_PATH:-}" ] ||
+    { [ "$agent" = claude ] || [ "$agent" = opencode ]; } ||
+    regargs+=(--herdr-pane "$HERDR_PANE_ID" --herdr-socket "$HERDR_SOCKET_PATH" --herdr-agent "$agent")
   for s in "${scopes[@]}"; do regargs+=(--scope "$s"); done
   while read -r _ url; do regargs+=(--remote "$url"); done < <(git -C "$proj" config --get-regexp '^remote\..*\.(url|pushurl)$' 2>/dev/null || true)
   bsid=${regargs[1]}

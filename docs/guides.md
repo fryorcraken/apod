@@ -812,6 +812,14 @@ in its panes:
 - **Agent detection.** In a pane herdr sees `podman`, not the agent inside the container. apod sets
   `HERDR_AGENT=claude` (or `opencode`) on the podman process, so herdr reads the pane as that agent
   and shows its working, blocked and idle states. The variable stays on the host.
+- **"Needs you" while the broker waits.** A request waiting for your approval looks like work to
+  herdr: the agent's tool call just hasn't returned. When a pod is launched from a herdr pane
+  (`HERDR_PANE_ID` and `HERDR_SOCKET_PATH` set), the broker reports that pane to herdr as
+  `blocked` (source `apod:broker`, message "apod broker: <the request>") for as long as a request
+  of the pod waits, and releases the pane when the last one is allowed, denied or times out, so
+  herdr goes back to reading the screen. herdr's blocked rollups, notifications and `agent wait`
+  then see it. It's best effort: if herdr isn't answering, requests wait as before.
+  `APOD_HERDR=0` turns it off.
 - **Recovery after a herdr restart or crash.** herdr restores container panes as plain shells in
   the right folder. Run `apod resume` there: apod recorded the tab each session was launched from
   (`HERDR_PANE_ID`, or `HC_SCOPE`, which survives a herdr server restart), so it goes straight back
