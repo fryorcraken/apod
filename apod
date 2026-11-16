@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [--role R] [--scope S]... [--gh-user ACCOUNT] [--no-broker] [project-dir] [-- agent args...]
 # Run a coding agent in a podman container as a given GitHub identity.
-# Per profile: ~/.agent-pod/<profile>/home (persistent $HOME), ~/.agent-pod/<profile>/env
-# (git identity), ~/.agent-pod/<profile>/mounts (optional extra mounts), and either the podman
-# secret gh-<profile> (GitHub token), or ~/.agent-pod/<profile>/broker.toml: no credentials in the
-# pod, the host's apod broker acts for it (gh, GitHub and Radicle remotes, commit signing, ssh).
+# Per profile: ~/.agent-pod/<profile>/home (persistent $HOME) and ~/.agent-pod/<profile>/profile.toml:
+# git identity, extra mounts, image, environment... and either the broker (no credentials in the
+# pod, the host's apod broker acts for it: gh, GitHub and Radicle remotes, commit signing, ssh) or
+# the podman secret gh-<profile> (GitHub token). Profiles in the old files are read as before
+# (apod migrate converts them). apod-broker profile reads both: see broker/profiles.py.
 set -euo pipefail
 
 usage() {
@@ -43,6 +44,13 @@ pane_id() {
 }
 # This checkout: the broker (apod-broker, broker/) lives next to apod.
 apoddir=$(dirname "$(realpath "${BASH_SOURCE[0]}")")
+# apod reads profiles with Python's tomllib: Python 3.11 or newer.
+need_python() {
+  python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null || {
+    echo "apod: Python 3.11 or newer is required to read profiles (python3 here: $(python3 --version 2>&1 || echo missing))" >&2
+    exit 2
+  }
+}
 # For shell completion.
 if [ "${1:-}" = --list-roles ]; then python3 "$apoddir/apod-broker" roles --plain 2>/dev/null | cut -f1; exit 0; fi
 if [ "${1:-}" = --list-connectors ]; then printf '%s\n' "${!connector_servers[@]}" "${local_mcps[@]}" | sort; exit 0; fi
@@ -372,16 +380,20 @@ case ${1:-} in
     exit ;;
   profiles)
     # token: the GitHub token the profile launches with (its own podman secret gh-<profile>, or
-    # another profile's through its github file); "unused" when broker.toml replaces it.
+    # another profile's through [token] profile); "unused" when the broker replaces it.
+    need_python
     root=${APOD_ROOT:-$HOME/.agent-pod}; used=()
     for d in "$root"/*/; do
-      p=$(basename "$d"); t=-; g=no; b=-
+      d=${d%/}; p=$(basename "$d"); t=-; g=no; b=-
       case $p in broker|broker-extensions|worklog) continue ;; esac
-      src=$p; [ -f "$d/github" ] && src=$(head -n1 "$d/github" | tr -d '[:space:]')
+      if ! pj=$(python3 "$apoddir/apod-broker" profile --profile-dir "$d" --quiet 2>&1); then
+        printf '%-24s %s\n' "$p" "invalid: ${pj#apod: }"; continue
+      fi
+      src=$(jq -r --arg p "$p" '.token.profile // $p' <<< "$pj")
       if podman secret exists "gh-$src"; then t=$([ "$src" = "$p" ] && echo set || echo "gh-$src"); fi
       [ -f "$d/home/.config/google-docs-mcp/token.json" ] && g=yes
-      if [ -f "$d/broker.toml" ]; then
-        b=$(sed -n 's/^\(role\|persona\) *= *"\(.*\)".*/\2/p' "$d/broker.toml" | head -n1); b=${b:-reader}
+      if [ "$(jq -r .broker <<< "$pj")" = true ]; then
+        b=$(jq -r '.role // "reader"' <<< "$pj")
         [ "$t" = - ] || t="unused"
       elif [ "$t" != - ]; then used+=("gh-$src"); fi
       printf '%-24s token: %-12s google: %-4s broker: %s\n' "$p" "$t" "$g" "$b"
@@ -433,58 +445,61 @@ proj=$(realpath "${proj:-$PWD}")
 
 root=${APOD_ROOT:-$HOME/.agent-pod}
 phome=$root/$profile/home
-envf=$root/$profile/env
-# Image: -i, else the profile's image file (first line), else $APOD_IMAGE, else apod.
-if [ -z "$image" ] && [ -f "$root/$profile/image" ]; then image=$(head -n1 "$root/$profile/image" | tr -d '[:space:]'); fi
-image=${image:-${APOD_IMAGE:-apod}}
-# Network: podman's default (pasta) unless the profile's network file says otherwise, e.g. "host"
-# to share the host's network (Tailscale routes and DNS included, but also host localhost services).
-network=
-if [ -f "$root/$profile/network" ]; then network=$(head -n1 "$root/$profile/network" | tr -d '[:space:]'); fi
-# Named podman volumes from the profile's volumes file, "NAME /path" per line (e.g. a persistent
-# /nix store). Podman fills an empty named volume from the image's content at that path.
-volumes=(); volpaths=()
-if [ -f "$root/$profile/volumes" ]; then
-  while read -r vname vpath; do
-    case $vname in ''|'#'*) continue ;; esac
-    volumes+=(-v "$vname:$vpath"); volpaths+=("$vpath")
-  done < "$root/$profile/volumes"
-fi
-
 if [ ! -d "$root/$profile" ]; then
   known=$(for d in "$root"/*/; do case $(basename "$d") in broker|broker-extensions|worklog) ;; *) basename "$d" ;; esac; done | paste -sd ' ')
   echo "apod: no profile named $profile${known:+ (profiles: $known)}; to create it, see README, Quick start" >&2
   exit 2
 fi
-# Broker: when the profile has a broker.toml, or --role, --scope or --gh-user is given; --no-broker
-# turns it off. The role comes from --role, else the profile's broker.toml, else reader.
+# The profile's settings, from its profile.toml (or its old files), checked: JSON from apod-broker
+# profile. pget runs a jq filter on it; plist one that prints NUL-terminated records.
+need_python
+pjson=$(python3 "$apoddir/apod-broker" profile --profile-dir "$root/$profile" --quiet) || exit 2
+pget() { jq -r "$@" <<< "$pjson"; }
+plist() { jq -j "$1" <<< "$pjson"; }
+# Image: -i, else the profile's [pod] image, else $APOD_IMAGE, else apod.
+[ -n "$image" ] || image=$(pget '.pod.image // empty')
+image=${image:-${APOD_IMAGE:-apod}}
+# Network: podman's default (pasta) unless [pod] network says otherwise, e.g. "host" to share the
+# host's network (Tailscale routes and DNS included, but also host localhost services).
+network=$(pget '.pod.network // empty')
+# Named podman volumes from [pod] volumes (e.g. a persistent /nix store). Podman fills an empty
+# named volume from the image's content at that path.
+volumes=(); volpaths=()
+while IFS=$'\t' read -r vname vpath; do
+  volumes+=(-v "$vname:$vpath"); volpaths+=("$vpath")
+done < <(pget '.pod.volumes | to_entries[] | [.key, .value] | @tsv')
+
+# Broker: when the profile uses it (broker = true, the default of a profile.toml; an old profile
+# with a broker.toml), or --role, --scope or --gh-user is given; --no-broker turns it off. The
+# role comes from --role, else the profile's, else reader.
 usebroker=
 [ "$role" = none ] && { role=; nobroker=1; }  # the old way to say --no-broker
 if [ -n "$nobroker" ]; then
   [ ${#scopes[@]} -eq 0 ] && [ -z "$role" ] && [ -z "$ghuser" ] || { echo "apod: --role, --scope and --gh-user need the broker, which --no-broker turns off" >&2; exit 2; }
-elif [ -n "$role" ] || [ ${#scopes[@]} -gt 0 ] || [ -n "$ghuser" ] || [ -f "$root/$profile/broker.toml" ]; then usebroker=1; fi
+elif [ -n "$role" ] || [ ${#scopes[@]} -gt 0 ] || [ -n "$ghuser" ] || [ "$(pget .broker)" = true ]; then usebroker=1; fi
+# What the loader says (old profile files, a profile.toml beside them). With the broker, its
+# session says it with its own warnings; here without.
+if [ -z "$usebroker" ]; then
+  while IFS= read -r w; do echo "apod: $w" >&2; done < <(pget '.warnings[]')
+fi
 ghsecret=()
 if [ -z "$usebroker" ]; then
-  # GitHub token: the podman secret gh-<profile>, or another profile's if the github file names one.
-  ghprofile=$profile
-  if [ -f "$root/$profile/github" ]; then ghprofile=$(head -n1 "$root/$profile/github" | tr -d '[:space:]'); fi
+  # GitHub token: the podman secret gh-<profile>, or another profile's if [token] profile names one.
+  ghprofile=$(pget --arg p "$profile" '.token.profile // $p')
   ghsecret=(--secret "gh-$ghprofile,type=env,target=GH_TOKEN")
   if ! podman secret exists "gh-$ghprofile"; then
-    echo "apod: profile $ghprofile has no GitHub token, so gh and HTTPS pushes are unauthenticated. Use the broker (broker.toml, or --role dev) or add a token: apod token $ghprofile" >&2
+    echo "apod: profile $ghprofile has no GitHub token, so gh and HTTPS pushes are unauthenticated. Use the broker (profile.toml, or --role dev) or add a token: apod token $ghprofile" >&2
     ghsecret=()
   else
-    echo "apod: profile $profile uses a GitHub token; the broker is recommended instead (a broker.toml in the profile, see README)" >&2
+    echo "apod: profile $profile uses a GitHub token; the broker is recommended instead (broker = true in its profile.toml, see README)" >&2
   fi
 fi
 mkdir -p "$phome/.claude"
-# SSH: the profile's ssh-key file names a private key (ideally passphrase-protected, kept outside
-# the profile's home). It's served for this run by a dedicated ssh-agent on the host; the pod gets
-# the agent socket, never the key file.
-sshkey=
-if [ -f "$root/$profile/ssh-key" ]; then
-  sshkey=$(head -n1 "$root/$profile/ssh-key" | tr -d '[:space:]'); sshkey=${sshkey/#\~/$HOME}
-  [ -f "$sshkey" ] || { echo "apod: $root/$profile/ssh-key points at a missing key: $sshkey" >&2; exit 2; }
-fi
+# SSH: [ssh-agent] key names a private key (ideally passphrase-protected, kept outside the
+# profile's home). It's served for this run by a dedicated ssh-agent on the host; the pod gets the
+# agent socket, never the key file.
+sshkey=$(pget '.ssh_agent.key // empty')
+[ -z "$sshkey" ] || [ -f "$sshkey" ] || { echo "apod: the ssh-agent key of profile $profile is a missing file: $sshkey" >&2; exit 2; }
 
 case $agent in
   claude)   cmd=(claude --permission-mode bypassPermissions) ;;
@@ -496,10 +511,10 @@ case $agent in
 esac
 
 # claude.ai connectors come with the Claude account, not the pod: off unless enabled with -c or
-# the profile's connectors file (groups separated by commas, spaces or lines). -c replaces the
-# file's groups for the run; "-c none" turns them all off.
-if [ ${#connectors[@]} -eq 0 ] && [ -f "$root/$profile/connectors" ]; then
-  while IFS=', ' read -ra cs; do connectors+=("${cs[@]}"); done < <(grep -v '^[[:space:]]*#' "$root/$profile/connectors")
+# the profile's [pod] connectors. -c replaces the profile's groups for the run; "-c none" turns
+# them all off.
+if [ ${#connectors[@]} -eq 0 ]; then
+  while IFS= read -r -d '' c; do connectors+=("$c"); done < <(plist '.pod.connectors[] | "\(.)\u0000"')
 fi
 [ "${connectors[*]}" = none ] && connectors=()
 ccloud=(); clocal=()  # claude.ai connector groups / local MCP servers
@@ -567,8 +582,8 @@ if ! { mkdir -p "$root/worklog/$worklog" && touch "$root/worklog/$worklog/worklo
   echo "apod: couldn't create the work log in $root/worklog" >&2; exit 2
 fi
 
-# Extra mounts: the profile's mounts file (one path per line, read-only unless prefixed "rw "),
-# then --ro/--rw, which override the file's mode for the same path. Each path is mounted once.
+# Extra mounts: the profile's [pod] ro and rw, then --ro/--rw, which override the profile's mode
+# for the same path. Each path is mounted once.
 declare -A mmode=(); morder=()
 want_mount() {  # <ro|rw> <path>; fails if the path doesn't exist
   local path; path=$(realpath -m "${2/#\~/$HOME}")
@@ -577,12 +592,9 @@ want_mount() {  # <ro|rw> <path>; fails if the path doesn't exist
   [ -n "${mmode[$path]+x}" ] || morder+=("$path")
   mmode[$path]=$1
 }
-if [ -f "$root/$profile/mounts" ]; then
-  while read -r mode path; do
-    case $mode in ''|'#'*) continue ;; rw|ro) ;; *) path=$mode; mode=ro ;; esac
-    want_mount "$mode" "$path" || echo "apod: skipping missing mount $path" >&2
-  done < "$root/$profile/mounts"
-fi
+while IFS= read -r -d '' rec; do
+  want_mount "${rec%%$'\t'*}" "${rec#*$'\t'}" || echo "apod: skipping missing mount ${rec#*$'\t'}" >&2
+done < <(plist '.pod.mounts[] | "\(.[0])\t\(.[1])\u0000"')
 for e in "${climounts[@]}"; do
   want_mount "${e%% *}" "${e#* }" || { echo "apod: no such path: ${e#* }" >&2; exit 2; }
 done
@@ -656,7 +668,7 @@ mounts+=("${filemounts[@]}" -v "$proj:$proj:z")
 # home and the same low pids: each pod keeps its own, so /rename and the like don't hit another's.
 [ "$agent" = claude ] && mounts+=(--tmpfs "/home/agent/.claude/sessions:rw,mode=1777,size=1m")
 
-# Broker session: the broker reads the profile's broker.toml and env, and the project's remotes
+# Broker session: the broker reads the profile (profile.toml), and the project's remotes
 # (GitHub and Radicle remotes join the scope), and answers with what the pod needs: mounts,
 # environment, git config, keys to load into its agent, and a note for the agent.
 bsid=; binfo=; bproviders=; agentpid=
@@ -716,7 +728,7 @@ if [ -n "$usebroker" ]; then
     startcmds+="$(printf '%q ' "${argv[@]}")|| echo \"apod: ${argv[0]} did not start\" >&2"$'\n'
   done < <(jq -c '(.start // [])[]' <<< "$binfo")
   if [[ $bproviders == *" ssh "* ]] && [ -n "$sshkey" ]; then
-    echo "apod: broker.toml has [ssh], so the profile's ssh-key file is ignored" >&2; sshkey=
+    echo "apod: profile.toml has [ssh], so its [ssh-agent] key is ignored" >&2; sshkey=
   fi
 fi
 
@@ -776,27 +788,32 @@ if [ -n "$binfo" ]; then
   while IFS=$'\t' read -r k v; do gitkv+=("$k" "$v"); done < <(jq -r '.git_config[] | @tsv' <<< "$binfo")
   while IFS=$'\t' read -r k v; do benv+=(-e "$k=$v"); done < <(jq -r '.env | to_entries[] | [.key, .value] | @tsv' <<< "$binfo")
 fi
-# The git identity: the profile's env (GIT_AUTHOR_*), else your host's global git config (not the
-# project's .git/config, which pods can edit). The committer defaults to the author, and user.name
-# and user.email are set to match, over any .gitconfig in the pod's home or the project.
-envval() { [ -f "$envf" ] || return 0; sed -n "s/^[[:space:]]*$1=//p" "$envf" | tail -n1 | sed "s/^[\"']//; s/[\"']\$//"; }
-gname=$(envval GIT_AUTHOR_NAME); gemail=$(envval GIT_AUTHOR_EMAIL)
+# The git identity: the profile's [git], else your host's global git config (not the project's
+# .git/config, which pods can edit). The committer defaults to the author, and user.name and
+# user.email are set to match, over any .gitconfig in the pod's home or the project.
+gname=$(pget '.git.name // empty'); gemail=$(pget '.git.email // empty')
+cname=$(pget '.git.committer_name // empty'); cemail=$(pget '.git.committer_email // empty')
+idenv=()
+[ -z "$gname" ] || idenv+=(-e "GIT_AUTHOR_NAME=$gname")
+[ -z "$gemail" ] || idenv+=(-e "GIT_AUTHOR_EMAIL=$gemail")
+[ -z "$cname" ] || idenv+=(-e "GIT_COMMITTER_NAME=$cname")
+[ -z "$cemail" ] || idenv+=(-e "GIT_COMMITTER_EMAIL=$cemail")
 [ -n "$gname" ] || gname=$(git config --global --get user.name 2>/dev/null || true)
 [ -n "$gemail" ] || gemail=$(git config --global --get user.email 2>/dev/null || true)
 if [ -z "$gname" ] || [ -z "$gemail" ]; then
-  echo "apod: no git identity for $profile: set user.name and user.email in your ~/.gitconfig, or GIT_AUTHOR_NAME and GIT_AUTHOR_EMAIL in $envf" >&2
+  echo "apod: no git identity for $profile: set user.name and user.email in your ~/.gitconfig, or [git] name and email in $root/$profile/profile.toml" >&2
   exit 2
 fi
-envfile=(); [ -f "$envf" ] && envfile=(--env-file "$envf")
-cname=$(envval GIT_COMMITTER_NAME); cemail=$(envval GIT_COMMITTER_EMAIL)
-idenv=()
-[ -n "$cname" ] || [ -z "$gname" ] || idenv+=(-e "GIT_COMMITTER_NAME=$gname")
-[ -n "$cemail" ] || [ -z "$gemail" ] || idenv+=(-e "GIT_COMMITTER_EMAIL=$gemail")
-[ -z "$gname" ] || gitkv+=(user.name "$gname")
-[ -z "$gemail" ] || gitkv+=(user.email "$gemail")
+[ -n "$cname" ] || idenv+=(-e "GIT_COMMITTER_NAME=$gname")
+[ -n "$cemail" ] || idenv+=(-e "GIT_COMMITTER_EMAIL=$gemail")
+gitkv+=(user.name "$gname" user.email "$gemail")
 # git gc prunes worktrees whose folder is missing, and in a pod the repository's other worktrees
 # are: never, or it deletes their metadata on the host.
 gitkv+=(gc.worktreePruneExpire never)
+# The profile's [pod.env]: -e options, so that a value is what the file says (no env file whose
+# quotes podman might keep).
+penv=()
+while IFS= read -r -d '' kv; do penv+=(-e "$kv"); done < <(plist '.pod.env | to_entries[] | "\(.key)=\(.value)\u0000"')
 gitenv=(-e "GIT_CONFIG_COUNT=$((${#gitkv[@]} / 2))")
 for ((i = 0; i < ${#gitkv[@]}; i += 2)); do
   gitenv+=(-e "GIT_CONFIG_KEY_$((i / 2))=${gitkv[i]}" -e "GIT_CONFIG_VALUE_$((i / 2))=${gitkv[i + 1]}")
@@ -826,7 +843,7 @@ run=(podman run --rm "${tty[@]}" --userns=keep-id
   --name "apod-$profile-$(basename "$proj")-$$"
   --hostname "apod-$profile"
   "${ghsecret[@]}"
-  "${envfile[@]}"
+  "${penv[@]}"
   -e HOME=/home/agent
   -e APOD_PROFILE="$profile"
   -e CLAUDE_CODE_DISABLE_AGENT_VIEW=1
@@ -858,7 +875,7 @@ fi
 if [ -z "$sshkey" ]; then "${run[@]}" "${cmdline[@]}"; exit; fi
 
 # Dedicated ssh-agent for this run: asks for the key's passphrase here, drops the key after
-# $APOD_SSH_TTL (default 4h), confirms each use if the profile has an ssh-confirm file, and is
+# $APOD_SSH_TTL (default 4h), confirms each use if [ssh-agent] confirm is true, and is
 # killed when the pod exits. SELinux: see sockopts above; with the module, the agent runs at
 # level s0 so that the pod may connect to it.
 adir=$root/$profile/agent; mkdir -p "$adir"; chmod 700 "$adir"
@@ -866,7 +883,7 @@ sock=$adir/ssh-$$.sock
 agentcmd=(ssh-agent); [ -n "$seltype" ] && agentcmd=(runcon -l s0 ssh-agent)
 eval "$("${agentcmd[@]}" -a "$sock")" >/dev/null
 agentpid=$SSH_AGENT_PID
-addopts=(-t "${APOD_SSH_TTL:-4h}"); [ -f "$root/$profile/ssh-confirm" ] && addopts+=(-c)
+addopts=(-t "${APOD_SSH_TTL:-4h}"); [ "$(pget .ssh_agent.confirm)" = true ] && addopts+=(-c)
 SSH_AUTH_SOCK=$sock ssh-add -q "${addopts[@]}" "$sshkey"
 amount=$adir:$adir; [ -n "$seltype" ] && amount+=:z
 "${run[@]}" -v "$amount" -e SSH_AUTH_SOCK="$sock" "${sockopts[@]}" "${cmdline[@]}"

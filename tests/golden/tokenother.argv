@@ -11,7 +11,7 @@ gh-other,type=env,target=GH_TOKEN
 -v
 @TMP@/apod/tokenother/home:/home/agent:z
 -v
-@TMP@/apod/worklog/00000000-0000-4000-8000-000000000005:/run/apod-worklog:z
+@TMP@/apod/worklog/00000000-0000-4000-8000-000000000001:/run/apod-worklog:z
 -v
 @TMP@/proj:@TMP@/proj:z
 --tmpfs
@@ -23,7 +23,7 @@ apod.profile=tokenother
 --label
 apod.project=@TMP@/proj
 --label
-apod.session=00000000-0000-4000-8000-000000000005
+apod.session=00000000-0000-4000-8000-000000000001
 apod
 bash
 -lc
@@ -35,7 +35,7 @@ bypassPermissions
 --settings
 {"disableClaudeAiConnectors":true}
 --session-id
-00000000-0000-4000-8000-000000000005
+00000000-0000-4000-8000-000000000001
 --append-system-prompt
 You are running inside an apod container (podman), profile "tokenother". Only these host paths are mounted:
 - @TMP@/proj (read-write, the project)

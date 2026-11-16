@@ -9,7 +9,7 @@ apod-brk
 -v
 @TMP@/apod/brk/home:/home/agent
 -v
-@TMP@/apod/worklog/00000000-0000-4000-8000-000000000008:/run/apod-worklog
+@TMP@/apod/worklog/00000000-0000-4000-8000-000000000001:/run/apod-worklog
 -v
 @TMP@/mounts/ro1:@TMP@/mounts/ro1:ro
 -v
@@ -31,7 +31,7 @@ apod.profile=brk
 --label
 apod.project=@TMP@/proj
 --label
-apod.session=00000000-0000-4000-8000-000000000008
+apod.session=00000000-0000-4000-8000-000000000001
 --security-opt
 label=disable
 --label
@@ -49,7 +49,7 @@ bypassPermissions
 --settings
 {"disableClaudeAiConnectors":true}
 --session-id
-00000000-0000-4000-8000-000000000008
+00000000-0000-4000-8000-000000000001
 --append-system-prompt
 You are running inside an apod container (podman), profile "brk". Only these host paths are mounted:
 - @TMP@/proj (read-write, the project)

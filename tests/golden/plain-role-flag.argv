@@ -9,7 +9,7 @@ apod-plain
 -v
 @TMP@/apod/plain/home:/home/agent
 -v
-@TMP@/apod/worklog/00000000-0000-4000-8000-000000000003:/run/apod-worklog
+@TMP@/apod/worklog/00000000-0000-4000-8000-000000000001:/run/apod-worklog
 -v
 @TMP@/mounts/ro1:@TMP@/mounts/ro1:ro
 -v
@@ -35,7 +35,7 @@ apod.profile=plain
 --label
 apod.project=@TMP@/proj
 --label
-apod.session=00000000-0000-4000-8000-000000000003
+apod.session=00000000-0000-4000-8000-000000000001
 --security-opt
 label=disable
 --label
@@ -53,7 +53,7 @@ bypassPermissions
 --settings
 {"permissions":{"deny":["mcp__claude_ai_Claude_Docs__*","mcp__claude_ai_UTS_Jitsu__*","mcp__claude_ai_Canva__*","mcp__claude_ai_Lovable__*","mcp__claude_ai_Notion__*"]},"hooks":{"PreToolUse":[{"matcher":"mcp__claude_ai_.*","hooks":[{"type":"command","command":"t=$(jq -r .tool_name); case $t in mcp__claude_ai_*) echo \"$t\" | grep -qE '^mcp__claude_ai_(Google_Docs|Google_Drive|Google_Sheets|Todoist)__' || { echo 'apod: connector not enabled for this run (apod -c)' >&2; exit 2; } ;; esac"}]}]}}
 --session-id
-00000000-0000-4000-8000-000000000003
+00000000-0000-4000-8000-000000000001
 --append-system-prompt
 You are running inside an apod container (podman), profile "plain". Only these host paths are mounted:
 - @TMP@/proj (read-write, the project)

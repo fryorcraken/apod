@@ -65,7 +65,10 @@ def env_file_pairs(path):
     return pairs
 
 
-class ApodTest(unittest.TestCase):
+class Launcher:
+    """What the tests of the launcher share: a throwaway APOD_ROOT with profiles (made by the
+    subclass's make_profiles), the stub programs, and launch() with the podman arguments."""
+
     @classmethod
     def setUpClass(cls):
         base = Path(os.environ.get("APOD_TEST_TMP") or HERE / "tmp")  # short enough for unix socket paths
@@ -83,6 +86,7 @@ class ApodTest(unittest.TestCase):
             (cls.bin / name).write_text(text)
             (cls.bin / name).chmod(0o755)
         cls.log = cls.tmp / "podman.log"
+        cls.log.write_text("")
         cls.proj = cls.tmp / "proj"
         (cls.proj).mkdir()
         subprocess.run(["git", "init", "-q", "-b", "main", cls.proj], check=True)
@@ -99,9 +103,9 @@ class ApodTest(unittest.TestCase):
                 cls.env.pop(k)
         cls.addClassCleanup(lambda: subprocess.run([sys.executable, HERE / "apod-broker", "stop"], env=cls.env,
                                                    capture_output=True))
-        cls.make_old_profiles()
+        cls.make_profiles()
 
-    # -- profiles in the old formats ------------------------------------------------------
+    # -- profiles ---------------------------------------------------------------------------
 
     @classmethod
     def profile(cls, name, **files):
@@ -110,6 +114,17 @@ class ApodTest(unittest.TestCase):
         for f, text in files.items():
             (d / {"broker_toml": "broker.toml"}.get(f, f.replace("_", "-"))).write_text(textwrap.dedent(text))
         return d
+
+    @classmethod
+    def toml_profile(cls, name, text, **files):
+        d = cls.root / name
+        (d / "home").mkdir(parents=True)
+        (d / "profile.toml").write_text(textwrap.dedent(text))
+        return d
+
+    @classmethod
+    def make_profiles(cls):
+        raise NotImplementedError
 
     @classmethod
     def make_old_profiles(cls):
@@ -159,6 +174,7 @@ class ApodTest(unittest.TestCase):
     def launch(self, profile, *args, expect=0, extra_env=None):
         """Run apod; returns (podman argv groups, stderr). The podman log is the stub's."""
         self.log.write_text("")
+        (self.tmp / "uuid-count").unlink(missing_ok=True)  # the same ids in every launch
         env = dict(self.env, **(extra_env or {}))
         r = subprocess.run([APOD, profile, *args, str(self.proj)], env=env, stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, timeout=120, cwd=self.tmp)
@@ -219,8 +235,137 @@ class ApodTest(unittest.TestCase):
                 argv, _ = self.launch(profile, *[o.replace("@M@", str(self.m)) for o in opts], extra_env=extra)
                 self.check_golden(name, argv)
 
+
+
+class OldFilesTest(Launcher, unittest.TestCase):
+    """Profiles in the old files: broker.toml, env, mounts, image, ... Same command lines as ever."""
+
+    @classmethod
+    def make_profiles(cls):
+        cls.make_old_profiles()
+
     def test_old_profiles_launch_as_before(self):
         self.run_cases("old files")
+
+    def test_old_files_are_announced(self):
+        _, err = self.launch("plain")
+        self.assertIn("apod: plain: old profile files (env, mounts, image, network, volumes, connectors): apod migrate plain", err)
+        _, err = self.launch("brk")  # the broker's session says it
+        self.assertIn("apod broker: brk: old profile files (broker.toml, env, mounts, image): apod migrate brk", err)
+
+    def test_python_3_11_is_required(self):
+        old = self.tmp / "oldbin"
+        old.mkdir()
+        (old / "python3").write_text("#!/bin/sh\ncase $1 in --version) echo Python 3.9.2 ;; *) exit 1 ;; esac\n")
+        (old / "python3").chmod(0o755)
+        self.log.write_text("")
+        for args in (["plain"], ["profiles"]):
+            r = subprocess.run([APOD, *args, str(self.proj)] if args[0] == "plain" else [APOD, *args],
+                               env=dict(self.env, PATH=f"{old}:{self.env['PATH']}"), cwd=self.tmp,
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 2, r.stderr)
+            self.assertIn("Python 3.11 or newer is required to read profiles (python3 here: Python 3.9.2)", r.stderr)
+        self.assertEqual(self.log.read_text(), "")  # no pod
+
+    def test_a_broken_profile_stops_the_launch(self):
+        self.profile("broken")
+        (self.root / "broken/profile.toml").write_text('[gh]\nuser = "x"\nscope = ["gh:a/b"]\n')
+        r = subprocess.run([APOD, "broken", str(self.proj)], env=self.env, cwd=self.tmp, stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("[gh] has scope = ...: move it above the first [table]", r.stderr)
+        self.assertEqual(self.log.read_text(), "")
+
+
+class ProfileTomlTest(Launcher, unittest.TestCase):
+    """The same profiles written as profile.toml: the same command lines."""
+
+    @classmethod
+    def make_profiles(cls):
+        m, key = cls.m, cls.tmp / "key"
+        cls.toml_profile("plain", f"""\
+            broker = false
+            [pod]
+            image = "myimage"
+            network = "host"
+            ro = ["{m}/ro1", "{m}/missing"]
+            rw = ["{m}/rw1"]
+            volumes = {{ "apod-plain-nix" = "/nix" }}
+            connectors = ["gdoc", "todoist"]
+            [pod.env]
+            SOME_VAR = "a b"
+            PLAIN = "value"
+            [git]
+            name = "Bot Agent"
+            email = "bot@example.com"
+            """)
+        cls.toml_profile("tokenother", 'broker = false\n[token]\nprofile = "other"\n')
+        cls.toml_profile("notoken", "broker = false\n")
+        cls.toml_profile("sshkey", f'broker = false\n[ssh-agent]\nkey = "{key}"\nconfirm = true\n')
+        cls.toml_profile("brk", f"""\
+            role = "dev"
+            scope = ["gh:acme/*"]
+            allow = ["clipboard:image"]
+            deny = ["gh:pr merge"]
+            [pod]
+            image = "brkimage"
+            ro = ["{m}/ro1"]
+            rw = ["{m}/rw1"]
+            [git]
+            name = "Agent"
+            email = "agent@example.com"
+            committer_name = "Committer"
+            committer_email = "committer@example.com"
+            [gh]
+            user = "agentbot"
+            """)
+        # An [ssh-agent] key beside the broker: used when the broker's ssh extension isn't on.
+        cls.toml_profile("brkhost", f"""\
+            [token]
+            profile = "other"
+            [ssh-agent]
+            key = "{key}"
+            [gh]
+            user = "agentbot"
+            """)
+
+    def test_profile_toml_launches_as_the_old_files_did(self):
+        self.run_cases("profile.toml")
+
+    def test_no_warning_without_old_files(self):
+        _, err = self.launch("plain")
+        self.assertNotIn("old profile files", err)
+        _, err = self.launch("brk")
+        self.assertNotIn("old profile files", err)
+
+    def test_env_values_are_passed_as_written(self):
+        self.toml_profile("quotes", """\
+            broker = false
+            [pod.env]
+            QUOTED = "\\"x\\" 'y' $HOME"
+            EMPTY = ""
+            MULTI = "a\\nb"
+            [git]
+            name = "N"
+            email = "n@example.org"
+            """)
+        argv, _ = self.launch("quotes")
+        self.assertIn('-e QUOTED="x" \'y\' $HOME', argv)
+        self.assertIn("-e EMPTY=", argv)
+        self.assertIn("-e MULTI=a", argv)  # the newline is inside the argument
+        self.assertNotIn("--env-file", Path(self.log).read_text().split("\n"))
+        self.assertIn("-e GIT_AUTHOR_NAME=N", argv)
+
+    def test_a_mount_that_is_missing_is_skipped_with_a_warning(self):
+        _, err = self.launch("plain")
+        self.assertIn(f"apod: skipping missing mount {self.m}/missing", err)
+
+    def test_the_old_files_are_ignored_beside_a_profile_toml(self):
+        self.toml_profile("both", 'broker = false\n[git]\nname = "New"\nemail = "new@example.org"\n')
+        (self.root / "both/env").write_text("GIT_AUTHOR_NAME=Old\nGIT_AUTHOR_EMAIL=old@example.org\n")
+        argv, err = self.launch("both")
+        self.assertIn("-e GIT_AUTHOR_NAME=New", argv)
+        self.assertIn("apod: both: profile.toml is used; the old files (env) are ignored (apod migrate both moves them away)", err)
 
 
 if __name__ == "__main__":

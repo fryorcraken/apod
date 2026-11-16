@@ -55,7 +55,7 @@ Patches are welcome on either.
 
 ## Install
 
-On the host: rootless podman, bash, git, jq.
+On the host: rootless podman, bash, git, jq, Python 3.11 or later (apod reads profiles with it).
 
 ```sh
 git clone https://github.com/fryorcraken/apod   # or: rad clone rad:z2CjA38QDC7c5tgBkPV23UippSCjK
@@ -67,7 +67,7 @@ The rest is needed only for what uses it:
 
 | For                                                                              | On the host                                                                                                                                                          |
 | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The [broker](docs/guides.md#the-broker) (GitHub, Radicle, signing, ssh for pods) | Python 3.11 or later, OpenSSH 8.9 or later (the pods' image has both)                                                                                                |
+| The [broker](docs/guides.md#the-broker) (GitHub, Radicle, signing, ssh for pods) | OpenSSH 8.9 or later (the pods' image has it)                                                                                                                        |
 | GitHub through the broker (the `gh` and `github` extensions)                     | `gh`, logged in as the agent's GitHub account                                                                                                                        |
 | Radicle through the broker (`rad`)                                               | `rad`, with an identity (`rad auth`); `[rad] autodetect = true` in `broker.toml`                                                                                     |
 | `apod google-auth` (Google Docs for Claude)                                      | `node`                                                                                                                                                               |

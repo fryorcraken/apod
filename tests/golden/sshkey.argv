@@ -9,7 +9,7 @@ apod-sshkey
 -v
 @TMP@/apod/sshkey/home:/home/agent
 -v
-@TMP@/apod/worklog/00000000-0000-4000-8000-000000000007:/run/apod-worklog
+@TMP@/apod/worklog/00000000-0000-4000-8000-000000000001:/run/apod-worklog
 -v
 @TMP@/proj:@TMP@/proj
 -w
