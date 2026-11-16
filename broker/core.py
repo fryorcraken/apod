@@ -57,6 +57,9 @@ POD_DIR = "/run/apod-broker"
 ASK_TIMEOUT = float(os.environ.get("APOD_BROKER_ASK_TIMEOUT", "90"))
 if ASK_TIMEOUT.is_integer():
     ASK_TIMEOUT = int(ASK_TIMEOUT)
+# An open apod broker ui that asks its terminal for desktop notifications says so each time it
+# polls /state (about once a second); for this long after its last poll it counts as open.
+TUI_FRESH = 5
 
 # Scope kinds, keyed by prefix: an entry is written PREFIX:VALUE in a profile's scope list and
 # --scope, a target is (PREFIX, VALUE). Core knows none; extensions declare theirs with
@@ -76,6 +79,7 @@ LOCK = threading.RLock()
 SESSIONS = {}   # id -> Session
 SERVERS = {}    # id -> [servers]
 PENDING = {}    # event id -> Pending
+TUI = {"seen": 0.0}  # when such a TUI last polled (time.monotonic()); 0 once it quit
 EVENTS = collections.deque(maxlen=500)
 COUNTER = itertools.count(1)
 PROVIDERS = {}  # name -> provider
@@ -685,7 +689,9 @@ def live_session(session_id):
 
 
 def desktop_notify(ev):
-    if not shutil.which("notify-send"):
+    # An open TUI notifies you through its terminal, which takes you to the TUI when you click;
+    # notify-send's would be a second notification, one a click can't take anywhere.
+    if time.monotonic() - TUI["seen"] < TUI_FRESH or not shutil.which("notify-send"):
         return
     try:
         subprocess.Popen(["notify-send", "-a", "apod", f"apod broker: {ev.get('name') or ev['profile']} asks",
@@ -1304,6 +1310,8 @@ def admin_call(path, body):
             sess.save()
         return {"ok": True}
     if path == "/state":
+        if "tui_notifies" in body:  # apod broker ui: True while it runs, False as it quits
+            TUI["seen"] = time.monotonic() if body["tui_notifies"] is True else 0.0
         return state()
     if path == "/keys":
         return {"keys": key_report(), "need_keys": needed_keys(), "agent": str(AGENT)}
@@ -1822,10 +1830,9 @@ def main(argv, script):
             else:
                 print(out, end="")
         elif cmd == "ui":
-            import curses
             import tui
             ensure(script)
-            curses.wrapper(tui.run)
+            tui.main()
         elif cmd == "stop":
             client("/stop", {}, timeout=5)
         elif cmd == "restart":

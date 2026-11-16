@@ -312,21 +312,21 @@ The broker turns each request into actions (what it does) and targets (what it t
 
 On the host:
 
-| Variable                                                                         |                                                                                                                  |
-| -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `APOD_CONFIG_DIR`, `APOD_DATA_DIR`, `APOD_STATE_DIR`                             | apod's folders, over the XDG variables ([where apod keeps its files](#where-apod-keeps-its-files)).              |
-| `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`                             | Where apod's folders go when `APOD_*_DIR` isn't set (defaults `~/.config`, `~/.local/share`, `~/.local/state`).  |
-| `APOD_RUNTIME_DIR`, `XDG_RUNTIME_DIR`                                            | apod's runtime folder (its sockets): `APOD_RUNTIME_DIR`, else `$XDG_RUNTIME_DIR/apod`, else `$TMPDIR/apod-$UID`. |
-| `APOD_ROOT`                                                                      | The legacy layout, rooted at this folder (`~/.agent-pod` otherwise): everything in one folder.                   |
-| `APOD_IMAGE`                                                                     | The default image (default `apod`).                                                                              |
-| `APOD_SSH_TTL`                                                                   | How long keys stay in the broker's agent and per-run agents (default `4h`).                                      |
-| `APOD_BROKER_ASK_TIMEOUT`                                                        | Seconds a request waits for approval (default `90`; `0` rejects at once).                                        |
-| `APOD_BROKER_NOTIFY`                                                             | How the TUI notifies you: `osc9`, `osc99`, `osc777`, `bell`, `none`.                                             |
-| `APOD_PANE_ENV`                                                                  | Variables that identify the terminal tab, for `apod resume` (default `HERDR_PANE_ID HC_SCOPE`).                  |
-| `APOD_HERDR`                                                                     | `0`: don't show a herdr pane as blocked while a request of its pod waits for approval.                           |
-| `APOD_GDOCS_MCP`                                                                 | The google-docs-mcp checkout (default `~/src/fryorcraken/google-docs-mcp`).                                      |
-| `APOD_GDOCS_SCOPES`                                                              | Its Google scopes (default `docs,sheets,slides,drive`).                                                          |
-| `APOD_GH_BIN`, `APOD_GH_GIT_UPSTREAM`, `APOD_GH_API_UPSTREAM`, `APOD_SSH_CONFIG` | For the tests: the `gh` binary, the git server, the API server (`gh-api`) and the ssh config the broker uses.    |
+| Variable                                                                         |                                                                                                                                            |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `APOD_CONFIG_DIR`, `APOD_DATA_DIR`, `APOD_STATE_DIR`                             | apod's folders, over the XDG variables ([where apod keeps its files](#where-apod-keeps-its-files)).                                        |
+| `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`                             | Where apod's folders go when `APOD_*_DIR` isn't set (defaults `~/.config`, `~/.local/share`, `~/.local/state`).                            |
+| `APOD_RUNTIME_DIR`, `XDG_RUNTIME_DIR`                                            | apod's runtime folder (its sockets): `APOD_RUNTIME_DIR`, else `$XDG_RUNTIME_DIR/apod`, else `$TMPDIR/apod-$UID`.                           |
+| `APOD_ROOT`                                                                      | The legacy layout, rooted at this folder (`~/.agent-pod` otherwise): everything in one folder.                                             |
+| `APOD_IMAGE`                                                                     | The default image (default `apod`).                                                                                                        |
+| `APOD_SSH_TTL`                                                                   | How long keys stay in the broker's agent and per-run agents (default `4h`).                                                                |
+| `APOD_BROKER_ASK_TIMEOUT`                                                        | Seconds a request waits for approval (default `90`; `0` rejects at once).                                                                  |
+| `APOD_BROKER_NOTIFY`                                                             | How the TUI notifies you: `osc9`, `osc99`, `osc777`, `bell`, `none`. While a TUI with `osc*` is open, the broker leaves out `notify-send`. |
+| `APOD_PANE_ENV`                                                                  | Variables that identify the terminal tab, for `apod resume` (default `HERDR_PANE_ID HC_SCOPE`).                                            |
+| `APOD_HERDR`                                                                     | `0`: don't show a herdr pane as blocked while a request of its pod waits for approval.                                                     |
+| `APOD_GDOCS_MCP`                                                                 | The google-docs-mcp checkout (default `~/src/fryorcraken/google-docs-mcp`).                                                                |
+| `APOD_GDOCS_SCOPES`                                                              | Its Google scopes (default `docs,sheets,slides,drive`).                                                                                    |
+| `APOD_GH_BIN`, `APOD_GH_GIT_UPSTREAM`, `APOD_GH_API_UPSTREAM`, `APOD_SSH_CONFIG` | For the tests: the `gh` binary, the git server, the API server (`gh-api`) and the ssh config the broker uses.                              |
 
 In the pod: `APOD_PROFILE` (the profile), `APOD_BROKER_SOCK` (the broker's socket), and the
 variables from the profile's `[pod.env]` and `[pod] env_from`.

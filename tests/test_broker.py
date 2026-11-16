@@ -396,6 +396,9 @@ class BrokerTest(unittest.TestCase):
         (ext / "json.py").write_text("raise RuntimeError('should never load')\n")
         (bin_ / "fake-notify").write_text(f"#!/bin/sh\nprintf '%s|' \"$@\" >> {cls.tmp}/notified\n")
         (bin_ / "fake-notify").chmod(0o755)
+        # The broker's own desktop notification for a request that waits (one line each).
+        (bin_ / "notify-send").write_text(f"#!/bin/sh\nprintf '%s|' \"$@\" >> {cls.tmp}/desktop-notified\necho >> {cls.tmp}/desktop-notified\n")
+        (bin_ / "notify-send").chmod(0o755)
         # The host's clipboard, for the clipboard extension: wl-paste reads the test's files.
         (bin_ / "wl-paste").write_text(f"#!/bin/sh\ncase \"$1\" in\n--list-types) cat {cls.tmp}/clip-types ;;\n"
                                        f"--no-newline) [ \"$3\" = \"$(cat {cls.tmp}/clip-is)\" ] && cat {cls.tmp}/clip-data ;;\n"
@@ -1594,6 +1597,17 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual(onward("refs/heads/topic"), new)
         self.assertIn(f"git push --force rad:{RID} refs/heads/topic", self.admin("log", "-n", "3").stdout)
 
+    def desktop_notified(self, text, timeout=3):
+        """Whether the broker ran notify-send for a request with text (it runs in the background)."""
+        f = self.tmp / "desktop-notified"
+        end = time.time() + timeout
+        while True:
+            if f.exists() and text in f.read_text():
+                return True
+            if time.time() > end:
+                return False
+            time.sleep(0.1)
+
     def test_tui_approves(self):
         import fcntl
         import pty
@@ -1607,6 +1621,7 @@ class BrokerTest(unittest.TestCase):
             if "release delete" in self.admin("pending").stdout:
                 break
             time.sleep(0.1)
+        self.assertTrue(self.desktop_notified("release delete v9"))  # no TUI yet: notify-send
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 120, 0, 0))
         ui = subprocess.Popen([sys.executable, BROKER, "ui"], stdin=slave, stdout=slave, stderr=slave,
@@ -1639,7 +1654,7 @@ class BrokerTest(unittest.TestCase):
         self.assertTrue(read_until(b"release delete v8"))
         # A request arriving while the TUI runs: a desktop notification through the terminal.
         self.assertTrue(read_until(b"\x1b]9;apod broker: test asks: gh release delete v8"), screen[-500:])
-        time.sleep(0.5)
+        self.assertFalse(self.desktop_notified("release delete v8", timeout=0.5))  # the TUI's only, not notify-send's too
         os.write(master, b"\x1b[<0;3;30M\x1b[<0;3;30m")
         o, e = p.communicate(timeout=10)
         self.assertEqual(p.returncode, 0, e)
@@ -1660,6 +1675,36 @@ class BrokerTest(unittest.TestCase):
         ui.wait(timeout=5)
         os.close(master)
         self.assertEqual(ui.returncode, 0)
+        # The TUI quit: the broker's notify-send again, at once (no waiting out TUI_FRESH).
+        p = subprocess.Popen([sys.executable, SHIM, "release", "delete", "v7", "--yes"], cwd=self.work,
+                             env=dict(self.env, APOD_BROKER_SOCK=str(Path(self.sess["dir"]) / "broker.sock")),
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.assertTrue(self.desktop_notified("release delete v7"))
+        eid = next(l.split()[0] for l in self.admin("pending").stdout.splitlines() if "release delete v7" in l)
+        self.admin("deny", eid)
+        p.communicate(timeout=10)
+
+    def test_tui_with_only_the_bell_leaves_notify_send_on(self):
+        """A TUI that only rings the bell (APOD_BROKER_NOTIFY=bell, or a terminal apod doesn't know)
+        shows no desktop notification, so the broker still sends its own."""
+        import pty
+        master, slave = pty.openpty()
+        ui = subprocess.Popen([sys.executable, BROKER, "ui"], stdin=slave, stdout=slave, stderr=slave,
+                              env=dict(self.env, TERM="xterm-256color", APOD_BROKER_NOTIFY="bell"), start_new_session=True)
+        os.close(slave)
+        try:
+            time.sleep(1.5)  # it has polled
+            p = subprocess.Popen([sys.executable, SHIM, "release", "delete", "v6", "--yes"], cwd=self.work,
+                                 env=dict(self.env, APOD_BROKER_SOCK=str(Path(self.sess["dir"]) / "broker.sock")),
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.assertTrue(self.desktop_notified("release delete v6"))
+            eid = next(l.split()[0] for l in self.admin("pending").stdout.splitlines() if "release delete v6" in l)
+            self.admin("deny", eid)
+            p.communicate(timeout=10)
+        finally:
+            ui.terminate()
+            ui.wait(timeout=5)
+            os.close(master)
 
 
 class PackCommitsTest(unittest.TestCase):

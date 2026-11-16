@@ -37,6 +37,26 @@ def notify_seq(style, title, body):
     return ""
 
 
+def desktop_notifies(style):
+    """Whether the TUI's notification is a desktop one (not just the bell): then the broker leaves
+    out its own notify-send while the TUI runs. If the terminal ignores the sequence (a wrong
+    guess), you only get the bell: set APOD_BROKER_NOTIFY."""
+    return style in ("osc9", "osc99", "osc777")
+
+
+def main():
+    import curses
+    try:
+        curses.wrapper(run)
+    finally:
+        # Quitting hands desktop notifications back to the broker at once, not after TUI_FRESH.
+        if desktop_notifies(notify_style()):
+            try:
+                client("/state", {"tui_notifies": False}, timeout=5)
+            except (OSError, BrokerError, ValueError):
+                pass
+
+
 def notify_terminal(style, title, body):
     seq = notify_seq(style, title, body)
     if seq:
@@ -192,6 +212,7 @@ def run(scr):
                       head=curses.color_pair(4) | curses.A_BOLD)
     view, sel, top, msg, msg_t, seen, st, err = "requests", None, 0, "", 0, None, None, None
     notify = None if notify_style() == "none" else notify_style()
+    poll = {"tui_notifies": True} if desktop_notifies(notify) else {}
     press = curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED
     wheel_up = getattr(curses, "BUTTON4_PRESSED", 0)
     wheel_down = getattr(curses, "BUTTON5_PRESSED", 0)
@@ -206,7 +227,7 @@ def run(scr):
 
     while True:
         try:
-            st, err = client("/state", {}, timeout=5), None
+            st, err = client("/state", poll, timeout=5), None
         except (OSError, BrokerError, ValueError) as e:
             err = f"broker not reachable: {e}"
         pend_ids = {e["id"] for e in st["pending"]} if st else set()
