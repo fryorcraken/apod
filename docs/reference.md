@@ -4,8 +4,7 @@ Every command, file, setting and variable. For how to set things up, see the
 [guides](guides.md); for writing broker extensions, [EXTENSIONS.md](../EXTENSIONS.md).
 
 - [Commands](#commands)
-- [Profile files](#profile-files)
-- [broker.toml](#brokertoml)
+- [profile.toml](#profiletoml)
 - [roles.toml](#rolestoml)
 - [Scope kinds](#scope-kinds)
 - [How requests are classified](#how-requests-are-classified)
@@ -29,19 +28,19 @@ apod broker ...                                  the broker (apod gh ... is the 
 
 Options for `apod <profile>`:
 
-| Option                          |                                                                                                                                                                                                     |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `-a claude\|opencode\|bash`     | The agent (default `claude`); `bash` is a shell in the pod.                                                                                                                                         |
-| `-i`, `--image IMAGE`           | The image, over the profile's `image` file and `APOD_IMAGE` (default `apod`).                                                                                                                       |
-| `-c`, `--connectors LIST`       | claude.ai connector groups for this run, comma-separated, repeatable; `none` turns them off. Replaces the profile's `connectors` file. Claude only: ignored, with a warning, for opencode and bash. |
-| `--ro PATH` (`-m`), `--rw PATH` | Mount a file or folder for this run, read-only or read-write.                                                                                                                                       |
-| `--role ROLE`                   | The broker role for this run, over `broker.toml`'s `role`.                                                                                                                                          |
-| `--scope KIND:VALUE`            | Add to the broker scope for this run; repeatable.                                                                                                                                                   |
-| `--gh-user ACCOUNT`             | The host `gh` account the broker acts as for this run, over `[gh] user`.                                                                                                                            |
-| `--no-broker`                   | No broker for this run, even with a `broker.toml`.                                                                                                                                                  |
-| `-- ARGS`                       | Anything after `--` goes to the agent (`-- --continue`).                                                                                                                                            |
+| Option                          |                                                                                                                                                                                                      |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-a claude\|opencode\|bash`     | The agent (default `claude`); `bash` is a shell in the pod.                                                                                                                                          |
+| `-i`, `--image IMAGE`           | The image, over the profile's `[pod] image` and `APOD_IMAGE` (default `apod`).                                                                                                                       |
+| `-c`, `--connectors LIST`       | claude.ai connector groups for this run, comma-separated, repeatable; `none` turns them off. Replaces the profile's `[pod] connectors`. Claude only: ignored, with a warning, for opencode and bash. |
+| `--ro PATH` (`-m`), `--rw PATH` | Mount a file or folder for this run, read-only or read-write.                                                                                                                                        |
+| `--role ROLE`                   | The broker role for this run, over `profile.toml`'s `role`.                                                                                                                                          |
+| `--scope KIND:VALUE`            | Add to the broker scope for this run; repeatable.                                                                                                                                                    |
+| `--gh-user ACCOUNT`             | The host `gh` account the broker acts as for this run, over `[gh] user`.                                                                                                                             |
+| `--no-broker`                   | No broker for this run, even for a profile that uses it.                                                                                                                                             |
+| `-- ARGS`                       | Anything after `--` goes to the agent (`-- --continue`).                                                                                                                                             |
 
-`--role`, `--scope` and `--gh-user` use the broker even without a `broker.toml`.
+`--role`, `--scope` and `--gh-user` use the broker even for a profile with `broker = false`.
 
 `apod broker` subcommands:
 
@@ -60,58 +59,105 @@ Options for `apod <profile>`:
 | `keys`                         | The keys profiles and running pods use; loads the missing ones into the broker's agent.                                                                                                                                                                                       |
 | `restart`, `stop`              | Restart or stop the broker. Running pods' sessions come back on restart; reload keys with `keys`.                                                                                                                                                                             |
 
-## Profile files
+## profile.toml
 
-Everything lives in `~/.agent-pod/<profile>/` (`APOD_ROOT` overrides `~/.agent-pod`):
+A profile is a folder, `~/.agent-pod/<profile>/` (`APOD_ROOT` overrides `~/.agent-pod`), and
+its settings are one file in it, `profile.toml`. Put the top-level keys first: a key written
+after a `[table]` line belongs to that table (`scope` after `[gh]` would be `gh.scope`), so apod
+refuses a `role`, `scope`, `allow`, `deny` or `broker` inside a table. Unknown keys in `[pod]`,
+`[git]`, `[token]` and `[ssh-agent]` are errors too, and so are wrong types. `apod-broker profile
+--profile-dir DIR` prints what apod reads from a profile, as JSON, whichever format it is in.
 
-| File                      |                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `env`                     | Optional. Environment variables for the pod (`KEY=VALUE` lines). The git identity is your host's global git config (`user.name`, `user.email`) unless `GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL` here say otherwise, e.g. for a bot (`GIT_COMMITTER_*` default to them). apod sets `user.name` and `user.email` in the pod to match, over any `.gitconfig` there; a project's `.git/config` doesn't count, since pods can edit it. |
-| `home/`                   | The pod's persistent `$HOME`: the agent's login, settings and history; Google login. Every pod of the profile shares it.                                                                                                                                                                                                                                                                                                         |
-| `broker.toml`             | Use the broker: role, scope, GitHub account, keys ([below](#brokertoml)).                                                                                                                                                                                                                                                                                                                                                        |
-| `mounts`                  | Extra mounts, one path per line, read-only unless prefixed `rw`.                                                                                                                                                                                                                                                                                                                                                                 |
-| `image`                   | The image (first line).                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `network`                 | `host` to share the host's network.                                                                                                                                                                                                                                                                                                                                                                                              |
-| `volumes`                 | Named podman volumes, `NAME /path` per line, e.g. `apod-myproj-nix /nix`.                                                                                                                                                                                                                                                                                                                                                        |
-| `connectors`              | Default claude.ai connector groups (`-c` replaces them).                                                                                                                                                                                                                                                                                                                                                                         |
-| `google-credentials.json` | OAuth client for google-docs-mcp, instead of the checkout's.                                                                                                                                                                                                                                                                                                                                                                     |
-| `github`                  | Without the broker: use another profile's GitHub token (`gh-<that profile>`).                                                                                                                                                                                                                                                                                                                                                    |
-| `ssh-key`                 | Path to a passphrase-protected private key, served from a per-run ssh-agent. Ignored when the broker's ssh extension is on for the pod (an `[ssh]` key in `broker.toml`, and hosts in scope), which replaces it.                                                                                                                                                                                                                 |
-| `ssh-confirm`             | If present, confirm every use of that key on the host.                                                                                                                                                                                                                                                                                                                                                                           |
+```toml
+broker = true                  # false: no broker, a GitHub token instead; default true
+role   = "reader"
+scope  = ["gh:fryorcraken/*", "gh-search:all"]
+allow  = ["clipboard:image"]
+deny   = []
 
-## broker.toml
+[pod]
+image = "apod"
+network = "host"               # optional
+ro = ["~/.agent-pod/worklog", "~/.agent-pod/history.jsonl"]
+rw = ["~/reports/drafts"]
+volumes = { "apod-myproj-nix" = "/nix" }
+connectors = ["gdoc"]
+[pod.env]
+SOME_VAR = "value"
 
-A profile's `~/.agent-pod/<profile>/broker.toml`, over `~/.agent-pod/broker.toml` (shared by
-every profile; key by key within each table; `role`, `scope`, `allow` and `deny` are ignored there).
+[git]                          # the identity the pod's commits have
+name = "Agent"
+email = "agent@example.com"
 
-| Key                          |                                                                                                                                                                                                        |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `role`                       | The default role (`--role` overrides; default `reader`).                                                                                                                                               |
-| `allow`                      | Actions added to the role for this profile's pods, as `PROVIDER:ACTION` patterns: `["ssh:connect", "ssh:login"]`.                                                                                      |
-| `deny`                       | Actions this profile's pods never get, whatever the role allows: `["gh:pr create"]`.                                                                                                                   |
-| `scope`                      | Scope entries, `["gh:ORG/*", "ssh:devbox"]`, added to the project's remotes and `--scope`.                                                                                                             |
-| `[gh] user`                  | The host `gh` account the broker acts as. Required for `gh` and GitHub remotes.                                                                                                                        |
-| `[git-sign] key`             | The private key pods sign commits and tags with (its `.pub` next to it).                                                                                                                               |
-| `[git-sign] confirm`         | `true`: confirm each signature on the host (needs openssh-askpass).                                                                                                                                    |
-| `[git-sign] auto`            | `false`: don't turn on `commit.gpgsign`/`tag.gpgsign`, even for roles that sign.                                                                                                                       |
-| `[ssh] key`, `[ssh] keys`    | The private key (or keys) pods log in with. The ssh extension is on only for a pod with hosts in scope (`scope = ["ssh:NAME"]` or `--scope ssh:NAME`).                                                 |
-| `[ssh] hosts`                | The old way to put hosts in scope, still read with a launch warning: write `scope = ["ssh:NAME"]` instead.                                                                                             |
-| `[ssh] confirm`              | `true`: confirm each login on the host.                                                                                                                                                                |
-| `[ssh] proxy`                | `false`: the pod connects to hosts itself instead of through the broker (default `true`).                                                                                                              |
-| `[NAME] enabled`             | `false`: the extension NAME is off for the profile's pods, as if it weren't installed (`[rad] enabled = false`).                                                                                       |
-| `[rad] autodetect`           | `true`: Radicle is on, and the project's `rad://` remotes join the scope. Off by default.                                                                                                              |
-| `[rad] enabled`              | `true`: Radicle is on, for the `rad:RID` entries in the scope only. `false` wins over `autodetect`.                                                                                                    |
-| `[rad] home`                 | `RAD_HOME` of the identity pushes land as (default `$RAD_HOME` or `~/.radicle`).                                                                                                                       |
-| `[rad] key`                  | The Radicle signing key (default `home/keys/radicle`).                                                                                                                                                 |
-| `[rad] confirm`              | `true`: confirm each use of the Radicle key.                                                                                                                                                           |
-| `[rad] nid`, `[rad] storage` | The node id and storage folder, when `rad` can't tell (default: `rad self --nid`, `home/storage`).                                                                                                     |
-| `[gh-api] enabled`           | `true`: `https://api.github.com` from the pod goes through the broker, checked and with the account's token ([guide](guides.md#github-api-from-the-pod)). Needs `[gh] user` and `openssl` on the host. |
-| `[clipboard] enabled`        | `true`: Ctrl+V in the pod pastes images from the host's clipboard, never its text ([guide](guides.md#pasting-images)). Needs `wl-clipboard` or `xclip` on the host.                                    |
-| `[notify] enabled`           | `true`: pods may send desktop notifications (`apod-notify`).                                                                                                                                           |
-| `[notify] command`           | The command, called with TITLE TEXT (default `["notify-send", "-a", "apod"]`).                                                                                                                         |
-| `[notify] urgent`            | Arguments added for `apod-notify --urgent` (default `["-u", "critical"]`).                                                                                                                             |
+[gh]                           # an extension's table
+user = "fryorcraken"
+```
 
-Extensions read their own `[NAME]` table.
+| Key                          |                                                                                                                                                                                                                                                                                                                     |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `broker`                     | `false`: no broker for this profile's pods; they use a GitHub token (`[token]`) and can't use the broker's extensions. Default `true`. `--no-broker` does that for one run; `--role`, `--scope` or `--gh-user` turn the broker on for one run.                                                                      |
+| `role`                       | The default role (`--role` overrides; default `reader`).                                                                                                                                                                                                                                                            |
+| `allow`                      | Actions added to the role for this profile's pods, as `PROVIDER:ACTION` patterns: `["ssh:connect", "ssh:login"]`.                                                                                                                                                                                                   |
+| `deny`                       | Actions this profile's pods never get, whatever the role allows: `["gh:pr create"]`.                                                                                                                                                                                                                                |
+| `scope`                      | Scope entries, `["gh:ORG/*", "ssh:devbox"]`, added to the project's remotes and `--scope`.                                                                                                                                                                                                                          |
+| `[pod] image`                | The image (`-i` overrides; else `APOD_IMAGE`, else `apod`).                                                                                                                                                                                                                                                         |
+| `[pod] network`              | `host` to share the host's network (Tailscale and DNS included, but also the host's localhost services); otherwise podman's default.                                                                                                                                                                                |
+| `[pod] ro`, `[pod] rw`       | Extra mounts: files or folders, read-only or read-write, at the same path in the pod (`~` is your home). `--ro` and `--rw` override these for the same path. Paths that don't exist are skipped with a warning.                                                                                                     |
+| `[pod] volumes`              | Named podman volumes, `NAME = "/path in the pod"`, e.g. a persistent `/nix` store. Podman fills an empty volume from the image's content at that path.                                                                                                                                                              |
+| `[pod] connectors`           | Default claude.ai connector groups (`-c` replaces them).                                                                                                                                                                                                                                                            |
+| `[pod.env]`                  | Environment variables for the pod, `NAME = "value"` (strings). Passed to podman as `-e` options, so the value is exactly what you wrote. Not the git identity: that's `[git]`.                                                                                                                                      |
+| `[git] name`, `[git] email`  | The git identity, e.g. for a bot; else your host's global git config (`user.name`, `user.email`). `committer_name` and `committer_email` default to them. apod sets `user.name` and `user.email` in the pod to match, over any `.gitconfig` there; a project's `.git/config` doesn't count, since pods can edit it. |
+| `[token] profile`            | Without the broker: use another profile's GitHub token (the podman secret `gh-<that profile>`, `apod token`). Default: the profile's own.                                                                                                                                                                           |
+| `[ssh-agent] key`            | Path to a passphrase-protected private key, served to the pod from a per-run ssh-agent; the pod gets the agent's socket, never the key. Ignored when the broker's ssh extension is on for the pod (`[ssh]` and hosts in scope), which replaces it.                                                                  |
+| `[ssh-agent] confirm`        | `true`: confirm every use of that key on the host.                                                                                                                                                                                                                                                                  |
+| `[gh] user`                  | The host `gh` account the broker acts as. Required for `gh` and GitHub remotes.                                                                                                                                                                                                                                     |
+| `[git-sign] key`             | The private key pods sign commits and tags with (its `.pub` next to it).                                                                                                                                                                                                                                            |
+| `[git-sign] confirm`         | `true`: confirm each signature on the host (needs openssh-askpass).                                                                                                                                                                                                                                                 |
+| `[git-sign] auto`            | `false`: don't turn on `commit.gpgsign`/`tag.gpgsign`, even for roles that sign.                                                                                                                                                                                                                                    |
+| `[ssh] key`, `[ssh] keys`    | The private key (or keys) pods log in with. The ssh extension is on only for a pod with hosts in scope (`scope = ["ssh:NAME"]` or `--scope ssh:NAME`).                                                                                                                                                              |
+| `[ssh] hosts`                | The old way to put hosts in scope, still read with a launch warning: write `scope = ["ssh:NAME"]` instead.                                                                                                                                                                                                          |
+| `[ssh] confirm`              | `true`: confirm each login on the host.                                                                                                                                                                                                                                                                             |
+| `[ssh] proxy`                | `false`: the pod connects to hosts itself instead of through the broker (default `true`).                                                                                                                                                                                                                           |
+| `[NAME] enabled`             | `false`: the extension NAME is off for the profile's pods, as if it weren't installed (`[rad] enabled = false`).                                                                                                                                                                                                    |
+| `[rad] autodetect`           | `true`: Radicle is on, and the project's `rad://` remotes join the scope. Off by default.                                                                                                                                                                                                                           |
+| `[rad] enabled`              | `true`: Radicle is on, for the `rad:RID` entries in the scope only. `false` wins over `autodetect`.                                                                                                                                                                                                                 |
+| `[rad] home`                 | `RAD_HOME` of the identity pushes land as (default `$RAD_HOME` or `~/.radicle`).                                                                                                                                                                                                                                    |
+| `[rad] key`                  | The Radicle signing key (default `home/keys/radicle`).                                                                                                                                                                                                                                                              |
+| `[rad] confirm`              | `true`: confirm each use of the Radicle key.                                                                                                                                                                                                                                                                        |
+| `[rad] nid`, `[rad] storage` | The node id and storage folder, when `rad` can't tell (default: `rad self --nid`, `home/storage`).                                                                                                                                                                                                                  |
+| `[gh-api] enabled`           | `true`: `https://api.github.com` from the pod goes through the broker, checked and with the account's token ([guide](guides.md#github-api-from-the-pod)). Needs `[gh] user` and `openssl` on the host.                                                                                                              |
+| `[clipboard] enabled`        | `true`: Ctrl+V in the pod pastes images from the host's clipboard, never its text ([guide](guides.md#pasting-images)). Needs `wl-clipboard` or `xclip` on the host.                                                                                                                                                 |
+| `[notify] enabled`           | `true`: pods may send desktop notifications (`apod-notify`).                                                                                                                                                                                                                                                        |
+| `[notify] command`           | The command, called with TITLE TEXT (default `["notify-send", "-a", "apod"]`).                                                                                                                                                                                                                                      |
+| `[notify] urgent`            | Arguments added for `apod-notify --urgent` (default `["-u", "critical"]`).                                                                                                                                                                                                                                          |
+
+Extensions read their own `[NAME]` table. The names `pod`, `git`, `token` and `ssh-agent` are the profile's
+own, and `~/.agent-pod/broker.toml` holds the extension tables shared by every profile (key by key within
+each table; a profile's own value wins; it has no `role`, `scope`, `allow`, `deny` or `broker`).
+
+Next to `profile.toml`, a profile folder has `home/` (the pod's persistent `$HOME`: the agent's login, settings
+and history, and the Google login; every pod of the profile shares it), `google-credentials.json` (an OAuth
+client for google-docs-mcp, instead of the checkout's) and, while a pod with a `[ssh-agent]` key runs, `agent/`.
+Nothing else in the folder is mounted in a pod, so a pod can't change its own `profile.toml`.
+
+### The old files
+
+Profiles made before `profile.toml` have their settings in several files. They're still read, as
+they always were, when there is no `profile.toml` (with a warning at launch); `apod migrate`
+writes the `profile.toml` for them and moves the files to `.old/`. With both, `profile.toml` is
+used and the old files are ignored, with a warning.
+
+| File               | Now                                                                                                                 |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `broker.toml`      | The top-level keys and the extension tables of `profile.toml`. Without it, `broker = false`.                        |
+| `env`              | `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL`: `[git]`; the rest: `[pod.env]`. |
+| `mounts`           | `[pod] ro` and `rw`: one path per line, read-only unless prefixed `rw`.                                             |
+| `image`, `network` | `[pod] image`, `[pod] network` (first line).                                                                        |
+| `volumes`          | `[pod] volumes`: `NAME /path` per line.                                                                             |
+| `connectors`       | `[pod] connectors`.                                                                                                 |
+| `github`           | `[token] profile`.                                                                                                  |
+| `ssh-key`          | `[ssh-agent] key`.                                                                                                  |
+| `ssh-confirm`      | `[ssh-agent] confirm = true`.                                                                                       |
 
 ## roles.toml
 
@@ -212,14 +258,14 @@ On the host:
 | `APOD_GH_BIN`, `APOD_GH_GIT_UPSTREAM`, `APOD_GH_API_UPSTREAM`, `APOD_SSH_CONFIG` | For the tests: the `gh` binary, the git server, the API server (`gh-api`) and the ssh config the broker uses. |
 
 In the pod: `APOD_PROFILE` (the profile), `APOD_BROKER_SOCK` (the broker's socket), and the
-variables from the profile's `env`.
+variables from the profile's `[pod.env]`.
 
 ## ~/.agent-pod
 
 | Path                      |                                                                                                                                             |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<profile>/`              | A profile ([files](#profile-files)).                                                                                                        |
-| `broker.toml`             | Broker settings for every profile.                                                                                                          |
+| `<profile>/`              | A profile ([`profile.toml`](#profiletoml)).                                                                                                 |
+| `broker.toml`             | Extension tables shared by every profile.                                                                                                   |
 | `roles.toml`              | Your roles.                                                                                                                                 |
 | `broker-extensions/`      | Your broker extensions ([EXTENSIONS.md](../EXTENSIONS.md)).                                                                                 |
 | `broker/`                 | The broker's state: `log.jsonl` (every request), `broker.log` (its own log), `grants.json` (approvals for roles), `sessions/`, its sockets. |

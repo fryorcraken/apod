@@ -1,0 +1,327 @@
+"""A profile's configuration, read from one place.
+
+A profile is a folder, ~/.agent-pod/<profile>/ (APOD_ROOT overrides ~/.agent-pod). Its settings
+are in profile.toml. Profiles made before it existed are spread over several files (broker.toml,
+env, mounts, image, network, volumes, connectors, github, ssh-key, ssh-confirm), which are still
+read, the same way as ever, when there is no profile.toml: `apod migrate` converts them.
+
+Both `apod` (through `apod-broker profile`) and the broker (register) call load(), so they read
+the same thing. This module imports nothing from the broker: it works without it running, and
+`apod-broker profile` doesn't load extensions.
+
+load() returns a dict (and `apod-broker profile --profile-dir DIR` prints it as JSON):
+
+    dir, file        the profile folder; the file the settings come from ("" if there is none)
+    format           "profile.toml", "old files" or "none"
+    broker           whether the broker acts for the pod (profile.toml: broker = ..., default
+                     true; old files: broker.toml exists)
+    role, scope, allow, deny   the broker's, as in profile.toml ("role" is None when not set)
+    pod              image, network (None when not set), mounts [[mode, path], ...], volumes
+                     {name: path}, connectors [...], env {NAME: value}
+    git              name, email, committer_name, committer_email: the keys that are set
+    token            profile: whose GitHub token (podman secret gh-<profile>) a launch without
+                     the broker uses, None for the profile's own
+    ssh_agent        key (None when not set), confirm
+    tables           the other tables of profile.toml (or of broker.toml): the extensions'
+    warnings         things to tell the user, as text
+"""
+import json
+import os
+import re
+import sys
+import tomllib
+from pathlib import Path
+
+OLD_FILES = ("broker.toml", "env", "mounts", "image", "network", "volumes", "connectors", "github",
+             "ssh-key", "ssh-confirm")
+# Folders in the apod root that are not profiles.
+NOT_PROFILES = ("broker", "broker-extensions", "worklog")
+TOP_KEYS = {"broker": bool, "role": str, "scope": list, "allow": list, "deny": list}
+# Tables the profile owns; any other table belongs to a broker extension.
+OWN_TABLES = {"pod": {"image", "network", "ro", "rw", "volumes", "connectors", "env"},
+              "git": {"name", "email", "committer_name", "committer_email"},
+              "token": {"profile"},
+              "ssh-agent": {"key", "confirm"}}
+IDENTITY_ENV = ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL")
+GIT_KEYS = {"GIT_AUTHOR_NAME": "name", "GIT_AUTHOR_EMAIL": "email",
+            "GIT_COMMITTER_NAME": "committer_name", "GIT_COMMITTER_EMAIL": "committer_email"}
+ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+class ProfileError(Exception):
+    pass
+
+
+def root():
+    return Path(os.environ.get("APOD_ROOT") or Path.home() / ".agent-pod")
+
+
+def expand(p):
+    """A leading ~ is the home folder, as apod has always read it."""
+    home = os.environ.get("HOME") or str(Path.home())
+    return home + p[1:] if p == "~" or p.startswith("~/") else p
+
+
+def empty():
+    return {"broker": True, "role": None, "scope": [], "allow": [], "deny": [],
+            "pod": {"image": None, "network": None, "mounts": [], "volumes": {}, "connectors": [], "env": {}},
+            "git": {}, "token": {"profile": None}, "ssh_agent": {"key": None, "confirm": False},
+            "tables": {}, "warnings": []}
+
+
+# ---------------------------------------------------------------------------------------------
+# profile.toml
+
+def check_list(where, key, v, actions=False):
+    if not isinstance(v, list) or not all(isinstance(a, str) for a in v) or (actions and not all(":" in a for a in v)):
+        raise ProfileError(f'{where}: {key} is a list of "PROVIDER:ACTION" patterns' if actions
+                           else f"{where}: {key} is a list of strings")
+    return list(v)
+
+
+def check_str(where, key, v, nospace=False):
+    if not isinstance(v, str) or not v.strip() or (nospace and re.search(r"\s", v)):
+        raise ProfileError(f"{where}: {key} is a string" + (" without spaces" if nospace else "") + ", not empty")
+    return v
+
+
+def check_table(where, table, v, allowed):
+    """The keys of one of the profile's own tables must be known."""
+    if not isinstance(v, dict):
+        raise ProfileError(f"{where}: [{table}] is a table")
+    bad = sorted(set(v) - allowed)
+    if bad:
+        raise ProfileError(f"{where}: [{table}] has no key {', '.join(bad)} (it has {', '.join(sorted(allowed))})")
+
+
+def from_toml(data, where):
+    """The profile from a parsed profile.toml, checked."""
+    p = empty()
+    # A key written after the first [table] line belongs to that table, so role = ..., scope =
+    # ... that ended up there were not meant to be.
+    for t, v in data.items():
+        if isinstance(v, dict):
+            for k in TOP_KEYS:
+                if k in v:
+                    raise ProfileError(f"{where}: [{t}] has {k} = ...: move it above the first [table] "
+                                       f"(a key written after a [table] line belongs to that table)")
+    for k, v in data.items():
+        if isinstance(v, dict):
+            continue
+        if k not in TOP_KEYS:
+            raise ProfileError(f"{where}: unknown key {k} (top-level keys: {', '.join(TOP_KEYS)}; "
+                               f"the rest is in tables: [pod], [git], [token], [ssh-agent], and the extensions')")
+        if k == "broker":
+            if not isinstance(v, bool):
+                raise ProfileError(f"{where}: broker is true or false")
+            p["broker"] = v
+        elif k == "role":
+            p["role"] = check_str(where, k, v, nospace=True)
+        else:
+            p[k] = check_list(where, k, v, actions=k in ("allow", "deny"))
+    for t, allowed in OWN_TABLES.items():
+        if t in data:
+            check_table(where, t, data[t], allowed)
+    pod = data.get("pod", {})
+    for k in ("image", "network"):
+        if k in pod:
+            p["pod"][k] = check_str(f"{where}: [pod]", k, pod[k], nospace=True)
+    for mode in ("ro", "rw"):
+        if mode in pod:
+            p["pod"]["mounts"] += [[mode, expand(m)] for m in check_list(f"{where}: [pod]", mode, pod[mode])]
+    if "connectors" in pod:
+        p["pod"]["connectors"] = check_list(f"{where}: [pod]", "connectors", pod["connectors"])
+    if "volumes" in pod:
+        vols = pod["volumes"]
+        if not isinstance(vols, dict) or not all(isinstance(k, str) and isinstance(v, str) and k and v.startswith("/")
+                                                 for k, v in vols.items()):
+            raise ProfileError(f'{where}: [pod] volumes is a table of NAME = "/path in the pod"')
+        p["pod"]["volumes"] = dict(vols)
+    if "env" in pod:
+        env = pod["env"]
+        if not isinstance(env, dict) or not all(isinstance(v, str) for v in env.values()):
+            raise ProfileError(f"{where}: [pod.env] is a table of NAME = \"value\" (values are strings: quote them)")
+        for k in env:
+            if not ENV_NAME.fullmatch(k):
+                raise ProfileError(f"{where}: [pod.env] {k!r} isn't an environment variable name")
+            if k in IDENTITY_ENV:
+                raise ProfileError(f"{where}: [pod.env] {k}: the git identity is [git] name and email")
+        p["pod"]["env"] = dict(env)
+    for k, v in data.get("git", {}).items():
+        p["git"][k] = check_str(f"{where}: [git]", k, v)
+        if k.endswith("email") and not re.fullmatch(r"[^@\s]+@[^@\s]+", v):
+            raise ProfileError(f"{where}: [git] {k} isn't an email address")
+    if "profile" in data.get("token", {}):
+        t = data["token"]["profile"]
+        if not isinstance(t, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", t):
+            raise ProfileError(f"{where}: [token] profile is the name of a profile")
+        p["token"]["profile"] = t
+    ssh = data.get("ssh-agent", {})
+    if "key" in ssh:
+        p["ssh_agent"]["key"] = expand(check_str(f"{where}: [ssh-agent]", "key", ssh["key"]))
+    if "confirm" in ssh:
+        if not isinstance(ssh["confirm"], bool):
+            raise ProfileError(f"{where}: [ssh-agent] confirm is true or false")
+        p["ssh_agent"]["confirm"] = ssh["confirm"]
+    p["tables"] = {k: v for k, v in data.items() if isinstance(v, dict) and k not in OWN_TABLES}
+    return p
+
+
+# ---------------------------------------------------------------------------------------------
+# The old files
+
+def first_word(f):
+    """The first line, whitespace removed, as apod's `head -n1 | tr -d '[:space:]'`."""
+    lines = f.read_text().splitlines()
+    return re.sub(r"\s+", "", lines[0]) if lines else ""
+
+
+def read_env_file(path):
+    """KEY=VALUE lines, # comments skipped, outer quotes stripped from the value."""
+    env = {}
+    try:
+        for line in Path(path).read_text().splitlines():
+            k, eq, v = line.strip().partition("=")
+            if eq and not k.startswith("#"):
+                env[k.strip()] = v.strip().strip("'\"")
+    except OSError:
+        pass
+    return env
+
+
+def from_old_files(pdir, warnings):
+    p = empty()
+    p["broker"] = False
+    f = pdir / "broker.toml"
+    if f.exists():
+        p["broker"] = True
+        try:
+            data = tomllib.loads(f.read_text())
+        except tomllib.TOMLDecodeError as e:
+            raise ProfileError(f"{f}: {e}")
+        if "persona" in data and "role" not in data:
+            data["role"] = data.pop("persona")
+            warnings.append(f"{f}: persona = is now role = (it still works for now)")
+        if "role" in data:
+            p["role"] = data["role"] if isinstance(data["role"], str) else None
+        for k in ("scope", "allow", "deny"):
+            if k in data:
+                p[k] = check_list(f, k, data[k], actions=k != "scope")
+        p["tables"] = {k: v for k, v in data.items() if isinstance(v, dict)}
+    env = read_env_file(pdir / "env")
+    for k, key in GIT_KEYS.items():
+        if env.get(k):
+            p["git"][key] = env.pop(k)
+        else:
+            env.pop(k, None)
+    for k in sorted(k for k in env if not ENV_NAME.fullmatch(k)):
+        warnings.append(f"{pdir / 'env'}: {k!r} isn't an environment variable name; left out")
+        del env[k]
+    p["pod"]["env"] = env
+    f = pdir / "mounts"
+    if f.exists():
+        for line in f.read_text().splitlines():
+            w = line.split(None, 1)
+            if not w or w[0].startswith("#"):
+                continue
+            if w[0] in ("rw", "ro"):
+                if len(w) > 1:
+                    p["pod"]["mounts"].append([w[0], expand(w[1].strip())])
+            else:
+                p["pod"]["mounts"].append(["ro", expand(w[0])])
+    for k in ("image", "network"):
+        if (pdir / k).exists():
+            p["pod"][k] = first_word(pdir / k) or None
+    f = pdir / "volumes"
+    if f.exists():
+        for line in f.read_text().splitlines():
+            w = line.split(None, 1)
+            if len(w) == 2 and not w[0].startswith("#"):
+                p["pod"]["volumes"][w[0]] = w[1].strip()
+    f = pdir / "connectors"
+    if f.exists():
+        for line in f.read_text().splitlines():
+            if not line.strip().startswith("#"):
+                p["pod"]["connectors"] += [c for c in re.split(r"[,\s]+", line) if c]
+    if (pdir / "github").exists():
+        p["token"]["profile"] = first_word(pdir / "github") or None
+    if (pdir / "ssh-key").exists():
+        k = first_word(pdir / "ssh-key")
+        p["ssh_agent"]["key"] = expand(k) if k else None
+    p["ssh_agent"]["confirm"] = (pdir / "ssh-confirm").exists()
+    return p
+
+
+# ---------------------------------------------------------------------------------------------
+
+def old_files_in(pdir):
+    return [f for f in OLD_FILES if (Path(pdir) / f).exists()]
+
+
+def load(pdir):
+    """The profile in folder `pdir`, checked. Raises ProfileError."""
+    pdir = Path(pdir)
+    old = old_files_in(pdir)
+    name = pdir.name
+    f = pdir / "profile.toml"
+    warnings = []
+    if f.exists():
+        try:
+            data = tomllib.loads(f.read_text())
+        except tomllib.TOMLDecodeError as e:
+            raise ProfileError(f"{f}: {e}")
+        p = from_toml(data, f)
+        p["format"], p["file"] = "profile.toml", str(f)
+        if old:
+            warnings.append(f"{name}: profile.toml is used; the old files ({', '.join(old)}) are ignored "
+                            f"(apod migrate {name} moves them away)")
+    else:
+        p = from_old_files(pdir, warnings)
+        p["format"] = "old files" if old else "none"
+        p["file"] = str(pdir / "broker.toml") if (pdir / "broker.toml").exists() else ""
+        if old:
+            warnings.append(f"{name}: old profile files ({', '.join(old)}): apod migrate {name}")
+    p["dir"] = str(pdir)
+    p["warnings"] = warnings + p["warnings"]
+    return p
+
+
+def profile_dirs():
+    """The profile folders in the apod root."""
+    r = root()
+    if not r.is_dir():
+        return []
+    return [d for d in sorted(r.iterdir()) if d.is_dir() and d.name not in NOT_PROFILES]
+
+
+# ---------------------------------------------------------------------------------------------
+# apod-broker profile --profile-dir DIR [--json] [--quiet]
+
+USAGE = "usage: apod-broker profile --profile-dir DIR [--json] [--quiet]"
+
+
+def main(argv):
+    pdir, quiet, it = None, False, iter(argv)
+    for a in it:
+        if a == "--profile-dir":
+            pdir = next(it, None)
+        elif a == "--json":
+            pass  # the output is always JSON
+        elif a in ("--quiet", "-q"):
+            quiet = True
+        else:
+            print(USAGE, file=sys.stderr)
+            return 2
+    if not pdir:
+        print(USAGE, file=sys.stderr)
+        return 2
+    try:
+        p = load(pdir)
+    except ProfileError as e:
+        print(f"apod: {e}", file=sys.stderr)
+        return 2
+    if not quiet:
+        for w in p["warnings"]:
+            print(f"apod: {w}", file=sys.stderr)
+    print(json.dumps(p))
+    return 0

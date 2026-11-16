@@ -977,7 +977,7 @@ class GhProvider(Provider):
         # would have a pod act as you.
         user = reg.get("gh_user") or cfg.get("user", "")  # --gh-user: this launch's account, over [gh] user
         if not user:
-            where = Path(reg.get("profile_dir") or "the profile") / "broker.toml"
+            where = reg.get("profile_file") or Path(reg.get("profile_dir") or "the profile") / "profile.toml"
             out["context"].append("gh and git pushes to GitHub are unavailable: this profile names no GitHub account.")
             if any(github_repo(u) for u in reg.get("remotes", [])):
                 out["warnings"].append(f"gh and GitHub remotes are off for this pod: add [gh] user = \"ACCOUNT\" "

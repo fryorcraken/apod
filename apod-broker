@@ -7,6 +7,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "broker"))
 
+if sys.argv[1:2] == ["profile"]:  # a profile's settings as JSON: needs neither the broker nor its extensions
+    import profiles  # noqa: E402
+    sys.exit(profiles.main(sys.argv[2:]))
+
 import core  # noqa: E402
 core.load_extensions()  # extensions/*.py (gh, github, rad, sign, ssh, notify), and yours in ~/.agent-pod/broker-extensions
 

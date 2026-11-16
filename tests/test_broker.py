@@ -441,12 +441,18 @@ class BrokerTest(unittest.TestCase):
             shutil.rmtree(cls.tmp, ignore_errors=True)
 
     @classmethod
-    def register(cls, role, scope, user="agentbot", toml="", remotes=(), warnings=None, project=None, extra=()):
+    def register(cls, role, scope, user="agentbot", toml="", remotes=(), warnings=None, project=None, extra=(), new=False):
+        """Register a pod. The profile is in the old files (broker.toml, env), or with new=True in
+        one profile.toml; `toml` is its top-level keys and tables."""
         pdir = cls.tmp / "profiles" / f"p{next(cls.n)}"
         pdir.mkdir(parents=True)
-        (pdir / "env").write_text("GIT_AUTHOR_NAME=Agent\nGIT_AUTHOR_EMAIL=agent@example.com\n"
-                                  "GIT_COMMITTER_NAME=Agent\nGIT_COMMITTER_EMAIL=agent@example.com\n")
-        (pdir / "broker.toml").write_text(toml + (f'\n[gh]\nuser = "{user}"\n' if user else ""))
+        if new:
+            (pdir / "profile.toml").write_text(
+                toml + '\n[git]\nname = "Agent"\nemail = "agent@example.com"\n' + (f'\n[gh]\nuser = "{user}"\n' if user else ""))
+        else:
+            (pdir / "env").write_text("GIT_AUTHOR_NAME=Agent\nGIT_AUTHOR_EMAIL=agent@example.com\n"
+                                      "GIT_COMMITTER_NAME=Agent\nGIT_COMMITTER_EMAIL=agent@example.com\n")
+            (pdir / "broker.toml").write_text(toml + (f'\n[gh]\nuser = "{user}"\n' if user else ""))
         proj = project or cls.tmp / "proj"  # by default a git repository, as a launch folder usually is
         if not project:
             (proj / ".git").mkdir(parents=True, exist_ok=True)
@@ -1112,6 +1118,37 @@ class BrokerTest(unittest.TestCase):
         self.assertIn("ssh:devbox", sess["scope"])
         self.assertIn('scope = ["ssh:devbox"]', warnings[0])
 
+    def test_register_reads_profile_toml(self):
+        # The same settings from profile.toml as from the old files: role, scope, allow, deny, the
+        # extension tables, the git identity; and no warning about old files.
+        w = []
+        sess = self.register("", [], new=True, warnings=w, toml=(
+            f'role = "dev"\nscope = ["ssh:devbox"]\nallow = ["ssh:connect", "ssh:login"]\ndeny = ["gh:pr create"]\n'
+            f'[ssh]\nkey = "{self.tmp}/userkey"\n'))
+        self.assertEqual(sess["role"], "dev")
+        self.assertIn("ssh:login", sess["allowed"])
+        self.assertNotIn("old profile files", w[0])
+        self.assertIn("ssh", sess["providers"])
+        state = json.loads((Path(sess["dir"]).parent / f"{sess['id']}.json").read_text())
+        self.assertEqual(state["extra"], {"allow": ["ssh:connect", "ssh:login"], "deny": ["gh:pr create"]})
+        self.assertEqual(state["identity"]["emails"], ["agent@example.com"])
+        r = self.gh("pr", "create", "--title", "t", "--body", "b", sess=sess, cwd=self.work, expect=1)
+        self.assertIn("never allowed", r.stderr)
+        # The launch's role still wins over profile.toml's.
+        self.assertEqual(self.register("reader", [], new=True, toml='role = "dev"\n')["role"], "reader")
+        # Old files warn once, with the way out.
+        w = []
+        self.register("", [], warnings=w)
+        self.assertRegex(w[0], r"p\d+: old profile files \(broker.toml, env\): apod migrate p\d+")
+        # A key after a [table] line is that table's: refused, not run with another role.
+        pdir = self.tmp / "profiles" / "misplaced"
+        pdir.mkdir(parents=True)
+        (pdir / "profile.toml").write_text('[gh]\nuser = "x"\nrole = "dev"\n')
+        r = subprocess.run([sys.executable, BROKER, "register", "--profile", "t", "--profile-dir", str(pdir),
+                            "--project", str(self.tmp / "proj")], env=self.env, capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("[gh] has role = ...: move it above the first [table]", r.stderr)
+
     def test_profile_adds_to_role(self):
         # allow = [...] in a profile's broker.toml adds to its role, deny takes away; a scope entry
         # the role can't use at all gets a warning.
@@ -1496,6 +1533,191 @@ class BrokerTest(unittest.TestCase):
         ui.wait(timeout=5)
         os.close(master)
         self.assertEqual(ui.returncode, 0)
+
+class ProfileLoaderTest(unittest.TestCase):
+    """`apod-broker profile`: one profile's settings as JSON, from profile.toml or the old files."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(prefix="apod-profile-"))
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.env = dict(os.environ, APOD_ROOT=str(self.dir), HOME="/home/agent-test")
+        self.pdir = self.dir / "work"
+        (self.pdir / "home").mkdir(parents=True)
+
+    def load(self, expect=0, *extra):
+        r = subprocess.run([sys.executable, BROKER, "profile", "--profile-dir", str(self.pdir), *extra],
+                           env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, expect, r.stderr)
+        return (json.loads(r.stdout) if expect == 0 else None), r.stderr
+
+    def write(self, name, text):
+        (self.pdir / name).write_text(textwrap.dedent(text))
+
+    NEW = """\
+        broker = true
+        role   = "reader"
+        scope  = ["gh:fryorcraken/*", "gh-search:all"]
+        allow  = ["clipboard:image"]
+        deny   = ["gh:pr merge"]
+
+        [pod]
+        image = "myimage"
+        network = "host"
+        ro = ["~/ro1", "/ro2"]
+        rw = ["/rw1"]
+        volumes = { "apod-work-nix" = "/nix" }
+        connectors = ["gdoc", "todoist"]
+        [pod.env]
+        SOME_VAR = "a b"
+        QUOTED = "x"
+
+        [git]
+        name = "Bot Agent"
+        email = "bot@example.com"
+
+        [gh]
+        user = "fryorcraken"
+        """
+
+    # The same profile in the old files.
+    OLD = {
+        "broker.toml": """\
+            role = "reader"
+            scope = ["gh:fryorcraken/*", "gh-search:all"]
+            allow = ["clipboard:image"]
+            deny = ["gh:pr merge"]
+            [gh]
+            user = "fryorcraken"
+            """,
+        "env": """\
+            GIT_AUTHOR_NAME="Bot Agent"
+            GIT_AUTHOR_EMAIL=bot@example.com
+            # a comment
+            SOME_VAR='a b'
+            QUOTED="x"
+            """,
+        "mounts": "# mounts\n~/ro1\n/ro2\nrw /rw1\n",
+        "image": "myimage\n", "network": "host\n",
+        "volumes": "# a volume\napod-work-nix /nix\n", "connectors": "gdoc, todoist\n",
+    }
+
+    def test_profile_toml(self):
+        self.write("profile.toml", self.NEW)
+        p, err = self.load()
+        self.assertEqual(err, "")
+        self.assertEqual(p["format"], "profile.toml")
+        self.assertEqual((p["broker"], p["role"], p["scope"], p["allow"], p["deny"]),
+                         (True, "reader", ["gh:fryorcraken/*", "gh-search:all"], ["clipboard:image"], ["gh:pr merge"]))
+        self.assertEqual(p["pod"], {"image": "myimage", "network": "host", "volumes": {"apod-work-nix": "/nix"},
+                                    "mounts": [["ro", "/home/agent-test/ro1"], ["ro", "/ro2"], ["rw", "/rw1"]],
+                                    "connectors": ["gdoc", "todoist"], "env": {"SOME_VAR": "a b", "QUOTED": "x"}})
+        self.assertEqual(p["git"], {"name": "Bot Agent", "email": "bot@example.com"})
+        self.assertEqual(p["tables"], {"gh": {"user": "fryorcraken"}})
+
+    def test_defaults(self):
+        self.write("profile.toml", "")
+        p, err = self.load()
+        self.assertEqual((p["broker"], p["role"], p["scope"], p["pod"]["image"], p["pod"]["mounts"]), (True, None, [], None, []))
+        self.write("profile.toml", "broker = false\n[token]\nprofile = \"other\"\n[ssh-agent]\nkey = \"~/k\"\nconfirm = true\n")
+        p, err = self.load()
+        self.assertEqual((p["broker"], p["token"], p["ssh_agent"]),
+                         (False, {"profile": "other"}, {"key": "/home/agent-test/k", "confirm": True}))
+
+    def test_old_files(self):
+        for f, text in self.OLD.items():
+            self.write(f, text)
+        self.write("github", "other\n")
+        self.write("ssh-key", "~/key\n")
+        self.write("ssh-confirm", "")
+        p, err = self.load()
+        self.assertEqual(p["format"], "old files")
+        new = self.load_new(self.NEW)
+        for k in ("broker", "role", "scope", "allow", "deny", "pod", "git", "tables"):
+            self.assertEqual(p[k], new[k], k)
+        self.assertEqual((p["token"], p["ssh_agent"]), ({"profile": "other"}, {"key": "/home/agent-test/key", "confirm": True}))
+        self.assertIn("old profile files (broker.toml, env, mounts, image, network, volumes, connectors, github, "
+                      "ssh-key, ssh-confirm): apod migrate work", err)
+        self.assertEqual(p["warnings"], [err.strip().removeprefix("apod: ")])
+        # Without broker.toml there is no broker; nothing at all: no warning either.
+        (self.pdir / "broker.toml").unlink()
+        self.assertFalse(self.load()[0]["broker"])
+        for f in self.OLD:
+            (self.pdir / f).unlink(missing_ok=True)
+        for f in ("github", "ssh-key", "ssh-confirm"):
+            (self.pdir / f).unlink()
+        p, err = self.load()
+        self.assertEqual((p["format"], p["broker"], err), ("none", False, ""))
+
+    def load_new(self, text):
+        d = self.dir / "new"
+        d.mkdir()
+        (d / "profile.toml").write_text(textwrap.dedent(text))
+        r = subprocess.run([sys.executable, BROKER, "profile", "--profile-dir", str(d)], env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        shutil.rmtree(d)
+        return json.loads(r.stdout)
+
+    def test_both_present_uses_profile_toml(self):
+        self.write("profile.toml", 'role = "dev"\n')
+        self.write("broker.toml", 'role = "maintainer"\n')
+        self.write("env", "GIT_AUTHOR_NAME=Old\n")
+        p, err = self.load()
+        self.assertEqual((p["role"], p["git"]), ("dev", {}))
+        self.assertIn("profile.toml is used; the old files (broker.toml, env) are ignored", err)
+        self.assertEqual(self.load(0, "--quiet")[1], "")
+
+    def test_old_persona(self):
+        self.write("broker.toml", 'persona = "maintainer"\n')
+        p, err = self.load()
+        self.assertEqual(p["role"], "maintainer")
+        self.assertIn("persona = is now role =", err)
+
+    def test_a_key_after_a_table_is_refused(self):
+        for k, v in (("role", '"dev"'), ("scope", '["gh:a/b"]'), ("allow", '["gh:pr list"]'), ("deny", "[]"), ("broker", "false")):
+            for table in ("gh", "pod", "git", "token", "ssh-agent"):
+                self.write("profile.toml", f"[{table}]\n{k} = {v}\n")
+                _, err = self.load(2)
+                self.assertIn(f"[{table}] has {k} = ...: move it above the first [table]", err)
+
+    def test_unknown_keys_and_types_are_errors(self):
+        bad = [
+            ("[pod]\nimg = \"x\"\n", "[pod] has no key img"),
+            ("[pod]\nmounts = []\n", "[pod] has no key mounts"),
+            ("[git]\nnmae = \"x\"\n", "[git] has no key nmae"),
+            ("[token]\nname = \"x\"\n", "[token] has no key name"),
+            ("[ssh-agent]\nconfirmed = true\n", "[ssh-agent] has no key confirmed"),
+            ("persona = \"dev\"\n", "unknown key persona"),
+            ("broker = \"yes\"\n", "broker is true or false"),
+            ("role = 3\n", "role is a string"),
+            ("scope = \"gh:a/b\"\n", "scope is a list of strings"),
+            ("allow = [\"nocolon\"]\n", 'allow is a list of "PROVIDER:ACTION" patterns'),
+            ("[pod]\nro = \"/x\"\n", "ro is a list of strings"),
+            ("[pod]\nimage = 3\n", "image is a string"),
+            ("[pod]\nvolumes = { v = 3 }\n", "[pod] volumes is a table"),
+            ("[pod.env]\nN = 3\n", "values are strings"),
+            ("[pod.env]\n\"A B\" = \"x\"\n", "isn't an environment variable name"),
+            ("[pod.env]\nGIT_AUTHOR_NAME = \"x\"\n", "the git identity is [git] name and email"),
+            ("[git]\nemail = \"nope\"\n", "email isn't an email address"),
+            ("[ssh-agent]\nconfirm = \"yes\"\n", "confirm is true or false"),
+            ("[token]\nprofile = \"a b\"\n", "profile is the name of a profile"),
+            ("[pod\n", "profile.toml"),
+        ]
+        for text, msg in bad:
+            self.write("profile.toml", text)
+            _, err = self.load(2)
+            self.assertIn(msg, err, text)
+            self.assertIn(str(self.pdir / "profile.toml"), err)
+
+    def test_needs_no_broker_and_no_extensions(self):
+        # The old-files reading too: nothing is started, and the user's extensions aren't run.
+        ext = self.dir / "broker-extensions"
+        ext.mkdir()
+        (ext / "boom.py").write_text(f'open({str(self.dir / "ran")!r}, "w").write("x")\n')
+        self.write("profile.toml", 'role = "dev"\n')
+        self.load()
+        self.assertFalse((self.dir / "ran").exists())
+        self.assertFalse((self.dir / "broker").exists())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

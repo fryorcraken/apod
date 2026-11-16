@@ -6,7 +6,7 @@ updates are checked, and the broker then pushes them on with the host's git-remo
 host's Radicle identity (its key loaded in the broker's agent). Push options (-o patch.message=...)
 are passed on.
 
-Off unless broker.toml (the profile's or the global one) turns it on: [rad] enabled = true, for the
+Off unless profile.toml (or the global broker.toml) turns it on: [rad] enabled = true, for the
 Radicle repositories in the scope (rad:RID entries); [rad] autodetect = true, also for the
 project's rad:// remotes. Then on for a pod with a Radicle repository in its scope. The
 identity's key is asked for at launch only when the role may push. Setup, roles, keys: the

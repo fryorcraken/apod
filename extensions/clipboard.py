@@ -5,7 +5,7 @@ clipboard holds one, then `wl-paste --type image/png` to read it. In the pod, wl
 apod-clipboard: it asks the broker, which runs the real wl-paste (Wayland) or xclip (X11) on the
 host, with a fixed command, for image types only.
 
-    # a profile's broker.toml
+    # a profile's profile.toml
     allow = ["clipboard:image"]     # paste without asking; otherwise each paste waits for you
     [clipboard]
     enabled = true

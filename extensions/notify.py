@@ -6,7 +6,7 @@ notify-send on the host, titled with the agent session's name.
 
 It's shipped, so it's always loaded; it's active for profiles that turn it on:
 
-    # ~/.agent-pod/<profile>/broker.toml (or ~/.agent-pod/broker.toml for every profile)
+    # ~/.agent-pod/<profile>/profile.toml (or ~/.agent-pod/broker.toml for every profile)
     [notify]
     enabled = true
     # command = ["notify-send", "-a", "apod"]    # the default; called with TITLE TEXT
@@ -62,13 +62,13 @@ def handle(h, sess, method):
 
 
 class NotifyProvider(Provider):
-    name = "notify"  # the [notify] table in broker.toml, the notify list in roles, notify:* actions
+    name = "notify"  # the [notify] table in profile.toml, the notify list in roles, notify:* actions
     description = "desktop notifications on the host (apod-notify)"
     guide = "docs/guides.md#notifications"
     routes = [("POST", "/notify", handle)]
 
     def configure(self, sess, cfg, reg, out):
-        """Called when a pod registers, with broker.toml's [notify] table. Returns whether the
+        """Called when a pod registers, with profile.toml's [notify] table. Returns whether the
         provider is active for this pod."""
         if not cfg.get("enabled"):
             return False

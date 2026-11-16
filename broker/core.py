@@ -31,6 +31,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 import herdr
+import profiles
 
 ROOT = Path(os.environ.get("APOD_ROOT") or Path.home() / ".agent-pod")
 BDIR = ROOT / "broker"
@@ -49,12 +50,12 @@ ASK_TIMEOUT = float(os.environ.get("APOD_BROKER_ASK_TIMEOUT", "90"))
 if ASK_TIMEOUT.is_integer():
     ASK_TIMEOUT = int(ASK_TIMEOUT)
 
-# Scope kinds, keyed by prefix: an entry is written PREFIX:VALUE in broker.toml's scope list and
+# Scope kinds, keyed by prefix: an entry is written PREFIX:VALUE in a profile's scope list and
 # --scope, a target is (PREFIX, VALUE). Core knows none; extensions declare theirs with
 # scope_kind() (gh:, gh-project:, rad:, ssh:, git-local: are the shipped extensions'). "unscoped"
 # targets are core's: they're in scope only once the user approves them for the session.
 SCOPES = {}
-GLOBAL_CONFIG = ROOT / "broker.toml"   # defaults for every profile's broker.toml
+GLOBAL_CONFIG = ROOT / "broker.toml"   # the extension tables shared by every profile
 EXTENSIONS = ROOT / "broker-extensions"  # the user's own extensions, *.py; a name here replaces a shipped one
 SHIPPED_EXTENSIONS = CHECKOUT / "extensions"
 
@@ -80,11 +81,11 @@ def now():
 class Provider:
     """What a provider is (subclass it, or give an object the same attributes). See EXTENSIONS.md.
 
-    name       the broker.toml table, the role list and the action prefix ("hello" -> hello:...)
+    name       the profile.toml table, the role list and the action prefix ("hello" -> hello:...)
     routes     [(method, path, handler(h, sess, method))]: requests from the pod's broker socket
                (GET, POST or CONNECT); path matches the request's path or a "/"-separated prefix
     requires   names of providers this one needs: configured after them, and only if they're on
-    renamed_from  its earlier names: their broker.toml tables, role lists and actions still work
+    renamed_from  its earlier names: their profile.toml tables, role lists and actions still work
     needs_target  False for a provider that's on without a target of its own kinds in scope (gh:
                it acts on what isn't known up front, and asks for what's out of scope)
     description  one line for apod broker extensions: what it gives pods
@@ -99,13 +100,13 @@ class Provider:
     guide = ""
 
     def targets(self, cfg, reg):
-        """[(kind, value)]: scope entries the provider's broker.toml table or the launch adds, of
+        """[(kind, value)]: scope entries the provider's profile.toml table or the launch adds, of
         its own kinds (ssh's hosts, git-sign's folder). Called before the on-rules are applied."""
         return []
 
     def configure(self, sess, cfg, reg, out):
         """At each pod's registration, once the core's rules let the provider on (see
-        provider_off): set the pod up (out) and say whether it's on, False when its broker.toml
+        provider_off): set the pod up (out) and say whether it's on, False when its profile.toml
         table lacks what it needs."""
         return False
 
@@ -121,11 +122,12 @@ class Provider:
         """The session ended."""
 
     def keys(self, cfg):
-        """[(key path, confirm)] for apod broker keys, from the provider's broker.toml table."""
+        """[(key path, confirm)] for apod broker keys, from the provider's profile.toml table."""
         return []
 
 
-RESERVED_NAMES = {"allow", "deny", "extends", "description", "unscoped"}  # roles.toml keys, core's targets
+# roles.toml keys, core's targets, and the tables of a profile.toml that aren't an extension's
+RESERVED_NAMES = {"allow", "deny", "extends", "description", "unscoped", *profiles.OWN_TABLES}
 
 
 def provider(p):
@@ -168,7 +170,7 @@ def provider_off(p, sess, pcfg, on):
     it declares scope kinds (and needs_target isn't False), the pod's scope has an entry of one
     of them (nothing to act on otherwise). Whether it's configured (its key, its account) is configure's to say."""
     if isinstance(pcfg, dict) and pcfg.get("enabled") is False:
-        return f"turned off ({p.name}.enabled = false in broker.toml)"
+        return f"turned off ({p.name}.enabled = false in profile.toml)"
     missing = [n for n in getattr(p, "requires", []) or [] if n not in on]
     if missing:
         return f"it needs {', '.join(missing)}, which is off"
@@ -225,7 +227,7 @@ class ScopeKind:
 
 def scope_kind(prefix, *, parse=None, match=None, grant=None, label=None, entry=True, help="", provider="",
                remote=None, old=(), bare=False):
-    """Declare a scope kind, written PREFIX:VALUE in broker.toml's scope list and --scope. A
+    """Declare a scope kind, written PREFIX:VALUE in a profile's scope list and --scope. A
     request's target (PREFIX, value) is in scope when match(sess, value) says so; by default,
     when it matches one of the session's PREFIX entries (shell-style patterns, case-insensitive).
 
@@ -467,7 +469,7 @@ class Session:
         self.grants = {k: list((self.grants or {}).get(k, [])) for k in ("actions", "unscoped")}
         self.cfg = self.cfg or {}
         self.identity = self.identity or {}
-        # The profile's additions to its role (broker.toml allow, deny).
+        # The profile's additions to its role (profile.toml allow, deny).
         self.extra = {k: list((self.extra or {}).get(k, [])) for k in ("allow", "deny")}
         self.temp = {}  # (kind, value) -> expiry, from a one-off approval that spans two requests
 
@@ -518,7 +520,7 @@ class Session:
         return [fmt_scope(k, v) for k in self.scope for v in self.scope[k]]
 
     def rules(self):
-        """(allow, deny): the role's, then the profile's own (broker.toml allow and deny)."""
+        """(allow, deny): the role's, then the profile's own (profile.toml allow and deny)."""
         allow, deny = role_rules(self.role)
         return allow + self.extra["allow"], deny + self.extra["deny"]
 
@@ -968,30 +970,18 @@ def need_key(sess, out, path, confirm=False, purpose="", actions=None):
 # ---------------------------------------------------------------------------------------------
 # Sessions
 
-def read_env_file(path):
-    env = {}
-    try:
-        for line in Path(path).read_text().splitlines():
-            k, eq, v = line.strip().partition("=")
-            if eq and not k.startswith("#"):
-                env[k.strip()] = v.strip().strip("'\"")
-    except OSError:
-        pass
-    return env
-
-
-def git_identity(pdir):
-    """The profile's git identity, as apod gives it to the pod: its env (GIT_AUTHOR_*,
-    GIT_COMMITTER_*), else the host's global git config. Never the project's .git/config, which
-    pods can edit."""
-    env = read_env_file(Path(pdir) / "env")
+def git_identity(prof):
+    """The profile's git identity, as apod gives it to the pod: its [git] (name, email,
+    committer_*), else the host's global git config. Never the project's .git/config, which pods
+    can edit."""
+    git = prof["git"]
 
     def glob(key):
         return run_quiet(["git", "config", "--global", "--get", key]).stdout.strip()
-    name = env.get("GIT_AUTHOR_NAME") or glob("user.name")
-    email = env.get("GIT_AUTHOR_EMAIL") or glob("user.email")
-    return {"name": env.get("GIT_COMMITTER_NAME") or name,
-            "emails": sorted({e for e in (email, env.get("GIT_COMMITTER_EMAIL")) if e})}
+    name = git.get("name") or glob("user.name")
+    email = git.get("email") or glob("user.email")
+    return {"name": git.get("committer_name") or name,
+            "emails": sorted({e for e in (email, git.get("committer_email")) if e})}
 
 
 def read_toml(f):
@@ -1032,22 +1022,31 @@ def renamed_action(a):
     return f"{renamed()[p]}:{rest}" if sep and p in renamed() else a
 
 
-def load_config(pdir, warnings=None):
+def read_profile(pdir):
+    """The profile in folder pdir (profile.toml, or the old files), as profiles.load reads it."""
+    try:
+        return profiles.load(pdir)
+    except profiles.ProfileError as e:
+        raise BrokerError(str(e))
+
+
+def load_config(pdir, warnings=None, prof=None):
     """The global broker.toml's tables (settings shared by every profile: keys, the Radicle
-    home, ...) under the profile's broker.toml. What a pod may do (role, scope) comes only from
-    the profile and the launch."""
+    home, ...) under the profile's: its extension tables, and its role, scope, allow and deny
+    from the top of the file. What a pod may do (role, scope) comes only from the profile and
+    the launch."""
+    prof = prof or read_profile(pdir)
     glob = read_toml(GLOBAL_CONFIG)
     for k in [k for k, v in glob.items() if not isinstance(v, dict)]:
         glob.pop(k)
         if warnings is not None:
-            warnings.append(f"{GLOBAL_CONFIG}: {k} is ignored there (set it in a profile's broker.toml "
+            warnings.append(f"{GLOBAL_CONFIG}: {k} is ignored there (set it in a profile's profile.toml "
                             f"or at launch); it holds only settings shared by every profile")
     renamed_tables(glob, GLOBAL_CONFIG, warnings)
-    cfg = renamed_tables(read_toml(Path(pdir) / "broker.toml"), Path(pdir) / "broker.toml", warnings)
-    if "persona" in cfg and "role" not in cfg:
-        cfg["role"] = cfg.pop("persona")
-        if warnings is not None:
-            warnings.append(f"{Path(pdir) / 'broker.toml'}: persona = is now role = (it still works for now)")
+    cfg = renamed_tables(dict(prof["tables"]), prof["file"] or Path(pdir) / "profile.toml", warnings)
+    for k in ("role", "scope", "allow", "deny"):
+        if prof[k]:
+            cfg[k] = prof[k]
     return merge_config(glob, cfg)
 
 
@@ -1056,11 +1055,14 @@ def register(r):
     if not re.fullmatch(r"[A-Za-z0-9_-]{4,64}", sid):
         raise BrokerError("bad session id")
     pdir = Path(r.get("profile_dir") or ROOT / r.get("profile", ""))
-    warnings = []
-    cfg = load_config(pdir, warnings)
+    prof = read_profile(pdir)
+    warnings = list(prof["warnings"])
+    cfg = load_config(pdir, warnings, prof)
+    toml = prof["file"] or str(pdir / "profile.toml")
+    r["profile_file"] = toml  # for the extensions' messages
     role = r.get("role") or cfg.get("role") or "reader"
     role_rules(role)  # fails on an unknown role
-    identity = git_identity(pdir)
+    identity = git_identity(prof)
     sess = Session({"id": sid, "profile": r.get("profile", ""), "role": role,
                     "project": r.get("project", ""), "created": now(), "identity": identity,
                     "cfg": {"_home": str(pdir / "home")}})
@@ -1069,12 +1071,8 @@ def register(r):
     if hz:
         sess.cfg["_herdr"] = hz
     # The profile's additions to its role: allow = [...], deny = [...], as in roles.toml.
-    toml = Path(pdir) / "broker.toml"
     for k in ("allow", "deny"):
-        v = cfg.get(k, [])
-        if not isinstance(v, list) or not all(isinstance(a, str) and ":" in a for a in v):
-            raise BrokerError(f'{toml}: {k} is a list of "PROVIDER:ACTION" patterns')
-        sess.extra[k] = [renamed_action(a) for a in v]
+        sess.extra[k] = [renamed_action(a) for a in cfg.get(k, [])]
         for prov in {a.split(":")[0] for a in sess.extra[k]}:
             if prov not in PROVIDERS and not any(c in prov for c in "*?["):
                 warnings.append(f"{toml}: {k}: no extension {prov} is loaded")
@@ -1217,7 +1215,7 @@ def needed_keys():
 
 
 def key_report():
-    """Every key the broker's agent should hold: those named in a profile's broker.toml (by each
+    """Every key the broker's agent should hold: those named in a profile's profile.toml (by each
     provider's keys(cfg)) and those running pods use. [{path, confirm, users, loaded, error}]."""
     have, keys = agent_keys(), {}
 
@@ -1227,12 +1225,18 @@ def key_report():
         k["confirm"] = k["confirm"] or bool(confirm)
         if user not in k["users"]:
             k["users"].append(user)
-    for f in [GLOBAL_CONFIG] + sorted(ROOT.glob("*/broker.toml")):
+    for f in [GLOBAL_CONFIG] + profiles.profile_dirs():
         try:
-            cfg = read_toml(f) if f == GLOBAL_CONFIG else load_config(f.parent)
+            if f == GLOBAL_CONFIG:
+                cfg = read_toml(f)
+            else:
+                prof = read_profile(f)
+                if prof["format"] == "none" or not prof["broker"]:
+                    continue  # no settings, or no broker: nothing here the broker would use
+                cfg = load_config(f, prof=prof)
         except (OSError, BrokerError):
             continue
-        who = "all profiles" if f == GLOBAL_CONFIG else f.parent.name
+        who = "all profiles" if f == GLOBAL_CONFIG else f.name
         for p in PROVIDERS.values():
             if hasattr(p, "keys") and isinstance(cfg.get(p.name), dict) and cfg[p.name].get("enabled") is not False:
                 for path, confirm in p.keys(cfg[p.name]):
@@ -1548,11 +1552,11 @@ def extension_info(name):
         out += [f"  {k.prefix + ':':<12} {k.help}" for k in kinds]
     own = own_kinds(name) if getattr(p, "needs_target", True) else []
     req = getattr(p, "requires", []) or []
-    out.append(f"On for a pod when: it's set up in broker.toml (its guide says how)"
+    out.append(f"On for a pod when: it's set up in profile.toml (its guide says how)"
                + (f", {', '.join(req)} is on" if req else "")
                + (f", and the pod's scope has an entry of kind {' or '.join(k + ':' for k in own)}" if own else "")
                + ". Its keys are asked for only when the role uses them.")
-    out.append(f"Off for a profile: [{name}] enabled = false in its broker.toml.")
+    out.append(f"Off for a profile: [{name}] enabled = false in its profile.toml.")
     return "\n".join(out) + "\n"
 
 
@@ -1685,7 +1689,7 @@ def main(argv, script):
             r = client("/keys", {})
             if not r["keys"]:
                 tables = ", ".join(f"[{n}]" for n, p in PROVIDERS.items() if hasattr(p, "keys"))
-                print(f"apod broker: no keys to load: neither {GLOBAL_CONFIG} nor a profile's broker.toml names one "
+                print(f"apod broker: no keys to load: neither {GLOBAL_CONFIG} nor a profile's profile.toml names one "
                       f"(in {tables}), and no running pod uses one", file=sys.stderr)
                 return 0
             home = os.path.expanduser("~")
