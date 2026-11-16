@@ -451,11 +451,12 @@ case ${1:-} in
     load_paths; used=()
     while IFS=$'\t' read -r p phome; do
       t=-; g=no; b=-
-      if ! pj=$(python3 "$apoddir/apod-broker" profile --profile "$p" --quiet 2>&1); then
+      # (stdin: the list of profiles; nothing in the loop may read it)
+      if ! pj=$(python3 "$apoddir/apod-broker" profile --profile "$p" --quiet 2>&1 < /dev/null); then
         printf '%-24s %s\n' "$p" "invalid: ${pj#apod: }"; continue
       fi
       src=$(jq -r --arg p "$p" '.token.profile // $p' <<< "$pj")
-      if podman secret exists "gh-$src"; then t=$([ "$src" = "$p" ] && echo set || echo "gh-$src"); fi
+      if podman secret exists "gh-$src" < /dev/null; then t=$([ "$src" = "$p" ] && echo set || echo "gh-$src"); fi
       [ -f "$phome/.config/google-docs-mcp/token.json" ] && g=yes
       if [ "$(jq -r .broker <<< "$pj")" = true ]; then
         b=$(jq -r '.role // "reader"' <<< "$pj")

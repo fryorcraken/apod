@@ -1662,7 +1662,10 @@ class PathsTest(unittest.TestCase):
         for new in (".config/apod", ".local/share/apod", ".local/state/apod"):  # any of the new folders: the new layout
             with self.subTest(new=new):
                 (self.home / new).mkdir(parents=True)
-                self.assertFalse(self.lay().legacy)
+                p = self.lay()
+                self.assertFalse(p.legacy)
+                # ... and ~/.agent-pod, unused then, is pointed out.
+                self.assertEqual(p.notice, f"{old} is there too, and isn't used: apod migrate --layout moves what's in it")
                 (self.home / new).rmdir()
         self.assertTrue(self.lay().legacy)
         (self.home / "st/apod").mkdir(parents=True)  # the new folders where the environment says they are

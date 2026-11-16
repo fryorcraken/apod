@@ -52,14 +52,27 @@ def broker_running(root):
         s.close()
 
 
-def running_pods():
-    """apod's pods that podman has running (their names); [] when there's no podman."""
-    try:
-        r = subprocess.run(["podman", "ps", "--filter", "label=apod.profile", "--format", "{{.Names}}"],
-                           capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
-    except (OSError, subprocess.TimeoutExpired):
+def running_pods(root):
+    """apod's running pods that mount something from the legacy folder `root` (their names); []
+    when there's no podman. A pod podman can't describe counts as one."""
+    def podman(*args):
+        try:
+            return subprocess.run(["podman", *args], capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+    r = podman("ps", "-q", "--filter", "label=apod.profile")
+    ids = r.stdout.split() if r and r.returncode == 0 else []
+    if not ids:
         return []
-    return r.stdout.split()
+    r = podman("inspect", "--format", "{{.Name}}{{range .Mounts}} {{.Source}}{{end}}", *ids)
+    if not r or r.returncode != 0:
+        return ids
+    top, out = os.path.realpath(root), []
+    for line in r.stdout.splitlines():
+        name, *sources = line.split()
+        if any(profiles.inside(os.path.realpath(s), top) for s in sources):
+            out.append(name)
+    return out
 
 
 def profile_text(pdir):
@@ -179,12 +192,19 @@ def main(argv):
     if not root.is_dir():
         say(f"apod: nothing to migrate: there's no {tilde(root)}" + ("" if cur.legacy else " (this is the new layout already)"))
         return 0
+    r = os.path.realpath(root)
+    inner = [d for d in (new.config, new.data, new.state) if profiles.inside(os.path.realpath(d), r)]
+    if inner:
+        say(f"apod: {', '.join(map(tilde, inner))} is inside {tilde(root)}, which is renamed at the end: set "
+            f"APOD_CONFIG_DIR, APOD_DATA_DIR and APOD_STATE_DIR (or the XDG_* variables) to folders outside it")
+        return 2
     if broker_running(root):
         say(f"apod: a broker of the legacy layout is running: apod broker stop (and exit its pods), then run apod migrate --layout again")
         return 2
-    pods = running_pods()
+    pods = running_pods(root)
     if pods:
-        say(f"apod: apod pods are running ({', '.join(pods)}): exit them (and apod broker stop), then run apod migrate --layout again")
+        say(f"apod: pods of the legacy layout are running ({', '.join(pods)}): exit them (and apod broker stop), then "
+            f"run apod migrate --layout again")
         return 2
     try:
         ops, stays, (conf, data, state) = plan(root, new)

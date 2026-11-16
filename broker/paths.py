@@ -21,7 +21,8 @@ The layout follows the XDG Base Directory specification, on macOS too:
 The legacy layout is one folder, ~/.agent-pod, with everything in it (a profile is a folder there,
 the sockets are in its broker/). It's used when APOD_ROOT=DIR is set (the legacy layout rooted at
 DIR), or when none of the new config, data and state folders exists and ~/.agent-pod does. `apod
-migrate --layout` moves it to the new layout. All of it is the `legacy` branch of Layout below.
+migrate --layout` moves it to the new layout. All of it is the `legacy` branch of Layout below,
+and the lines marked (legacy).
 """
 import json
 import os
@@ -108,13 +109,13 @@ class Layout:
         self.state = _dir(env, "APOD_STATE_DIR", "XDG_STATE_HOME", ".local/state")
         self.runtime = runtime_dir(env)
         self.own_runtime = True  # a folder of its own: made private here (ensure_runtime)
-        self.legacy_root = Path(env["APOD_ROOT"]) if env.get("APOD_ROOT") else _home(env) / ".agent-pod"
-        self.legacy = not force_new and (bool(env.get("APOD_ROOT")) or (
+        self.legacy_root = Path(env["APOD_ROOT"]) if env.get("APOD_ROOT") else _home(env) / ".agent-pod"  # (legacy)
+        self.legacy = not force_new and (bool(env.get("APOD_ROOT")) or (  # (legacy)
             not any(d.exists() for d in (self.config, self.data, self.state)) and self.legacy_root.is_dir()))
         self.notice = None
         if self.legacy:
             # The legacy layout: one folder for all of it, a profile a folder in it, the sockets in
-            # its broker/. Deleting this branch (and the two lines above) removes it.
+            # its broker/. Deleting this branch (and the lines marked legacy) removes it.
             r = self.legacy_root
             self.notice = NOTICE + (", then unset APOD_ROOT" if env.get("APOD_ROOT") else "")
             self.config = self.data = self.state = r
@@ -154,6 +155,8 @@ class Layout:
                 "exists": (p / f"{n}.toml").is_file(), "ssh_agent_dir": self.runtime,
                 **({"ssh_agent_sock": self.runtime / f"ssh-{n}-{pid}.sock",
                     "ssh_agent_mount": self.runtime / f"ssh-{n}-{pid}.sock"} if pid else {})}
+        if not self.legacy and self.legacy_root.is_dir():  # (legacy) left beside the new layout: say so
+            self.notice = f"{self.legacy_root} is there too, and isn't used: apod migrate --layout moves what's in it"
         self.roles = self.config / "roles.toml"
         self.log = self.broker / "log.jsonl"              # every request the broker decided
         self.daemon_log = self.broker / "broker.log"       # the broker's own output

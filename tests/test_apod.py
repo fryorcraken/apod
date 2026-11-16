@@ -50,6 +50,7 @@ STUB_PODMAN = textwrap.dedent("""\
         esac ;;
       run) { printf 'podman'; printf '\\n%s' "$@"; printf '\\n--end--\\n'; } >> "$STUB_LOG"; exit 0 ;;
       ps) [ -z "${STUB_PS:-}" ] || echo "$STUB_PS"; exit 0 ;;
+      inspect) [ -z "${STUB_INSPECT:-}" ] || echo "$STUB_INSPECT"; exit 0 ;;
     esac
     exit 0
 """)
@@ -689,9 +690,13 @@ class MigrateLayoutChecksTest(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("a broker of the legacy layout is running: apod broker stop", r.stderr)
         (self.root / "broker/admin.sock").unlink()
-        r = self.migrate("--yes", STUB_PS="apod-p-proj-1")
+        # A pod that mounts the legacy folder's files (a profile's home): refused; one that doesn't
+        # (a pod of another apod folder, a copy) doesn't count.
+        r = self.migrate("--yes", STUB_PS="c1", STUB_INSPECT=f"apod-p-proj-1 /x/proj {self.root}/p/home")
         self.assertEqual(r.returncode, 2)
-        self.assertIn("apod pods are running (apod-p-proj-1)", r.stderr)
+        self.assertIn("pods of the legacy layout are running (apod-p-proj-1)", r.stderr)
+        r = self.migrate(input="n\n", STUB_PS="c1", STUB_INSPECT="apod-other-proj-1 /x/proj /elsewhere/home")
+        self.assertEqual(r.returncode, 1, r.stderr)  # it went on, to the question
         self.assertTrue((self.root / "p/home").is_dir() and not (self.tmp / "c").exists())
 
     def test_it_asks_first(self):
@@ -726,6 +731,12 @@ class MigrateLayoutChecksTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual((self.tmp / "c/profiles/p.toml").read_text(), text)
         self.assertTrue((self.tmp / "s/selinux").exists() and (self.tmp / "old.migrated/p/env").exists())
+
+    def test_new_folders_inside_the_old_one_are_refused(self):
+        r = self.migrate("--yes", APOD_STATE_DIR=str(self.root / "state"))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("which is renamed at the end", r.stderr)
+        self.assertTrue((self.root / "p/home").is_dir())
 
     def test_mounts_the_new_layout_refuses_are_pointed_out(self):
         (self.root / "p/mounts").write_text(f"{self.tmp}\n")  # contains the new folders

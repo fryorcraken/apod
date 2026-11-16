@@ -293,7 +293,9 @@ apod's files are in four folders, after the XDG Base Directory specification (on
 `broker.toml` (now `config.toml`), `roles.toml`, `broker-extensions/` (now `extensions/`),
 `broker/` (with the sockets), `history.jsonl`, `worklog/`, `selinux`. apod uses it when none of
 the config, data and state folders exists and `~/.agent-pod` does, and says so at launch; `apod
-migrate --layout` moves it to the new layout ([guide](guides.md#migrating-to-the-new-layout)). `APOD_ROOT=DIR` means the legacy
+migrate --layout` moves it to the new layout ([guide](guides.md#migrating-to-the-new-layout)).
+With one of the new folders there too, apod uses the new layout, and says that `~/.agent-pod`
+isn't used. `APOD_ROOT=DIR` means the legacy
 layout rooted at `DIR`, whatever the other variables say.
 
 apod refuses a mount (`[pod] ro`/`rw`, `--ro`, `--rw`) that is, contains or is inside one of
