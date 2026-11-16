@@ -1,17 +1,20 @@
 """A profile's configuration, read from one place.
 
-A profile is a folder, ~/.agent-pod/<profile>/ (APOD_ROOT overrides ~/.agent-pod). Its settings
-are in profile.toml. Profiles made before it existed are spread over several files (broker.toml,
-env, mounts, image, network, volumes, connectors, github, ssh-key, ssh-confirm), which are still
-read, the same way as ever, when there is no profile.toml: `apod migrate` converts them.
+A profile is a folder (paths.py says where: profiles/NAME/ in apod's config folder, its home in
+the data folder; in the legacy layout, ~/.agent-pod/NAME/ with its home in it). Its settings are
+in profile.toml. Profiles made before it existed are spread over several files (broker.toml, env,
+mounts, image, network, volumes, connectors, github, ssh-key, ssh-confirm), which are still read,
+the same way as ever, when there is no profile.toml: `apod migrate` converts them.
 
 Both `apod` (through `apod-broker profile`) and the broker (register) call load(), so they read
-the same thing. This module imports nothing from the broker: it works without it running, and
-`apod-broker profile` doesn't load extensions.
+the same thing. This module imports nothing from the broker but paths.py: it works without it
+running, and `apod-broker profile` doesn't load extensions.
 
-load() returns a dict (and `apod-broker profile --profile-dir DIR` prints it as JSON):
+load(NAME, or a profile's folder) returns a dict (`apod-broker profile --profile NAME` prints it
+as JSON):
 
-    dir, file        the profile folder; the file the settings come from ("" if there is none)
+    name, home       the profile's name and its home folder (the pod's $HOME)
+    dir, file        its folder; the file the settings come from ("" if there is none)
     format           "profile.toml", "old files" or "none"
     broker           whether the broker acts for the pod (profile.toml: broker = ..., default
                      true; old files: broker.toml exists)
@@ -32,10 +35,10 @@ import sys
 import tomllib
 from pathlib import Path
 
+import paths
+
 OLD_FILES = ("broker.toml", "env", "mounts", "image", "network", "volumes", "connectors", "github",
              "ssh-key", "ssh-confirm")
-# Folders in the apod root that are not profiles.
-NOT_PROFILES = ("broker", "broker-extensions", "worklog")
 TOP_KEYS = {"broker": bool, "role": str, "scope": list, "allow": list, "deny": list}
 # Tables the profile owns; any other table belongs to a broker extension.
 OWN_TABLES = {"pod": {"image", "network", "ro", "rw", "volumes", "connectors", "env"},
@@ -51,10 +54,6 @@ CHECKOUT = Path(__file__).resolve().parent.parent  # this apod checkout
 
 class ProfileError(Exception):
     pass
-
-
-def root():
-    return Path(os.environ.get("APOD_ROOT") or Path.home() / ".agent-pod")
 
 
 def expand(p):
@@ -266,24 +265,36 @@ def inside(a, b):
     return a == b or a.startswith(b.rstrip("/") + "/")
 
 
+# What each of apod's folders holds, for the mount guard's message.
+GUARDED_WHY = {
+    "apod's folder": "holds every profile's login, the broker's keys and state, and the profiles' settings: a pod "
+                     "could read them, or rewrite its own configuration",
+    "apod's config folder": "holds the profiles' settings, your roles and broker extensions: a pod could rewrite "
+                            "its own configuration",
+    "apod's data folder": "holds every profile's home, with its logins: a pod could read another profile's",
+    "apod's state folder": "holds the broker's state (its approvals, sessions and keys): a pod could read or change it",
+    "apod's runtime folder": "holds the broker's sockets: a pod could approve its own requests",
+    "the apod checkout": "is the code the broker runs on the host: a pod could change it",
+}
+
+
 def check_mount(mode, path, where):
     """Refuse a mount that would let a pod read or change apod's own configuration: one that is,
-    contains or is inside the apod folder (~/.agent-pod: the profiles' logins, the broker's keys
-    and state, and each profile.toml) or this checkout (the code the host runs), and a read-write
-    mount of your home folder. A read-only mount of the apod folder's worklog/, history.jsonl or
-    broker/log.jsonl, or of something inside worklog/, is fine. `where` says what asked for it."""
-    r, c, p = real(str(root())), real(str(CHECKOUT)), real(path)
-    if mode == "ro" and any(inside(p, f"{r}/{a}") for a in ("worklog", "history.jsonl", "broker/log.jsonl")):
+    contains or is inside one of apod's folders (paths.py: the profiles' settings and logins, the
+    broker's keys, state and sockets) or this checkout (the code the host runs), and a read-write
+    mount of your home folder. A read-only mount of the work logs (or one of them), the history or
+    the broker's request log is fine. `where` says what asked for it."""
+    lay, p = paths.layout(), real(path)
+    readable = [real(str(x)) for x in lay.readable]
+    if mode == "ro" and any(inside(p, x) for x in readable):
         return
-    for name, x, why in ((f"apod's folder {r}", r, "holds every profile's login, the broker's keys and state, and "
-                          "the profiles' settings: a pod could read them, or rewrite its own configuration"),
-                         (f"the apod checkout {c}", c, "is the code the broker runs on the host: a pod could "
-                          "change it")):
+    for label, x in lay.guarded + [("the apod checkout", CHECKOUT)]:
+        x = real(str(x))
         rel = "is" if p == x else "is inside" if inside(p, x) else "contains" if inside(x, p) else None
         if rel:
             raise ProfileError(f"{where}: {mode} mount {path}{'' if p == expand(path) else f' ({p})'} is refused: it "
-                               f"{rel} {name}, which {why}. (Only read-only mounts of {r}/worklog, "
-                               f"{r}/history.jsonl and {r}/broker/log.jsonl are allowed.)")
+                               f"{rel} {label} {x}, which {GUARDED_WHY[label]}. (Only read-only mounts of "
+                               f"{', '.join(readable[:-1])} and {readable[-1]} are allowed.)")
     home = real("~")
     if mode == "rw" and p == home:
         raise ProfileError(f"{where}: rw mount {path} is refused: it is your home folder, which gives the pod write "
@@ -297,14 +308,26 @@ def old_files_in(pdir):
     return [f for f in OLD_FILES if (Path(pdir) / f).exists()]
 
 
-def load(pdir, project=None, guard=True):
-    """The profile in folder `pdir`, checked. Raises ProfileError. A mount of the launch's
-    `project` isn't checked: the project is mounted anyway. The broker (guard=False) doesn't mount
-    anything: apod checks the mounts when it launches."""
-    pdir = Path(pdir)
+def locate(spec):
+    """(name, folder, file, home) of a profile given by its name (paths.py says where it is) or
+    by its folder (a path; its home is in it, as in the legacy layout)."""
+    s = str(spec)
+    if "/" not in s:
+        try:
+            p = paths.layout().profile(s)
+        except paths.PathError as e:
+            raise ProfileError(str(e))
+        return s, Path(p["dir"]), Path(p["file"]), Path(p["home"])
+    path = Path(s)
+    return path.name, path, path / "profile.toml", path / "home"
+
+
+def load(spec, project=None, guard=True):
+    """The profile `spec` (a name, or a path: see locate), checked. Raises ProfileError. A mount of
+    the launch's `project` isn't checked: the project is mounted anyway. The broker (guard=False)
+    doesn't mount anything: apod checks the mounts when it launches."""
+    name, pdir, f, home = locate(spec)
     old = old_files_in(pdir)
-    name = pdir.name
-    f = pdir / "profile.toml"
     warnings = []
     if f.exists():
         try:
@@ -322,7 +345,7 @@ def load(pdir, project=None, guard=True):
         p["file"] = str(pdir / "broker.toml") if (pdir / "broker.toml").exists() else ""
         if old:
             warnings.append(f"{name}: old profile files ({', '.join(old)}): apod migrate {name}")
-    p["dir"] = str(pdir)
+    p["name"], p["dir"], p["home"] = name, str(pdir), str(home)
     p["warnings"] = warnings + p["warnings"]
     where = f if f.exists() else pdir / "mounts"
     for mode, path in p["pod"]["mounts"] if guard else []:
@@ -331,25 +354,27 @@ def load(pdir, project=None, guard=True):
     return p
 
 
-def profile_dirs():
-    """The profile folders in the apod root."""
-    r = root()
-    if not r.is_dir():
-        return []
-    return [d for d in sorted(r.iterdir()) if d.is_dir() and d.name not in NOT_PROFILES]
+def names():
+    """The profiles there are, by name."""
+    return paths.layout().profile_names()
 
 
 # ---------------------------------------------------------------------------------------------
-# apod-broker profile --profile-dir DIR ...
+# apod-broker profile --profile NAME ...
 
-USAGE = "usage: apod-broker profile --profile-dir DIR [--project DIR] [--ro PATH]... [--rw PATH]... [--json] [--quiet]"
+USAGE = ("usage: apod-broker profile [--profile NAME | --profile-dir DIR] [--project DIR] "
+         "[--ro PATH]... [--rw PATH]... [--json] [--quiet]\n"
+         "(with no profile, it only checks the --ro and --rw mounts)")
 
 
 def main(argv):
-    pdir, project, quiet, cli, it = None, None, False, [], iter(argv)
+    spec, project, quiet, cli, it = None, None, False, [], iter(argv)
     for a in it:
-        if a == "--profile-dir":
-            pdir = next(it, None)
+        if a in ("--profile", "--profile-dir"):
+            spec = next(it, None)
+            # A folder given as a name (no "/") is a folder still.
+            if a == "--profile-dir" and spec and "/" not in spec:
+                spec = f"./{spec}"
         elif a == "--project":
             project = next(it, None)
         elif a in ("--ro", "--rw", "-m"):  # the launch's own mounts: checked like the profile's
@@ -361,11 +386,11 @@ def main(argv):
         else:
             print(USAGE, file=sys.stderr)
             return 2
-    if not pdir:
+    if not spec and not cli:
         print(USAGE, file=sys.stderr)
         return 2
     try:
-        p = load(pdir, project)
+        p = load(spec, project) if spec else {"warnings": []}
         for mode, path in cli:
             if path is None:
                 raise ProfileError(USAGE)
@@ -537,7 +562,12 @@ def migrate_main(argv):
         except EOFError:
             print(file=sys.stderr)
             return False
-    dirs = profile_dirs() if everyone else [root() / names[0]]
+    lay = paths.layout()
+    try:
+        dirs = [Path(lay.profile(n)["dir"]) for n in (lay.profile_names() if everyone else names)]
+    except paths.PathError as e:
+        say(f"apod: {e}")
+        return 2
     status = 0
     for d in dirs:
         if not d.is_dir():

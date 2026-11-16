@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [--role R] [--scope S]... [--gh-user ACCOUNT] [--no-broker] [project-dir] [-- agent args...]
 # Run a coding agent in a podman container as a given GitHub identity.
-# Per profile: ~/.agent-pod/<profile>/home (persistent $HOME) and ~/.agent-pod/<profile>/profile.toml:
-# git identity, extra mounts, image, environment... and either the broker (no credentials in the
-# pod, the host's apod broker acts for it: gh, GitHub and Radicle remotes, commit signing, ssh) or
-# the podman secret gh-<profile> (GitHub token). Profiles in the old files are read as before
-# (apod migrate converts them). apod-broker profile reads both: see broker/profiles.py.
+# Per profile: a persistent $HOME and a profile.toml (where: broker/paths.py, through apod-broker
+# paths): git identity, extra mounts, image, environment... and either the broker (no credentials
+# in the pod, the host's apod broker acts for it: gh, GitHub and Radicle remotes, commit signing,
+# ssh) or the podman secret gh-<profile> (GitHub token). In the legacy layout (~/.agent-pod),
+# profiles in the old files are read as before (apod migrate converts them). apod-broker profile
+# reads them all: see broker/profiles.py.
 set -euo pipefail
 
 usage() {
@@ -51,6 +52,18 @@ need_python() {
     exit 2
   }
 }
+# Where apod's files are (broker/paths.py: the new layout, or the legacy ~/.agent-pod), as JSON:
+# load_paths [--profile NAME [--pid PID]] sets $paths, P runs a jq filter on it. The first call
+# in a run says when the legacy layout is in use.
+paths=
+load_paths() {
+  local n
+  need_python
+  paths=$(python3 "$apoddir/apod-broker" paths --json "$@") || exit 2
+  n=$(jq -r '.notice // empty' <<< "$paths")
+  if [ -n "$n" ] && [ -z "${APOD_NOTICE_SHOWN:-}" ]; then echo "apod: $n" >&2; export APOD_NOTICE_SHOWN=1; fi
+}
+P() { jq -r "$@" <<< "$paths"; }
 # For shell completion.
 if [ "${1:-}" = --list-roles ]; then python3 "$apoddir/apod-broker" roles --plain 2>/dev/null | cut -f1; exit 0; fi
 if [ "${1:-}" = --list-connectors ]; then printf '%s\n' "${!connector_servers[@]}" "${local_mcps[@]}" | sort; exit 0; fi
@@ -66,7 +79,7 @@ case ${1:-} in
     # Let pods that use a socket on the host (broker, ssh-key) keep SELinux labelling: load
     # selinux/apod.cil, which lets containers connect to those sockets, or remove it. Without it,
     # those pods run with labelling off.
-    sroot=${APOD_ROOT:-$HOME/.agent-pod}; mark=$sroot/selinux
+    load_paths; mark=$(P .selinux)
     case ${2:-status} in
       install)
         if ! { command -v selinuxenabled >/dev/null && selinuxenabled; }; then
@@ -75,7 +88,7 @@ case ${1:-} in
         echo "apod: loading the apod SELinux module: sudo semodule -i $apoddir/selinux/apod.cil" >&2
         sudo semodule -i "$apoddir/selinux/apod.cil" || exit 1
         sudo semodule -r apod_container >/dev/null 2>&1 || true  # the first version's module
-        mkdir -p "$sroot"; echo apod > "$mark"
+        mkdir -p "$(dirname "$mark")"; echo apod > "$mark"
         echo "apod: pods with a host socket now keep SELinux labelling (as container_t)."
         echo "apod: restart the broker so it runs at level s0: apod broker restart" ;;
       remove)
@@ -97,17 +110,18 @@ case ${1:-} in
     shift; exec python3 "$apoddir/apod-broker" migrate "$@" ;;
   google-auth)
     [ $# -ge 2 ] || { echo "usage: apod google-auth <profile>" >&2; exit 2; }
-    pdir=${APOD_ROOT:-$HOME/.agent-pod}/$2
-    [ -d "$pdir" ] || { echo "apod: no profile $2" >&2; exit 2; }
-    mkdir -p "$pdir/home/.config"
+    load_paths --profile "$2"
+    [ "$(P .profile.exists)" = true ] || { echo "apod: no profile $2" >&2; exit 2; }
+    phome=$(P .profile.home); gcred=$(P .profile.google_credentials)
+    mkdir -p "$phome/.config"
     client=()
-    if [ -f "$pdir/google-credentials.json" ]; then
-      client=(GOOGLE_CLIENT_ID="$(jq -r '(.installed // .web).client_id' "$pdir/google-credentials.json")"
-              GOOGLE_CLIENT_SECRET="$(jq -r '(.installed // .web).client_secret' "$pdir/google-credentials.json")")
+    if [ -f "$gcred" ]; then
+      client=(GOOGLE_CLIENT_ID="$(jq -r '(.installed // .web).client_id' "$gcred")"
+              GOOGLE_CLIENT_SECRET="$(jq -r '(.installed // .web).client_secret' "$gcred")")
     fi
-    echo "apod: Google sign-in for profile $2 (scopes: $gdocs_scopes), saved under $pdir/home/.config/google-docs-mcp/" >&2
+    echo "apod: Google sign-in for profile $2 (scopes: $gdocs_scopes), saved under $phome/.config/google-docs-mcp/" >&2
     exec env -u GOOGLE_CLIENT_ID -u GOOGLE_CLIENT_SECRET -u GOOGLE_MCP_PROFILE "${client[@]}" \
-      XDG_CONFIG_HOME="$pdir/home/.config" GOOGLE_MCP_SCOPES="$gdocs_scopes" \
+      XDG_CONFIG_HOME="$phome/.config" GOOGLE_MCP_SCOPES="$gdocs_scopes" \
       node "$gdocs_mcp/dist/index.js" auth ;;
   token)
     [ $# -ge 2 ] || { echo "usage: apod token <profile> [--rm]" >&2; exit 2; }
@@ -125,7 +139,7 @@ case ${1:-} in
     exit ;;
   history)
     # Folders and profiles launched, most recent first (from history.jsonl, one line per launch).
-    hist=${APOD_ROOT:-$HOME/.agent-pod}/history.jsonl
+    load_paths; hist=$(P .history)
     [ -f "$hist" ] || { echo "apod: no launches recorded yet" >&2; exit 0; }
     jq -rs 'group_by([.project, .profile]) | map(max_by(.ts) + {n: length}) | sort_by(.ts) | reverse | .[]
       | [(.ts | strflocaltime("%Y-%m-%d %H:%M")), .profile, "\(.n)x", .project] | @tsv' "$hist" | column -t -s $'\t'
@@ -146,7 +160,7 @@ case ${1:-} in
     done
     here_pane=$(pane_id)
     dir=$(realpath "${dir:-$PWD}")
-    root=${APOD_ROOT:-$HOME/.agent-pod}; hist=$root/history.jsonl
+    load_paths; hist=$(P .history)
     [ -f "$hist" ] || { echo "apod: no launches recorded yet" >&2; exit 2; }
     running=$(podman ps --filter label=apod.session --format json | jq -r '.[].Labels["apod.session"] // empty')
     sids=(); lines=(); labels=(); panes=(); declare -A seen=()
@@ -157,7 +171,8 @@ case ${1:-} in
       [ -n "$sid" ] && [ -z "${seen[$sid]+x}" ] || continue
       seen[$sid]=1
       grep -qx "$sid" <<< "$running" && continue
-      tr=$(compgen -G "$root/${opts[0]}/home/.claude/projects/*/$sid.jsonl" | head -n1 || true)
+      home=$(P --arg p "${opts[0]}" '.all_profiles[$p].home // empty')
+      tr=; [ -z "$home" ] || tr=$(compgen -G "$home/.claude/projects/*/$sid.jsonl" | head -n1 || true)
       [ -n "$tr" ] || continue
       # Label: the /rename title if any, else the first prompt.
       title=$(jq -r 'select(.type == "custom-title") | .customTitle' "$tr" 2>/dev/null | tail -n1)
@@ -188,7 +203,6 @@ case ${1:-} in
     # notifications, role, scope, mounts and image. It shows the profile.toml it would write, and
     # writes nothing until you say yes.
     need_python
-    root=${APOD_ROOT:-$HOME/.agent-pod}
     cb=; cdim=; cy=; cr=
     if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then cb=$'\e[1m'; cdim=$'\e[2m'; cy=$'\e[1;33m'; cr=$'\e[0m'; fi
     ask() {  # ask VAR QUESTION [DEFAULT]: a line from stdin, DEFAULT when empty
@@ -220,7 +234,7 @@ case ${1:-} in
         if [ ! -e "$mp" ]; then warn "No such path: $mp"; continue; fi
         mp=$(realpath -m "$mp")  # absolute: profile.toml is read from other folders
         # The loader's mount guard: apod's own files can't be mounted (exit 2: refused; else it broke).
-        rc=0; err=$(python3 "$apoddir/apod-broker" profile --profile-dir "$root/$name" --"$2" "$mp" --quiet 2>&1 >/dev/null) || rc=$?
+        rc=0; err=$(python3 "$apoddir/apod-broker" profile --"$2" "$mp" --quiet 2>&1 >/dev/null) || rc=$?
         if [ "$rc" = 0 ]; then printf -v "$1" '%s' "$mp"; return; fi
         [ "$rc" = 2 ] || { echo "apod: couldn't check the mount: $err" >&2; exit 2; }
         warn "${err#apod: }"
@@ -238,14 +252,17 @@ case ${1:-} in
     name=${2:-}
     while :; do
       [ -n "$name" ] || ask name "Profile name:"
-      if [[ ! $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then warn "Letters, digits, '.', '_' and '-' only."
-      elif [[ " broker broker-extensions worklog new migrate resume history ps profiles token google-auth selinux gh " == *" $name "* ]]; then
-        warn "'$name' is an apod command or folder."
-      elif [ -e "$root/$name" ]; then
-        warn "$root/$name already exists: edit its files instead (docs/reference.md#profiletoml)."; [ -z "${2:-}" ] || exit 2
-      else break; fi
+      # The names a profile can't have, and where it would be: paths.py.
+      if ! err=$(python3 "$apoddir/apod-broker" paths --check-name "$name" 2>&1); then warn "${err#apod: }"
+      else
+        load_paths --profile "$name"
+        if [ "$(P .profile.exists)" = true ]; then
+          warn "$(P .profile.dir) already exists: edit its files instead (docs/reference.md#profiletoml)."; [ -z "${2:-}" ] || exit 2
+        else break; fi
+      fi
       name=
     done
+    pfile=$(P .profile.file); phome=$(P .profile.home)
 
     section "Role"
     note "What the agent may do without asking; anything else waits for your approval. The steps"
@@ -405,8 +422,8 @@ case ${1:-} in
     fi
 
     section "The profile"
-    note "$root/$name/home/    the pod's home (Claude's login, settings, history)"
-    note "$root/$name/profile.toml:"; printf '%s' "$toml" | sed 's/^/    /' >&2
+    note "$phome/    the pod's home (Claude's login, settings, history)"
+    note "$pfile:"; printf '%s' "$toml" | sed 's/^/    /' >&2
     [ -z "$newsign" ] || note "and a new signing key, $(tilde "$signkey") (ssh-keygen asks for its passphrase)"
     [ -n "$broker" ] || note "No broker: the agent works on the launch folder, commits, and can't push."
     confirm "Create it?" y || { echo "apod: nothing written" >&2; exit 1; }
@@ -415,9 +432,9 @@ case ${1:-} in
       mkdir -p "$HOME/.ssh"
       ssh-keygen -q -t ed25519 -C "apod $name signing" -f "$signkey" || { echo "apod: ssh-keygen failed, nothing written" >&2; exit 1; }
     fi
-    mkdir -p "$root/$name/home"
-    printf '%s' "$toml" > "$root/$name/profile.toml"
-    section "Created $root/$name. Next:"
+    mkdir -p "$phome" "$(dirname "$pfile")"
+    printf '%s' "$toml" > "$pfile"
+    section "Created $(P .profile.dir). Next:"
     [ -z "$ghnew" ] || echo "  gh auth login --hostname github.com   # as $ghuser; then gh auth switch back to yours" >&2
     if [ -n "$signkey" ] && [ -n "$ghuser" ]; then
       echo "  # Verified signatures on GitHub: add $(tilde "$signkey").pub as a signing key of the committing account" >&2
@@ -429,23 +446,21 @@ case ${1:-} in
   profiles)
     # token: the GitHub token the profile launches with (its own podman secret gh-<profile>, or
     # another profile's through [token] profile); "unused" when the broker replaces it.
-    need_python
-    root=${APOD_ROOT:-$HOME/.agent-pod}; used=()
-    for d in "$root"/*/; do
-      d=${d%/}; p=$(basename "$d"); t=-; g=no; b=-
-      case $p in broker|broker-extensions|worklog) continue ;; esac
-      if ! pj=$(python3 "$apoddir/apod-broker" profile --profile-dir "$d" --quiet 2>&1); then
+    load_paths; used=()
+    while IFS=$'\t' read -r p phome; do
+      t=-; g=no; b=-
+      if ! pj=$(python3 "$apoddir/apod-broker" profile --profile "$p" --quiet 2>&1); then
         printf '%-24s %s\n' "$p" "invalid: ${pj#apod: }"; continue
       fi
       src=$(jq -r --arg p "$p" '.token.profile // $p' <<< "$pj")
       if podman secret exists "gh-$src"; then t=$([ "$src" = "$p" ] && echo set || echo "gh-$src"); fi
-      [ -f "$d/home/.config/google-docs-mcp/token.json" ] && g=yes
+      [ -f "$phome/.config/google-docs-mcp/token.json" ] && g=yes
       if [ "$(jq -r .broker <<< "$pj")" = true ]; then
         b=$(jq -r '.role // "reader"' <<< "$pj")
         [ "$t" = - ] || t="unused"
       elif [ "$t" != - ]; then used+=("gh-$src"); fi
       printf '%-24s token: %-12s google: %-4s broker: %s\n' "$p" "$t" "$g" "$b"
-    done
+    done < <(P '.all_profiles[] | [.name, .home] | @tsv')
     unused=()
     while read -r sec; do
       [[ " ${used[*]} " == *" $sec "* ]] || unused+=("$sec")
@@ -458,9 +473,6 @@ esac
 
 [ $# -ge 1 ] || usage
 profile=$1; shift
-case $profile in broker|broker-extensions|worklog|new|migrate|-*)
-  echo "apod: '$profile' isn't a profile name (broker, broker-extensions and worklog are apod's own folders)" >&2; exit 2 ;;
-esac
 agent=claude
 image=
 proj=
@@ -491,17 +503,17 @@ while [ $# -gt 0 ]; do
 done
 proj=$(realpath "${proj:-$PWD}")
 
-root=${APOD_ROOT:-$HOME/.agent-pod}
-phome=$root/$profile/home
-if [ ! -d "$root/$profile" ]; then
-  known=$(for d in "$root"/*/; do case $(basename "$d") in broker|broker-extensions|worklog) ;; *) basename "$d" ;; esac; done | paste -sd ' ')
+# Where the profile is (a name apod can't take is refused there), its home, its work log...
+load_paths --profile "$profile" --pid $$
+phome=$(P .profile.home)
+if [ "$(P .profile.exists)" != true ]; then
+  known=$(P '.all_profiles | keys | join(" ")')
   echo "apod: no profile named $profile${known:+ (profiles: $known)}; to create it, see README, Quick start" >&2
   exit 2
 fi
 # The profile's settings, from its profile.toml (or its old files), checked: JSON from apod-broker
 # profile. pget runs a jq filter on it; plist one that prints NUL-terminated records.
-need_python
-ldargs=(--profile-dir "$root/$profile" --project "$proj" --quiet)  # --ro/--rw: refused if they'd expose apod's own files
+ldargs=(--profile "$profile" --project "$proj" --quiet)  # --ro/--rw: refused if they'd expose apod's own files
 for e in "${climounts[@]}"; do ldargs+=(--"${e%% *}" "${e#* }"); done
 pjson=$(python3 "$apoddir/apod-broker" profile "${ldargs[@]}") || exit 2
 pget() { jq -r "$@" <<< "$pjson"; }
@@ -604,8 +616,8 @@ if [[ " ${clocal[*]} " == *" google-docs-mcp "* ]]; then
   [ -f "$phome/.config/google-docs-mcp/token.json" ] || {
     echo "apod: profile $profile isn't signed in to Google. Run: apod google-auth $profile" >&2; exit 2; }
   climounts+=("ro $gdocs_mcp")
-  [ -f "$root/$profile/google-credentials.json" ] &&
-    filemounts+=(-v "$root/$profile/google-credentials.json:$gdocs_mcp/credentials.json:ro,z")
+  gcred=$(P .profile.google_credentials)
+  [ -f "$gcred" ] && filemounts+=(-v "$gcred:$gdocs_mcp/credentials.json:ro,z")
   cmd+=(--mcp-config "$(jq -cn --arg js "$gdocs_mcp/dist/index.js" --arg scopes "$gdocs_scopes" \
     '{mcpServers: {"google-docs-mcp": {command: "node", args: [$js],
       env: {GOOGLE_MCP_SCOPES: $scopes, MCP_LAZY_TOOLS: "1"}}}}')")
@@ -628,8 +640,9 @@ fi
 # keeps notes on what it did, for reviews and work reports across sessions. A resumed Claude
 # session keeps its log (same id); other launches start a new one.
 worklog=${session:-$(uuidgen)}
-if ! { mkdir -p "$root/worklog/$worklog" && touch "$root/worklog/$worklog/worklog.md"; }; then
-  echo "apod: couldn't create the work log in $root/worklog" >&2; exit 2
+wdir=$(P .worklog)/$worklog
+if ! { mkdir -p "$wdir" && touch "$wdir/worklog.md"; }; then
+  echo "apod: couldn't create the work log in $(P .worklog)" >&2; exit 2
 fi
 
 # Extra mounts: the profile's [pod] ro and rw, then --ro/--rw, which override the profile's mode
@@ -706,7 +719,7 @@ if [ -n "$wtdir" ]; then
 fi
 
 # Extra mounts go before the project so a project nested inside a read-only tree stays writable.
-mounts=(-v "$phome:/home/agent:z" -v "$root/worklog/$worklog:/run/apod-worklog:z")
+mounts=(-v "$phome:/home/agent:z" -v "$wdir:/run/apod-worklog:z")
 romounts=(); rwmounts=()
 for path in "${morder[@]}"; do
   if [ "${mmode[$path]}" = rw ]; then rwmounts+=("$path"); mounts+=(-v "$path:$path:z")
@@ -734,7 +747,10 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP
 if [ -n "$usebroker" ]; then
-  regargs=(--id "$(uuidgen | tr -d - | cut -c1-12)" --profile "$profile" --profile-dir "$root/$profile" --project "$proj")
+  # The broker reads the profile from where this run found it (the broker may run with another
+  # environment).
+  regargs=(--id "$(uuidgen | tr -d - | cut -c1-12)" --profile "$profile" --project "$proj")
+  regargs+=(--profile-dir "$(P .profile.dir)")
   [ -z "$role" ] || regargs+=(--role "$role")
   [ -z "$ghuser" ] || regargs+=(--gh-user "$ghuser")
   [ -z "$network" ] || regargs+=(--network "$network")
@@ -853,7 +869,7 @@ idenv=()
 [ -n "$gname" ] || gname=$(git config --global --get user.name 2>/dev/null || true)
 [ -n "$gemail" ] || gemail=$(git config --global --get user.email 2>/dev/null || true)
 if [ -z "$gname" ] || [ -z "$gemail" ]; then
-  echo "apod: no git identity for $profile: set user.name and user.email in your ~/.gitconfig, or [git] name and email in $root/$profile/profile.toml" >&2
+  echo "apod: no git identity for $profile: set user.name and user.email in your ~/.gitconfig, or [git] name and email in $(P .profile.file)" >&2
   exit 2
 fi
 [ -n "$cname" ] || idenv+=(-e "GIT_COMMITTER_NAME=$gname")
@@ -880,8 +896,9 @@ case $agent in claude|opencode) export HERDR_AGENT=$agent ;; esac
 # apod selinux install has loaded the module that allows it (selinux/apod.cil): they then run as
 # ordinary containers. Without labelling, relabelling their mounts (:z) does nothing useful, and
 # it fails on files you don't own.
-seltype=; [ "$(head -n1 "$root/selinux" 2>/dev/null)" = apod ] && seltype=apod
-if [ -f "$root/selinux" ] && [ -z "$seltype" ] && { [ -n "$bsid" ] || [ -n "$sshkey" ]; }; then
+selmark=$(P .selinux)
+seltype=; [ "$(head -n1 "$selmark" 2>/dev/null)" = apod ] && seltype=apod
+if [ -f "$selmark" ] && [ -z "$seltype" ] && { [ -n "$bsid" ] || [ -n "$sshkey" ]; }; then
   echo "apod: the SELinux module is an old version, which breaks these pods: run apod selinux install again (running this pod without labelling)" >&2
 fi
 if [ -n "$seltype" ]; then sockopts=(); else sockopts=(--security-opt label=disable); fi
@@ -905,12 +922,13 @@ run=(podman run --rm "${tty[@]}" --userns=keep-id
 run+=("${volumes[@]}" --label apod.profile="$profile" --label apod.project="$proj" --label apod.session="$session")
 
 # Remember this launch (apod history, apod resume).
+hist=$(P .history); mkdir -p "$(dirname "$hist")"
 printf '%s\0' "${recopts[@]}" | jq -cRs --argjson ts "$(date +%s)" --arg profile "$profile" \
   --arg agent "$agent" --arg project "$proj" --arg session "$session" --arg worklog "$worklog" --arg pane "$(pane_id)" \
   '{ts: $ts, profile: $profile, agent: $agent, project: $project,
     session: (if $session == "" then null else $session end), worklog: $worklog, pane: (if $pane == "" then null else $pane end),
     opts: (split("\u0000") | .[:-1])}' \
-  >> "$root/history.jsonl" || echo "apod: couldn't record this launch in the history" >&2
+  >> "$hist" || echo "apod: couldn't record this launch in the history" >&2
 if [ -n "$bsid" ]; then
   # Start the git forwarder and put its URL where the broker's git config says {forward}, so
   # GitHub and Radicle remotes go through the broker.
@@ -930,12 +948,12 @@ if [ -z "$sshkey" ]; then "${run[@]}" "${cmdline[@]}"; exit; fi
 # $APOD_SSH_TTL (default 4h), confirms each use if [ssh-agent] confirm is true, and is
 # killed when the pod exits. SELinux: see sockopts above; with the module, the agent runs at
 # level s0 so that the pod may connect to it.
-adir=$root/$profile/agent; mkdir -p "$adir"; chmod 700 "$adir"
-sock=$adir/ssh-$$.sock
+adir=$(P .profile.ssh_agent_dir); mkdir -p "$adir"; chmod 700 "$adir"
+sock=$(P .profile.ssh_agent_sock)
 agentcmd=(ssh-agent); [ -n "$seltype" ] && agentcmd=(runcon -l s0 ssh-agent)
 eval "$("${agentcmd[@]}" -a "$sock")" >/dev/null
 agentpid=$SSH_AGENT_PID
 addopts=(-t "${APOD_SSH_TTL:-4h}"); [ "$(pget .ssh_agent.confirm)" = true ] && addopts+=(-c)
 SSH_AUTH_SOCK=$sock ssh-add -q "${addopts[@]}" "$sshkey"
-amount=$adir:$adir; [ -n "$seltype" ] && amount+=:z
+amount=$(P .profile.ssh_agent_mount); amount+=:$amount; [ -n "$seltype" ] && amount+=:z
 "${run[@]}" -v "$amount" -e SSH_AUTH_SOCK="$sock" "${sockopts[@]}" "${cmdline[@]}"

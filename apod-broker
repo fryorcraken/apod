@@ -7,12 +7,15 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "broker"))
 
+if sys.argv[1:2] == ["paths"]:  # where apod's files are: for apod, which asks once at start
+    import paths  # noqa: E402
+    sys.exit(paths.main(sys.argv[2:]))
 if sys.argv[1:2] in (["profile"], ["migrate"]):  # profile settings: need neither the broker nor its extensions
     import profiles  # noqa: E402
     sys.exit(profiles.main(sys.argv[2:]) if sys.argv[1] == "profile" else profiles.migrate_main(sys.argv[2:]))
 
 import core  # noqa: E402
-core.load_extensions()  # extensions/*.py (gh, github, rad, sign, ssh, notify), and yours in ~/.agent-pod/broker-extensions
+core.load_extensions()  # extensions/*.py (gh, github, rad, sign, ssh, notify), and yours in extensions/ of apod's config folder
 
 if __name__ == "__main__":
     sys.exit(core.main(sys.argv[1:], Path(__file__).resolve()))

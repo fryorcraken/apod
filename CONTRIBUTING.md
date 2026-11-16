@@ -11,6 +11,8 @@ agents alike.
 | `apod`                   | The launcher (bash): profiles, mounts, the pod's command line, `apod history`, `apod resume`.                                                                                 |
 | `_apod`                  | zsh completion for `apod`.                                                                                                                                                    |
 | `apod-broker`, `broker/` | The broker: `core.py` (sessions, roles, scope, approvals, admin commands), `api.py` (what extensions may import), `gitwire.py`, `tui.py`, `pod-shim` (the pod-side commands). |
+| `broker/paths.py`        | Where apod's files are (the XDG layout, or the legacy `~/.agent-pod`): everything asks it, `apod` through `apod-broker paths --json`.                                         |
+| `broker/profiles.py`     | Reads a profile (`apod-broker profile`), the mount guard, `apod migrate`.                                                                                                     |
 | `extensions/`            | The shipped broker extensions, one file each.                                                                                                                                 |
 | `roles.toml`             | The built-in roles.                                                                                                                                                           |
 | `tests/test_broker.py`   | The broker's tests: a real broker, a throwaway `APOD_ROOT`, stub programs.                                                                                                    |

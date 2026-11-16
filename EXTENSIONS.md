@@ -510,19 +510,20 @@ other requests of the same pod run at the same time, in other threads.
 
 ### Sockets, keys, files and utilities
 
-| Name                                          |                                                                                                                                                  |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `unix_listen(path, handler, session_id=None)` | Serve a unix socket (mode 0600) in a thread, with a `socketserver` handler class; the handler sees `self.server.session_id`. For `listen`.       |
-| `live_session(session_id)`                    | The session while it lasts, `None` once it ended: look it up on each connection.                                                                 |
-| `pubkey_of(path)`                             | `(public key line, base64 blob)` for a private key, from its `.pub` file (`BrokerError` if missing).                                             |
-| `AGENT`                                       | The broker's ssh-agent socket (for `SSH_AUTH_SOCK` when you sign with a key it holds).                                                           |
-| `BDIR`, `ROOT`                                | The broker's state folder (`~/.agent-pod/broker`) and `~/.agent-pod`. Use `BDIR / "tmp"` for scratch files; it's emptied when the broker starts. |
-| `POD_DIR`, `SHIM`                             | Where `sess.dir` is in the pod; the shipped pod-side script (`broker/pod-shim`).                                                                 |
-| `ASK_TIMEOUT`                                 | How long a request waits for approval, in seconds (`0`: refused at once).                                                                        |
-| `BrokerError`                                 | The error to raise for anything the pod or the user should see as a message.                                                                     |
-| `run_quiet(cmd, timeout=30, **kw)`            | `subprocess.run` with output captured, stdin closed and a timeout; failures to start return exit code 127.                                       |
-| `expand(path)`                                | `~` expanded, as a `Path`.                                                                                                                       |
-| `now()`                                       | `time.time()`.                                                                                                                                   |
+| Name                                          |                                                                                                                                                                                                               |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `unix_listen(path, handler, session_id=None)` | Serve a unix socket (mode 0600) in a thread, with a `socketserver` handler class; the handler sees `self.server.session_id`. For `listen`.                                                                    |
+| `live_session(session_id)`                    | The session while it lasts, `None` once it ended: look it up on each connection.                                                                                                                              |
+| `pubkey_of(path)`                             | `(public key line, base64 blob)` for a private key, from its `.pub` file (`BrokerError` if missing).                                                                                                          |
+| `AGENT`                                       | The broker's ssh-agent socket (for `SSH_AUTH_SOCK` when you sign with a key it holds).                                                                                                                        |
+| `BDIR`                                        | The broker's state folder (`~/.local/state/apod/broker`). Use `BDIR / "tmp"` for scratch files; it's emptied when the broker starts.                                                                          |
+| `CONFIG_DIR`, `ROOT`                          | apod's config folder (`~/.config/apod`: `config.toml`, `roles.toml`, `extensions/`); `ROOT` is its older name. In the [legacy layout](docs/reference.md#where-apod-keeps-its-files), both are `~/.agent-pod`. |
+| `POD_DIR`, `SHIM`                             | Where `sess.dir` is in the pod; the shipped pod-side script (`broker/pod-shim`).                                                                                                                              |
+| `ASK_TIMEOUT`                                 | How long a request waits for approval, in seconds (`0`: refused at once).                                                                                                                                     |
+| `BrokerError`                                 | The error to raise for anything the pod or the user should see as a message.                                                                                                                                  |
+| `run_quiet(cmd, timeout=30, **kw)`            | `subprocess.run` with output captured, stdin closed and a timeout; failures to start return exit code 127.                                                                                                    |
+| `expand(path)`                                | `~` expanded, as a `Path`.                                                                                                                                                                                    |
+| `now()`                                       | `time.time()`.                                                                                                                                                                                                |
 
 `gitwire` (in `broker/`) has the git smart-HTTP pieces `github` and `rad` share: pkt-lines,
 parsing a push's ref updates, reading the commits in its pack, and replying to git while a push

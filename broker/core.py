@@ -31,19 +31,27 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 import herdr
+import paths
 import profiles
 
-ROOT = Path(os.environ.get("APOD_ROOT") or Path.home() / ".agent-pod")
-BDIR = ROOT / "broker"
-SDIR = BDIR / "sessions"
-ADMIN = BDIR / "admin.sock"
-AGENT = BDIR / "agent.sock"     # the broker's own ssh-agent: keys for ssh, signing and rad
-GRANTS = BDIR / "grants.json"
-LOGF = BDIR / "log.jsonl"
+# Where everything is: paths.py (the new layout, or the legacy ~/.agent-pod).
+try:
+    PATHS = paths.layout()
+except paths.PathError as e:
+    sys.exit(f"apod-broker: {e}")
+CONFIG_DIR = PATHS.config      # config.toml, roles.toml, extensions/, profiles/
+ROOT = CONFIG_DIR               # its older name, in the extension API (the legacy layout's one folder)
+BDIR = PATHS.broker             # the broker's state: log, approvals, sessions' state, its home, tmp/
+SDIR = PATHS.sessions_state     # <id>.json: each session's saved state, never in a pod's folder
+RDIR = PATHS.sessions_run       # <id>/: each session's folder, mounted in its pod
+ADMIN = PATHS.admin_sock
+AGENT = PATHS.agent_sock        # the broker's own ssh-agent: keys for ssh, signing and rad
+GRANTS = PATHS.grants
+LOGF = PATHS.log
 HERE = Path(__file__).resolve().parent
 CHECKOUT = HERE.parent
-ROLE_FILES = [CHECKOUT / "roles.toml", ROOT / "roles.toml"]  # built-in, then yours (added to them)
-OLD_ROLE_FILE = ROOT / "personas.toml"  # before roles were called roles; read if roles.toml isn't there
+ROLE_FILES = [CHECKOUT / "roles.toml", PATHS.roles]  # built-in, then yours (added to them)
+OLD_ROLE_FILE = PATHS.old_roles  # before roles were called roles; read if roles.toml isn't there
 SHIM = HERE / "pod-shim"
 POD_DIR = "/run/apod-broker"
 ASK_TIMEOUT = float(os.environ.get("APOD_BROKER_ASK_TIMEOUT", "90"))
@@ -55,8 +63,8 @@ if ASK_TIMEOUT.is_integer():
 # scope_kind() (gh:, gh-project:, rad:, ssh:, git-local: are the shipped extensions'). "unscoped"
 # targets are core's: they're in scope only once the user approves them for the session.
 SCOPES = {}
-GLOBAL_CONFIG = ROOT / "broker.toml"   # the extension tables shared by every profile
-EXTENSIONS = ROOT / "broker-extensions"  # the user's own extensions, *.py; a name here replaces a shipped one
+GLOBAL_CONFIG = PATHS.config_file  # the extension tables shared by every profile
+EXTENSIONS = PATHS.extensions      # the user's own extensions, *.py; a name here replaces a shipped one
 SHIPPED_EXTENSIONS = CHECKOUT / "extensions"
 
 
@@ -265,7 +273,7 @@ def remote_target(url):
 
 def extension_files():
     """name -> file of every extension to load: the shipped ones (extensions/ in the checkout),
-    then yours (~/.agent-pod/broker-extensions), which replace a shipped one of the same name. An
+    then yours (EXTENSIONS: extensions/ in apod's config folder), which replace a shipped one of the same name. An
     empty file of that name turns a shipped extension off."""
     files = {}
     for d in (SHIPPED_EXTENSIONS, EXTENSIONS):
@@ -355,7 +363,7 @@ def merge_role(base, more):
 
 def load_roles():
     raw = {}
-    files = ROLE_FILES + ([OLD_ROLE_FILE] if OLD_ROLE_FILE.exists() and not ROLE_FILES[1].exists() else [])
+    files = ROLE_FILES + ([OLD_ROLE_FILE] if OLD_ROLE_FILE and OLD_ROLE_FILE.exists() and not ROLE_FILES[1].exists() else [])
     for f in files:
         if f.exists():
             data = tomllib.loads(f.read_text())
@@ -479,7 +487,7 @@ class Session:
     @property
     def dir(self):
         """The pod's folder, mounted read-write at POD_DIR: nothing in it can be trusted."""
-        return SDIR / self.id
+        return RDIR / self.id
 
     @property
     def state(self):
@@ -1022,20 +1030,25 @@ def renamed_action(a):
     return f"{renamed()[p]}:{rest}" if sep and p in renamed() else a
 
 
-def read_profile(pdir):
-    """The profile in folder pdir (profile.toml, or the old files), as profiles.load reads it."""
+def read_profile(spec):
+    """The profile `spec` (a name, or its folder), as profiles.load reads it."""
     try:
-        return profiles.load(pdir, guard=False)  # the broker mounts nothing; apod checks mounts at launch
+        return profiles.load(spec, guard=False)  # the broker mounts nothing; apod checks mounts at launch
     except profiles.ProfileError as e:
         raise BrokerError(str(e))
 
 
-def load_config(pdir, warnings=None, prof=None):
-    """The global broker.toml's tables (settings shared by every profile: keys, the Radicle
+def profile_file(prof):
+    """The file a profile's settings are in, or would be."""
+    return prof["file"] or str(Path(prof["dir"]) / "profile.toml")
+
+
+def load_config(spec, warnings=None, prof=None):
+    """The global config.toml's tables (broker.toml in the legacy layout: settings shared by every profile: keys, the Radicle
     home, ...) under the profile's: its extension tables, and its role, scope, allow and deny
     from the top of the file. What a pod may do (role, scope) comes only from the profile and
     the launch."""
-    prof = prof or read_profile(pdir)
+    prof = prof or read_profile(spec)
     glob = read_toml(GLOBAL_CONFIG)
     for k in [k for k, v in glob.items() if not isinstance(v, dict)]:
         glob.pop(k)
@@ -1043,7 +1056,7 @@ def load_config(pdir, warnings=None, prof=None):
             warnings.append(f"{GLOBAL_CONFIG}: {k} is ignored there (set it in a profile's profile.toml "
                             f"or at launch); it holds only settings shared by every profile")
     renamed_tables(glob, GLOBAL_CONFIG, warnings)
-    cfg = renamed_tables(dict(prof["tables"]), prof["file"] or Path(pdir) / "profile.toml", warnings)
+    cfg = renamed_tables(dict(prof["tables"]), profile_file(prof), warnings)
     for k in ("role", "scope", "allow", "deny"):
         if prof[k]:
             cfg[k] = prof[k]
@@ -1054,18 +1067,21 @@ def register(r):
     sid = r.get("id") or secrets.token_hex(6)
     if not re.fullmatch(r"[A-Za-z0-9_-]{4,64}", sid):
         raise BrokerError("bad session id")
-    pdir = Path(r.get("profile_dir") or ROOT / r.get("profile", ""))
-    prof = read_profile(pdir)
+    # The profile: the folder apod found, else the profile's name.
+    spec = r.get("profile_dir")
+    if spec and "/" not in spec:
+        raise BrokerError("--profile-dir takes a path")
+    prof = read_profile(spec or r.get("profile", ""))
     warnings = list(prof["warnings"])
-    cfg = load_config(pdir, warnings, prof)
-    toml = prof["file"] or str(pdir / "profile.toml")
+    cfg = load_config(None, warnings, prof)
+    toml = profile_file(prof)
     r["profile_file"] = toml  # for the extensions' messages
     role = r.get("role") or cfg.get("role") or "reader"
     role_rules(role)  # fails on an unknown role
     identity = git_identity(prof)
     sess = Session({"id": sid, "profile": r.get("profile", ""), "role": role,
                     "project": r.get("project", ""), "created": now(), "identity": identity,
-                    "cfg": {"_home": str(pdir / "home")}})
+                    "cfg": {"_home": prof["home"]}})
     # Launched from a herdr pane: requests waiting for approval show that pane as blocked.
     hz = herdr.target(r.get("herdr_pane"), r.get("herdr_socket"), r.get("herdr_agent"))
     if hz:
@@ -1184,7 +1200,7 @@ def unregister(sid):
         for srv in SERVERS.pop(sid, []):
             srv.shutdown()
             srv.server_close()
-        shutil.rmtree(SDIR / sid, ignore_errors=True)
+        shutil.rmtree(RDIR / sid, ignore_errors=True)
         (SDIR / f"{sid}.json").unlink(missing_ok=True)
         for p in PROVIDERS.values():
             if hasattr(p, "close"):
@@ -1225,10 +1241,10 @@ def key_report():
         k["confirm"] = k["confirm"] or bool(confirm)
         if user not in k["users"]:
             k["users"].append(user)
-    for f in [GLOBAL_CONFIG] + profiles.profile_dirs():
+    for f in [None] + profiles.names():  # None: the global config.toml
         try:
-            if f == GLOBAL_CONFIG:
-                cfg = read_toml(f)
+            if f is None:
+                cfg = read_toml(GLOBAL_CONFIG)
             else:
                 prof = read_profile(f)
                 if prof["format"] == "none" or not prof["broker"]:
@@ -1236,12 +1252,12 @@ def key_report():
                 cfg = load_config(f, prof=prof)
         except (OSError, BrokerError):
             continue
-        who = "all profiles" if f == GLOBAL_CONFIG else f.name
+        who = "all profiles" if f is None else f
         for p in PROVIDERS.values():
             if hasattr(p, "keys") and isinstance(cfg.get(p.name), dict) and cfg[p.name].get("enabled") is not False:
                 for path, confirm in p.keys(cfg[p.name]):
                     path = str(expand(path))
-                    if f != GLOBAL_CONFIG and any(u.startswith("all profiles [")
+                    if f is not None and any(u.startswith("all profiles [")
                                                   for u in keys.get(path, {}).get("users", [])):
                         continue  # inherited from the global file
                     note(path, confirm, f"{who} [{p.name}]")
@@ -1338,7 +1354,7 @@ def prune_loop(every=300, grace=600):
 
 
 def serve():
-    for d in (BDIR, SDIR, BDIR / "home", BDIR / "tmp"):
+    for d in (BDIR, SDIR, RDIR, BDIR / "home", BDIR / "tmp"):
         d.mkdir(parents=True, exist_ok=True)
     os.chmod(BDIR, 0o700)
     shutil.rmtree(BDIR / "tmp", ignore_errors=True)
@@ -1363,7 +1379,7 @@ def serve():
         except (OSError, BrokerError):
             ADMIN.unlink()
     start_agent()
-    for d in SDIR.iterdir():
+    for d in RDIR.iterdir():
         if d.is_dir() and not (SDIR / f"{d.name}.json").is_file():
             # A pod's folder without saved state, or from before the state moved out of it (a pod could
             # have edited that one): the session is gone.
@@ -1373,7 +1389,7 @@ def serve():
             sess = Session(json.loads(f.read_text()))
         except (OSError, ValueError):
             f.unlink(missing_ok=True)
-            shutil.rmtree(SDIR / f.stem, ignore_errors=True)
+            shutil.rmtree(RDIR / f.stem, ignore_errors=True)
             continue
         try:
             SESSIONS[sess.id] = sess
@@ -1382,7 +1398,7 @@ def serve():
             SESSIONS.pop(sess.id, None)
             print(f"apod-broker: dropping session {sess.id}: {e}", file=sys.stderr)
             f.unlink(missing_ok=True)
-            shutil.rmtree(SDIR / f.stem, ignore_errors=True)
+            shutil.rmtree(RDIR / f.stem, ignore_errors=True)
 
     herdr.release_all(SESSIONS.values())
     threading.Thread(target=prune_loop, daemon=True).start()
@@ -1430,12 +1446,12 @@ def ensure(script):
         pass
     BDIR.mkdir(parents=True, exist_ok=True)
     cmd = [sys.executable, str(script), "serve"]
-    if (ROOT / "selinux").exists() and shutil.which("runcon") and shutil.which("selinuxenabled") \
+    if PATHS.selinux.exists() and shutil.which("runcon") and shutil.which("selinuxenabled") \
             and subprocess.run(["selinuxenabled"]).returncode == 0:
         # apod selinux install: pods may connect to the broker's sockets if it runs at s0 (MCS:
         # a container can only reach a peer its categories dominate).
         cmd = ["runcon", "-l", "s0", *cmd]
-    with (BDIR / "broker.log").open("a") as log:
+    with PATHS.daemon_log.open("a") as log:
         subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
                          stdout=log, stderr=log, start_new_session=True, cwd=str(BDIR))
     for _ in range(50):
@@ -1445,7 +1461,7 @@ def ensure(script):
             return
         except (OSError, BrokerError, ValueError):
             pass
-    sys.exit(f"apod-broker: didn't start; see {BDIR / 'broker.log'}")
+    sys.exit(f"apod-broker: didn't start; see {PATHS.daemon_log}")
 
 
 def add_keys(keys, agent, ttl=None):
@@ -1666,7 +1682,7 @@ def main(argv, script):
         return 0
     try:
         if cmd == "register":
-            # register --id ID --profile P --profile-dir DIR --project DIR [--role R] [--gh-user U] [--scope S]... [--remote URL]...
+            # register --id ID --profile P [--profile-dir DIR] --project DIR [--role R] [--gh-user U] [--scope S]... [--remote URL]...
             r = {"scope": [], "remotes": []}
             it = iter(args)
             for a in it:

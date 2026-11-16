@@ -27,6 +27,9 @@ import unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(HERE / "broker"))
+import paths  # noqa: E402 (where apod's files are, as the broker sees them)
+
 BROKER = HERE / "apod-broker"
 SHIM = HERE / "broker/pod-shim"
 RID = "z3gqcJUoA1n9HaHKufZs5FCSGazv5"
@@ -317,6 +320,8 @@ class BrokerTest(unittest.TestCase):
         cls.tmp = Path(tempfile.mkdtemp(dir=base, prefix="broker-test-"))
         cls.root = cls.tmp / "apod"
         cls.root.mkdir()
+        cls.layout_env = {"APOD_ROOT": str(cls.root)}  # apod's folders for this test
+        cls.P = paths.Layout(dict(cls.layout_env, HOME=str(cls.tmp / "home")))
         bin_ = cls.tmp / "bin"
         bin_.mkdir()
         (bin_ / "gh").write_text(FAKE_GH.replace("@UPSTREAM@", str(cls.tmp / "upstream")))
@@ -328,8 +333,8 @@ class BrokerTest(unittest.TestCase):
         # The user's extensions: one with a scope kind of its own, one that replaces the shipped
         # notify (same name), one that's broken, one that takes a Python module's name; and a
         # notify-send that records its args.
-        ext = cls.root / "broker-extensions"
-        ext.mkdir()
+        ext = cls.P.extensions
+        ext.mkdir(parents=True)
         (ext / "tagger.py").write_text(TAGGER_EXT)
         (ext / "notify.py").write_text((HERE / "extensions/notify.py").read_text()
                                        .replace('Path(__file__).resolve().parent / "apod-notify"', f'Path("{HERE}/extensions/apod-notify")')
@@ -407,8 +412,8 @@ class BrokerTest(unittest.TestCase):
         threading.Thread(target=cls.upstream.serve_forever, daemon=True).start()
         cls.api = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeAPI)
         threading.Thread(target=cls.api.serve_forever, daemon=True).start()
-        cls.gh_api_certs = make_gh_api_certs(cls.root / "broker/gh-api")
-        cls.env = dict(os.environ, APOD_ROOT=str(cls.root), APOD_GH_BIN=str(bin_ / "gh"),
+        cls.gh_api_certs = make_gh_api_certs(cls.P.broker / "gh-api")
+        cls.env = dict(os.environ, **cls.layout_env, APOD_GH_BIN=str(bin_ / "gh"),
                        APOD_GH_API_UPSTREAM=f"http://127.0.0.1:{cls.api.server_address[1]}",
                        APOD_BROKER_ASK_TIMEOUT="4", HOME=str(home), WAYLAND_DISPLAY="wayland-test", APOD_SSH_CONFIG=str(home / ".ssh/config"),
                        APOD_GH_GIT_UPSTREAM=f"http://127.0.0.1:{cls.upstream.server_address[1]}",
@@ -420,7 +425,7 @@ class BrokerTest(unittest.TestCase):
         cls.broker = subprocess.Popen([sys.executable, BROKER, "serve"], env=cls.env,
                                       stderr=open(cls.tmp / "broker.log", "w"))
         for _ in range(100):
-            if (cls.root / "broker/admin.sock").exists():
+            if cls.P.admin_sock.exists():
                 break
             time.sleep(0.05)
         cls.addClassCleanup(cls.broker.kill)
@@ -471,6 +476,15 @@ class BrokerTest(unittest.TestCase):
         for k in sess["need_keys"]:  # what apod does with ssh-add
             subprocess.run(["ssh-add", "-q", k["path"]], env=dict(cls.env, SSH_AUTH_SOCK=sess["agent"]), check=True)
         return sess
+
+    def write_profile(self, name, text):
+        """A profile of apod's own (one `apod profiles` lists), written as a profile.toml."""
+        p = self.P.profile(name)
+        f = Path(p["file"])
+        if not f.exists():  # a folder in the legacy layout, a file in the new one
+            self.addCleanup(shutil.rmtree, p["dir"]) if p["dir"] else self.addCleanup(f.unlink)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(text)
 
     def pod_env(self, sess, forward=None):
         """The pod's environment for a session: its env and git config, paths mapped to the test's."""
@@ -572,14 +586,14 @@ class BrokerTest(unittest.TestCase):
 
     def state(self):
         with socket.socket(socket.AF_UNIX) as s:
-            s.connect(str(self.root / "broker/admin.sock"))
+            s.connect(str(self.P.admin_sock))
             s.sendall(b"POST /state HTTP/1.0\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}")
             data = b"".join(iter(lambda: s.recv(65536), b""))
         return json.loads(data.split(b"\r\n\r\n", 1)[1])
 
     def test_extension(self):
-        (self.root / "roles.toml").write_text('[roles.dev-notify]\nextends = ["dev"]\nnotify = ["send"]\n')
-        self.addCleanup((self.root / "roles.toml").unlink)
+        self.P.roles.write_text('[roles.dev-notify]\nextends = ["dev"]\nnotify = ["send"]\n')
+        self.addCleanup(self.P.roles.unlink)
         sess = self.register("dev-notify", ["gh:acme/widget"], toml=f'[notify]\nenabled = true\n'
                              f'command = ["{self.tmp}/bin/fake-notify"]\n')
         self.assertIn("notify", sess["providers"])
@@ -603,8 +617,8 @@ class BrokerTest(unittest.TestCase):
     def test_extension_scope_kind(self):
         """A user extension declares its own scope kind (tag:); the broker checks its targets
         against the session's tag: entries, and an unknown kind is ignored with a warning."""
-        (self.root / "roles.toml").write_text('[roles.tagger]\nextends = ["reader"]\ntagger = ["tag"]\n')
-        self.addCleanup((self.root / "roles.toml").unlink)
+        self.P.roles.write_text('[roles.tagger]\nextends = ["reader"]\ntagger = ["tag"]\n')
+        self.addCleanup(self.P.roles.unlink)
         w = []
         sess = self.register("tagger", ["tag:alpha", "nope:x"], warnings=w)
         self.assertIn("tag:alpha", sess["scope"])
@@ -618,14 +632,14 @@ class BrokerTest(unittest.TestCase):
 
     def test_extensions_md_tutorial(self):
         """The systemctl extension from EXTENSIONS.md works as the guide says."""
-        (self.root / "roles.toml").write_text('[roles.unitdev]\nextends = ["reader"]\nsystemctl = ["status"]\n')
-        self.addCleanup((self.root / "roles.toml").unlink)
+        self.P.roles.write_text('[roles.unitdev]\nextends = ["reader"]\nsystemctl = ["status"]\n')
+        self.addCleanup(self.P.roles.unlink)
         sess = self.register("unitdev", [], toml='[systemctl]\nenabled = true\nunits = ["web"]\n')
         self.assertIn("systemctl", sess["providers"])
         self.assertIn("unit:web.service", sess["scope"])
         self.assertIn("systemctl reaches the host's user services", sess["context"])
         e = dict(self.env, APOD_BROKER_SOCK=str(Path(sess["dir"]) / "broker.sock"))
-        client = [sys.executable, "-I", self.root / "broker-extensions/systemctl"]  # -I: not its folder's json.py
+        client = [sys.executable, "-I", self.P.extensions / "systemctl"]  # -I: not its folder's json.py
         r = subprocess.run([*client, "--user", "status", "web"], env=e, capture_output=True, text=True)
         self.assertEqual((r.returncode, r.stdout), (0, "active\n"), r.stderr)
         self.assertEqual((self.tmp / "systemctl").read_text(), "--user status --no-pager -- web.service ")
@@ -673,9 +687,7 @@ class BrokerTest(unittest.TestCase):
     def test_keys_lists_and_loads_profile_keys(self):
         key = self.tmp / "profilekey"
         subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "pk", "-f", key], check=True)
-        (self.root / "keyprof").mkdir()
-        self.addCleanup(shutil.rmtree, self.root / "keyprof")
-        (self.root / "keyprof/broker.toml").write_text(f'scope = ["ssh:devbox"]\n[ssh]\nkey = "{key}"\n')
+        self.write_profile("keyprof", f'scope = ["ssh:devbox"]\n[ssh]\nkey = "{key}"\n')
         r = self.admin("keys")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertRegex(r.stdout, rf"to load +{key} +keyprof \[ssh\]")
@@ -684,12 +696,13 @@ class BrokerTest(unittest.TestCase):
         self.assertRegex(r.stdout, rf"loaded +{key} +keyprof \[ssh\]")
         self.assertIn("every key is already loaded", r.stderr)
         # An extension turned off for the profile: its key isn't listed.
-        (self.root / "keyprof/broker.toml").write_text(f'[ssh]\nkey = "{key}"\nenabled = false\n')
+        self.write_profile("keyprof", f'[ssh]\nkey = "{key}"\nenabled = false\n')
         self.assertNotIn("keyprof [ssh]", self.admin("keys").stdout)
 
     def test_terminal_notifications_drop_control_characters(self):
         sys.path.insert(0, str(HERE / "broker"))
-        os.environ.setdefault("APOD_ROOT", str(self.root))
+        for k, v in self.layout_env.items():
+            os.environ.setdefault(k, v)
         import tui
         seq = tui.notify_seq("osc777", "a;b", "evil\x1b]0;pwned\x07 x")
         self.assertEqual(seq, "\x1b]777;notify;a,b;evil ]0,pwned  x\x1b\\")
@@ -943,7 +956,7 @@ class BrokerTest(unittest.TestCase):
             assert old.scope == {{"gh": ["fryorcraken/x"], "ssh": ["devbox"]}}, old.scope
             """)
         p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                           env=dict(os.environ, APOD_ROOT=str(self.root)))
+                           env=dict(os.environ, **self.layout_env))
         self.assertEqual(p.returncode, 0, p.stderr)
 
     def gh_api_session(self):
@@ -962,7 +975,7 @@ class BrokerTest(unittest.TestCase):
             while b"\r\n\r\n" not in buf:
                 buf += sock.recv(4096)
             self.assertTrue(buf.startswith(b"HTTP/1.1 200"), buf)
-        ctx = ssl.create_default_context(cafile=str(self.root / "broker/gh-api/ca.pem"))
+        ctx = ssl.create_default_context(cafile=str(self.P.broker / "gh-api/ca.pem"))
         tls = ctx.wrap_socket(sock, server_hostname="api.github.com")
         return tls, tls.makefile("rb")
 
@@ -985,7 +998,7 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual(sess["sysctls"], {"net.ipv4.ip_unprivileged_port_start": "443"})
         self.assertEqual(sess["start"], [["apod-gh-api-relay"]])
         self.assertEqual(sess["env"]["NODE_EXTRA_CA_CERTS"], "/run/apod-gh-api/ca.pem")
-        self.assertIn([str(self.root / "broker/gh-api/ca.pem"), "/run/apod-gh-api/ca.pem", "ro"], sess["mounts"])
+        self.assertIn([str(self.P.broker / "gh-api/ca.pem"), "/run/apod-gh-api/ca.pem", "ro"], sess["mounts"])
         self.assertFalse(any("key" in m[0] for m in sess["mounts"]))  # the CA's key stays on the host
         # gh auth token: a placeholder with gh-api, nothing without it.
         e = self.pod_env(sess)
@@ -1020,7 +1033,7 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual(len(FakeAPI.seen), n)
         tls.close()
         # In the broker's log like any request, marked direct.
-        log = [json.loads(x) for x in (self.root / "broker/log.jsonl").read_text().splitlines()]
+        log = [json.loads(x) for x in self.P.log.read_text().splitlines()]
         mine = [(e["request"], e["decision"]) for e in log if e["session"] == sess["id"]]
         self.assertIn(("GET https://api.github.com/repos/acme/widget/pulls?head=acme:feature&state=open&per_page=1 (direct)",
                        "allowed"), mine)
@@ -1259,8 +1272,8 @@ class BrokerTest(unittest.TestCase):
             sshstr(b"publickey") + b"\1" + sshstr(b"ssh-ed25519") + sshstr(key)
 
     def test_global_config_and_hosts_per_launch(self):
-        (self.root / "broker.toml").write_text(f'role = "ops"\nscope = ["evil/*"]\n[ssh]\nkey = "{self.tmp}/userkey"\n')
-        self.addCleanup((self.root / "broker.toml").unlink)
+        self.P.config_file.write_text(f'role = "ops"\nscope = ["evil/*"]\n[ssh]\nkey = "{self.tmp}/userkey"\n')
+        self.addCleanup(self.P.config_file.unlink)
         # The global key; hosts from the launch (--scope ssh:...). The global file's role and scope
         # are ignored, with a warning: the role is the default, reader.
         w = []
@@ -1316,15 +1329,15 @@ class BrokerTest(unittest.TestCase):
         sess = self.register("", [], toml='persona = "maintainer"\n', warnings=w)
         self.assertEqual(sess["role"], "maintainer")
         self.assertIn("persona = is now role =", w[0])
-        grants = self.root / "broker/grants.json"
+        grants = self.P.grants
         old = grants.read_text() if grants.exists() else None
         self.addCleanup(lambda: grants.write_text(old) if old is not None else grants.unlink(missing_ok=True))
         grants.write_text(json.dumps({"personas": {"dev": ["gh:pr merge"]}}))
         self.assertIn("dev          gh:pr merge", self.admin("grants").stdout)
 
     def test_your_roles_add_to_built_in_ones(self):
-        (self.root / "roles.toml").write_text('[roles.dev]\nsign = ["other"]\n')
-        self.addCleanup((self.root / "roles.toml").unlink)
+        self.P.roles.write_text('[roles.dev]\nsign = ["other"]\n')
+        self.addCleanup(self.P.roles.unlink)
         plain = {f[0]: f[2] for f in (l.split("\t") for l in self.admin("roles", "--plain").stdout.splitlines())}
         self.assertIn("git-sign:other", plain["dev"].split(","))  # sign = [...]: the old name still works
         self.assertIn("gh:pr create", plain["dev"].split(","))
@@ -1535,6 +1548,119 @@ class BrokerTest(unittest.TestCase):
         ui.wait(timeout=5)
         os.close(master)
         self.assertEqual(ui.returncode, 0)
+
+class PathsTest(unittest.TestCase):
+    """broker/paths.py: where apod's files are, for each environment."""
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp(prefix="apod-paths-"))
+        self.addCleanup(shutil.rmtree, self.home, ignore_errors=True)
+
+    def lay(self, **env):
+        return paths.Layout(dict(env, HOME=str(self.home)))
+
+    def test_folders(self):
+        h = str(self.home)
+        cases = [  # (environment, config, data, state)
+            ({}, f"{h}/.config/apod", f"{h}/.local/share/apod", f"{h}/.local/state/apod"),
+            ({"XDG_CONFIG_HOME": "/x/c", "XDG_DATA_HOME": "/x/d", "XDG_STATE_HOME": "/x/s"},
+             "/x/c/apod", "/x/d/apod", "/x/s/apod"),
+            ({"XDG_CONFIG_HOME": "rel/c", "XDG_DATA_HOME": "", "XDG_STATE_HOME": "rel"},  # only absolute ones count
+             f"{h}/.config/apod", f"{h}/.local/share/apod", f"{h}/.local/state/apod"),
+            ({"XDG_CONFIG_HOME": "/x/c", "APOD_CONFIG_DIR": "/a/c"}, "/a/c", f"{h}/.local/share/apod", f"{h}/.local/state/apod"),
+            ({"XDG_DATA_HOME": "/x/d", "APOD_DATA_DIR": "/a/d"}, f"{h}/.config/apod", "/a/d", f"{h}/.local/state/apod"),
+            ({"XDG_STATE_HOME": "/x/s", "APOD_STATE_DIR": "/a/s"}, f"{h}/.config/apod", f"{h}/.local/share/apod", "/a/s"),
+        ]
+        for env, config, data, state in cases:
+            with self.subTest(env=env):
+                p = self.lay(**env)
+                self.assertFalse(p.legacy)
+                self.assertIsNone(p.notice)
+                self.assertEqual((str(p.config), str(p.data), str(p.state)), (config, data, state))
+                self.assertEqual(p.config_file, Path(config) / "config.toml")
+                self.assertEqual(p.roles, Path(config) / "roles.toml")
+                self.assertEqual(p.extensions, Path(config) / "extensions")
+                self.assertEqual(p.worklog, Path(data) / "worklog")
+                self.assertEqual(p.history, Path(state) / "history.jsonl")
+                self.assertEqual((p.broker, p.log, p.grants, p.sessions_state, p.selinux),
+                                 (Path(state) / "broker", Path(state) / "broker/log.jsonl", Path(state) / "broker/grants.json",
+                                  Path(state) / "broker/sessions", Path(state) / "selinux"))
+                prof = p.profile("work", pid=42)
+                self.assertEqual((prof["dir"], prof["file"], prof["home"], prof["google_credentials"]),
+                                 (Path(config) / "profiles/work", Path(config) / "profiles/work/profile.toml",
+                                  Path(data) / "profiles/work/home", Path(config) / "profiles/work/google-credentials.json"))
+        with self.assertRaises(paths.PathError):
+            self.lay(APOD_STATE_DIR="relative/state")
+
+    def test_legacy(self):
+        p = self.lay(APOD_ROOT="/r", APOD_CONFIG_DIR="/a/c")  # APOD_ROOT: the legacy layout, whatever else is set
+        self.assertTrue(p.legacy)
+        self.assertEqual(p.notice, "legacy layout: apod migrate --layout, then unset APOD_ROOT")
+        self.assertEqual({k: str(getattr(p, k)) for k in ("config", "data", "state", "config_file", "roles", "extensions",
+                                                          "worklog", "history", "broker", "selinux", "admin_sock",
+                                                          "agent_sock", "sessions_state", "sessions_run")},
+                         {"config": "/r", "data": "/r", "state": "/r", "config_file": "/r/broker.toml",
+                          "roles": "/r/roles.toml", "extensions": "/r/broker-extensions", "worklog": "/r/worklog",
+                          "history": "/r/history.jsonl", "broker": "/r/broker", "selinux": "/r/selinux",
+                          "admin_sock": "/r/broker/admin.sock", "agent_sock": "/r/broker/agent.sock",
+                          "sessions_state": "/r/broker/sessions", "sessions_run": "/r/broker/sessions"})
+        prof = p.profile("work", pid=42)
+        self.assertEqual((prof["dir"], prof["file"], prof["home"], prof["google_credentials"], prof["ssh_agent_sock"]),
+                         (Path("/r/work"), Path("/r/work/profile.toml"), Path("/r/work/home"),
+                          Path("/r/work/google-credentials.json"), Path("/r/work/agent/ssh-42.sock")))
+
+    def test_legacy_detection(self):
+        old = self.home / ".agent-pod"
+        self.assertFalse(self.lay().legacy)                   # a new install: the new layout
+        (old / "work").mkdir(parents=True)
+        (old / "broker").mkdir()
+        p = self.lay()
+        self.assertTrue(p.legacy)                             # only ~/.agent-pod: the legacy layout
+        self.assertEqual((p.config, p.notice), (old, "legacy layout: apod migrate --layout"))
+        self.assertEqual(p.profile_names(), ["work"])
+        for new in (".config/apod", ".local/share/apod", ".local/state/apod"):  # any of the new folders: the new layout
+            with self.subTest(new=new):
+                (self.home / new).mkdir(parents=True)
+                self.assertFalse(self.lay().legacy)
+                (self.home / new).rmdir()
+        self.assertTrue(self.lay().legacy)
+        (self.home / "st/apod").mkdir(parents=True)  # the new folders where the environment says they are
+        self.assertFalse(self.lay(XDG_STATE_HOME=str(self.home / "st")).legacy)
+        self.assertTrue(self.lay(XDG_STATE_HOME=str(self.home / "nonesuch")).legacy)
+
+    def test_profile_names(self):
+        p = self.lay()
+        for bad in ("", "-x", ".x", "a/b", "../x", "a b", "new", "broker", "worklog", "broker-extensions",
+                    "x.google-credentials"):
+            with self.subTest(name=bad):
+                self.assertIsNotNone(paths.name_error(bad))
+                with self.assertRaises(paths.PathError):
+                    p.profile(bad)
+        for good in ("work", "a.b", "a_b-c", "x.google-credentialsx", "0"):
+            self.assertIsNone(paths.name_error(good), good)
+        for d in ("work", "b", "-bad", "new"):
+            (p.profiles / d).mkdir(parents=True)
+        (p.profiles / "notes.txt").write_text("")
+        self.assertEqual(p.profile_names(), ["b", "work"])
+
+    def test_paths_command(self):
+        env = dict(os.environ, HOME=str(self.home), APOD_CONFIG_DIR=str(self.home / "c"))
+        for k in ("APOD_ROOT", "APOD_DATA_DIR", "APOD_STATE_DIR"):
+            env.pop(k, None)
+        r = subprocess.run([sys.executable, BROKER, "paths", "--json", "--profile", "work"], env=env,
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = json.loads(r.stdout)
+        self.assertEqual((out["layout"], out["config"], out["profile"]["file"], out["profile"]["exists"]),
+                         ("xdg", str(self.home / "c"), str(self.home / "c/profiles/work/profile.toml"), False))
+        r = subprocess.run([sys.executable, BROKER, "paths", "--check-name", "migrate"], env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("is an apod command or folder", r.stderr)
+        r = subprocess.run([sys.executable, BROKER, "paths", "--json", "--profile", "../x"], env=env, capture_output=True, text=True)
+        self.assertEqual((r.returncode, r.stdout), (2, ""))
+        r = subprocess.run([sys.executable, BROKER, "paths"], env=env, capture_output=True, text=True)
+        self.assertIn(f"config   {self.home}/c", r.stdout)
+
 
 class ProfileLoaderTest(unittest.TestCase):
     """`apod-broker profile`: one profile's settings as JSON, from profile.toml or the old files."""

@@ -9,7 +9,7 @@ An extension can check what it gets:
         raise RuntimeError("written for the broker's extension API 1")
 """
 from core import (  # noqa: F401 (re-exported)
-    AGENT, ASK_TIMEOUT, BDIR, BODY_LIMIT, GIT_BODY_LIMIT, HARD_DENY, LOCK, POD_DIR, ROOT, SHIM,
+    AGENT, ASK_TIMEOUT, BDIR, BODY_LIMIT, CONFIG_DIR, GIT_BODY_LIMIT, HARD_DENY, LOCK, POD_DIR, ROOT, SHIM,
     BrokerError, Provider, Request,
     allowed, check, evaluate, expand, live_session, need_key, now, provider, pubkey_of, read_body,
     recently_allowed, rejected_msg, remote_target, run_quiet, scope_kind, send_text, unix_listen,
@@ -27,7 +27,7 @@ __all__ = [
     # the pod's HTTP requests
     "read_body", "send_text", "BODY_LIMIT", "GIT_BODY_LIMIT",
     # keys, sockets, files
-    "need_key", "pubkey_of", "unix_listen", "live_session", "AGENT", "BDIR", "POD_DIR", "ROOT", "SHIM",
+    "need_key", "pubkey_of", "unix_listen", "live_session", "AGENT", "BDIR", "CONFIG_DIR", "POD_DIR", "ROOT", "SHIM",
     # sessions
     "LOCK",
     # utilities
