@@ -1355,6 +1355,25 @@ def prune_loop(every=300, grace=600):
         time.sleep(every)
 
 
+def watch_admin(leave, every=2):
+    """Ends this broker once its admin socket is gone, or is another broker's: at logout, systemd
+    removes $XDG_RUNTIME_DIR and the sockets in it. No apod could reach this broker any more, and
+    the next launch starts another one, which would share its state files with this one."""
+    def ident():
+        try:
+            st = os.stat(ADMIN)
+            return st.st_dev, st.st_ino
+        except OSError:
+            return None
+    mine = ident()
+    while True:
+        time.sleep(every)
+        if ident() != mine:
+            print(f"apod-broker: my admin socket {ADMIN} is gone (its folder removed at logout?) or another "
+                  f"broker's: exiting", file=sys.stderr, flush=True)
+            leave()
+
+
 def serve():
     for d in (BDIR, SDIR, BDIR / "home", BDIR / "tmp"):
         d.mkdir(parents=True, exist_ok=True)
@@ -1415,9 +1434,16 @@ def serve():
         if p:
             p.terminate()
         os._exit(0)
+
+    def orphaned():
+        p = AGENT_PROC.get("p")
+        if p:
+            p.kill()  # not terminate: ssh-agent would remove its socket, which may be a new broker's now
+        os._exit(0)
     signal.signal(signal.SIGTERM, term)
     admin = UnixServer(str(ADMIN), AdminHandler)
     os.chmod(ADMIN, 0o600)
+    threading.Thread(target=watch_admin, args=(orphaned,), daemon=True).start()
     print(f"apod-broker: up ({len(SESSIONS)} sessions; providers: {', '.join(PROVIDERS)})", file=sys.stderr, flush=True)
     admin.serve_forever()
 

@@ -1786,6 +1786,38 @@ class RuntimeTest(unittest.TestCase):
         self.assertIn(sess["id"], self.broker(env, "sessions").stdout)
         self.assertEqual(unix_get(sock, "/whoami")[0], 200)
 
+    def test_a_broker_without_its_runtime_folder_exits(self):
+        # At logout the runtime folder goes, but a broker may live on: it exits, and the next one
+        # (started at once here) keeps its ssh-agent's socket, at the same path.
+        env = self.new_layout()
+        P = paths.Layout(env)
+        self.register(env)
+
+        def brokers():  # this test's: the broker runs in its state folder
+            out = []
+            for d in Path("/proc").iterdir():
+                try:
+                    if d.name.isdigit() and os.readlink(d / "cwd") == str(P.broker) \
+                            and b"serve" in (d / "cmdline").read_bytes():
+                        out.append(d.name)
+                except OSError:
+                    pass
+            return out
+        old = brokers()
+        self.assertEqual(len(old), 1)
+        shutil.rmtree(P.runtime)
+        self.broker(env, "ensure")
+        for _ in range(100):
+            if old[0] not in brokers():
+                break
+            time.sleep(0.1)
+        self.assertEqual(len(brokers()), 1, "the old broker is gone, the new one runs")
+        self.assertNotIn(old[0], brokers())
+        self.assertIn("is gone (its folder removed at logout?) or another broker's: exiting", P.daemon_log.read_text())
+        self.assertTrue(P.agent_sock.is_socket())
+        r = subprocess.run(["ssh-add", "-l"], env=dict(env, SSH_AUTH_SOCK=str(P.agent_sock)), capture_output=True, text=True)
+        self.assertIn(r.returncode, (0, 1), r.stderr)  # 1: no keys; 2: no agent
+
     def test_runtime_folder_without_xdg_runtime_dir(self):
         t = self.tmp / "t"
         t.mkdir()
