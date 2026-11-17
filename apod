@@ -963,11 +963,13 @@ if [ -z "$sshkey" ]; then "${run[@]}" "${cmdline[@]}"; exit; fi
 # $APOD_SSH_TTL (default 4h), confirms each use if [ssh-agent] confirm is true, and is
 # killed when the pod exits. Its socket is in apod's runtime folder (made private here), and the
 # pod gets that socket alone (the legacy layout: <profile>/agent/). SELinux: see sockopts above;
-# with the module, the agent runs at level s0 so that the pod may connect to it.
+# with the module, the agent runs at level s0 so that the pod may connect to it. runcon starts sh,
+# which execs ssh-agent: the policy refuses runcon's own exec of ssh-agent (Permission denied),
+# and this way the agent is what the broker's is, unconfined_t at s0, which the module lets pods reach.
 python3 "$apoddir/apod-broker" paths --ensure-runtime || exit 2
 adir=$(P .profile.ssh_agent_dir); mkdir -p "$adir"; chmod 700 "$adir"
 sock=$(P .profile.ssh_agent_sock)
-agentcmd=(ssh-agent); [ -n "$seltype" ] && agentcmd=(runcon -l s0 ssh-agent)
+agentcmd=(ssh-agent); [ -n "$seltype" ] && agentcmd=(runcon -l s0 sh -c 'exec ssh-agent "$@"' ssh-agent)
 eval "$("${agentcmd[@]}" -a "$sock")" >/dev/null
 agentpid=$SSH_AGENT_PID
 addopts=(-t "${APOD_SSH_TTL:-4h}"); [ "$(pget .ssh_agent.confirm)" = true ] && addopts+=(-c)
