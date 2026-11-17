@@ -527,6 +527,45 @@ def move_old(pdir, names):
         os.replace(pdir / n, dest)
 
 
+def convert_old(pdir, again):
+    """(profile.toml's text, the profile it reads as) for a folder's old files, checked: it must
+    mean what the old files did. Raises ProfileError, saying to run `again` once they're fixed."""
+    name = pdir.name
+    p = from_old_files(pdir, [])
+    text = toml_of_old(pdir, p)
+    try:
+        new = from_toml(tomllib.loads(text), pdir / "profile.toml")
+    except (tomllib.TOMLDecodeError, ProfileError) as e:
+        raise ProfileError(f"{name}: the old files don't convert to a profile.toml ({e}); fix them (nothing was "
+                           f"changed) and run {again} again")
+    # [pod] ro and rw keep each list's order, not the order of mixed lines: read-only mounts first.
+    p["pod"]["mounts"] = [m for m in p["pod"]["mounts"] if m[0] == "ro"] + [m for m in p["pod"]["mounts"] if m[0] == "rw"]
+    for k in SAME:
+        if new[k] != p[k]:
+            raise ProfileError(f"{name}: converting the old files changed {k} ({p[k]!r} became {new[k]!r}); "
+                               f"nothing was changed. Please report this")
+    return text, new
+
+
+def prompts(yes):
+    """(say, ask) for the migrations: messages on stderr, and a [Y/n] question (yes: always yes;
+    no answer: no)."""
+    def say(text):
+        print(text, file=sys.stderr)
+
+    def ask(question):
+        if yes:
+            return True
+        sys.stderr.write(f"{question} [Y/n] ")
+        sys.stderr.flush()
+        try:
+            return input().strip().lower() in ("", "y", "yes")
+        except EOFError:
+            print(file=sys.stderr)
+            return False
+    return say, ask
+
+
 def migrate_one(pdir, ask, say):
     """Migrate one profile folder; returns whether it changed anything. `ask(question)` says
     whether to go on."""
@@ -546,20 +585,7 @@ def migrate_one(pdir, ask, say):
     if not old:
         say(f"{name}: no settings files: nothing to migrate")
         return False
-    p = from_old_files(pdir, [])
-    text = toml_of_old(pdir, p)
-    # The new file must mean what the old ones did: check before anything is written.
-    try:
-        new = from_toml(tomllib.loads(text), f)
-    except (tomllib.TOMLDecodeError, ProfileError) as e:
-        raise ProfileError(f"{name}: the old files don't convert to a profile.toml ({e}); fix them (the old files "
-                           f"are untouched) and run apod migrate {name} again")
-    # [pod] ro and rw keep each list's order, not the order of mixed lines: read-only mounts first.
-    p["pod"]["mounts"] = [m for m in p["pod"]["mounts"] if m[0] == "ro"] + [m for m in p["pod"]["mounts"] if m[0] == "rw"]
-    for k in SAME:
-        if new[k] != p[k]:
-            raise ProfileError(f"{name}: converting the old files changed {k} ({p[k]!r} became {new[k]!r}); "
-                               f"nothing was written. Please report this")
+    text, new = convert_old(pdir, f"apod migrate {name}")
     for mode, path in new["pod"]["mounts"]:
         check_mount(mode, path, f"{name}: mounts")
     say(f"{name}: {tilde(str(f))} would be:\n")
@@ -592,20 +618,7 @@ def migrate_main(argv):
     if bool(names) == everyone or len(names) > 1:
         print("usage: apod migrate [PROFILE | --all] [--yes]", file=sys.stderr)
         return 2
-
-    def say(text):
-        print(text, file=sys.stderr)
-
-    def ask(question):
-        if yes:
-            return True
-        sys.stderr.write(f"{question} [Y/n] ")
-        sys.stderr.flush()
-        try:
-            return input().strip().lower() in ("", "y", "yes")
-        except EOFError:
-            print(file=sys.stderr)
-            return False
+    say, ask = prompts(yes)
     lay = paths.layout()
     if not lay.legacy:
         say(f"apod: in this layout a profile is one file already ({lay.profiles}/NAME.toml): nothing to migrate")

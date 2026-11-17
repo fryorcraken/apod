@@ -6,7 +6,8 @@ notify-send on the host, titled with the agent session's name.
 
 It's shipped, so it's always loaded; it's active for profiles that turn it on:
 
-    # ~/.config/apod/profiles/<profile>.toml (or ~/.config/apod/config.toml for every profile)
+    # ~/.config/apod/profiles/<profile>.toml (or ~/.config/apod/config.toml for every profile;
+    # `apod broker paths` says where they are, in the legacy layout too)
     [notify]
     enabled = true
     # command = ["notify-send", "-a", "apod"]    # the default; called with TITLE TEXT

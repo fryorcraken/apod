@@ -165,7 +165,8 @@ case ${1:-} in
     load_paths; hist=$(P .history)
     [ -f "$hist" ] || { echo "apod: no launches recorded yet" >&2; exit 2; }
     running=$(podman ps --filter label=apod.session --format json | jq -r '.[].Labels["apod.session"] // empty')
-    sids=(); lines=(); labels=(); panes=(); declare -A seen=()
+    sids=(); lines=(); labels=(); panes=(); declare -A seen=() homes=()
+    while IFS=$'\t' read -r p h; do homes[$p]=$h; done < <(P '.all_profiles | to_entries[] | [.key, .value.home] | @tsv')
     while IFS= read -r line; do
       mapfile -t opts < <(jq -r '.opts[]' <<< "$line")
       if [ "$mode" = claude ]; then exec "$0" "${opts[@]}" "$dir" -- --resume; fi
@@ -173,7 +174,7 @@ case ${1:-} in
       [ -n "$sid" ] && [ -z "${seen[$sid]+x}" ] || continue
       seen[$sid]=1
       grep -qx "$sid" <<< "$running" && continue
-      home=$(P --arg p "${opts[0]}" '.all_profiles[$p].home // empty')
+      home=; [ -z "${opts[0]:-}" ] || home=${homes[${opts[0]}]:-}
       tr=; [ -z "$home" ] || tr=$(compgen -G "$home/.claude/projects/*/$sid.jsonl" | head -n1 || true)
       [ -n "$tr" ] || continue
       # Label: the /rename title if any, else the first prompt.
@@ -510,7 +511,11 @@ proj=$(realpath "${proj:-$PWD}")
 load_paths --profile "$profile" --pid $$
 phome=$(P .profile.home)
 if [ "$(P .profile.exists)" != true ]; then
-  known=$(P '.all_profiles | keys | join(" ")')
+  known=$(P '.all_profiles | keys | join(" ")') lr=$(P .legacy_root)
+  if [ "$(P .legacy)" = false ] && [ -d "$lr/$profile" ]; then  # (legacy) left beside the new layout
+    echo "apod: no profile named $profile${known:+ (profiles: $known)}; $lr/$profile is a profile of the legacy layout, which isn't used once one of the new layout's folders is there (apod broker paths): apod migrate --layout moves it" >&2
+    exit 2
+  fi
   echo "apod: no profile named $profile${known:+ (profiles: $known)}; to create it, see README, Quick start" >&2
   exit 2
 fi

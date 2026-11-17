@@ -25,10 +25,6 @@ import profiles
 USAGE = "usage: apod migrate --layout [--yes]"
 
 
-class MigrateError(Exception):
-    pass
-
-
 def tilde(p):
     return profiles.tilde(str(p))
 
@@ -79,7 +75,6 @@ def profile_text(pdir):
     """What profiles/NAME.toml gets for a legacy profile folder: its profile.toml's text, or its
     old files converted (checked as `apod migrate` checks them), or broker = false for a folder
     with no settings at all (which launches without the broker; an empty file would have it)."""
-    name = pdir.name
     f = pdir / "profile.toml"
     if f.exists():
         profiles.load(pdir, guard=False)  # fails if it's no good
@@ -87,18 +82,7 @@ def profile_text(pdir):
     old = profiles.old_files_in(pdir)
     if not old:
         return "broker = false   # a profile folder without settings: no broker, as before\n", "no settings: broker = false"
-    p = profiles.from_old_files(pdir, [])
-    text = profiles.toml_of_old(pdir, p)
-    try:
-        new = profiles.from_toml(profiles.tomllib.loads(text), f)
-    except (profiles.tomllib.TOMLDecodeError, profiles.ProfileError) as e:
-        raise MigrateError(f"{name}: the old files don't convert to a profile.toml ({e}); fix them (nothing was "
-                           f"moved) and run apod migrate --layout again")
-    p["pod"]["mounts"] = [m for m in p["pod"]["mounts"] if m[0] == "ro"] + [m for m in p["pod"]["mounts"] if m[0] == "rw"]
-    for k in profiles.SAME:
-        if new[k] != p[k]:
-            raise MigrateError(f"{name}: converting the old files changed {k} ({p[k]!r} became {new[k]!r}); "
-                               f"nothing was moved. Please report this")
+    text, _ = profiles.convert_old(pdir, "apod migrate --layout")
     return text, f"converted from {', '.join(old)}"
 
 
@@ -167,20 +151,7 @@ def main(argv):
         else:
             print(USAGE, file=sys.stderr)
             return 2
-
-    def say(text):
-        print(text, file=sys.stderr)
-
-    def ask(question):
-        if yes:
-            return True
-        sys.stderr.write(f"{question} [Y/n] ")
-        sys.stderr.flush()
-        try:
-            return input().strip().lower() in ("", "y", "yes")
-        except EOFError:
-            print(file=sys.stderr)
-            return False
+    say, ask = profiles.prompts(yes)
     try:
         cur = paths.layout()
         root = cur.legacy_root
@@ -199,7 +170,10 @@ def main(argv):
             f"APOD_CONFIG_DIR, APOD_DATA_DIR and APOD_STATE_DIR (or the XDG_* variables) to folders outside it")
         return 2
     if broker_running(root):
-        say(f"apod: a broker of the legacy layout is running: apod broker stop (and exit its pods), then run apod migrate --layout again")
+        # Beside the new layout, `apod broker stop` would stop the new layout's broker.
+        stop = "apod broker stop" if cur.legacy else f"APOD_ROOT={tilde(root)} apod broker stop"
+        say(f"apod: a broker of the legacy layout is running: {stop} (and exit its pods), then run apod migrate "
+            f"--layout again")
         return 2
     pods = running_pods(root)
     if pods:
@@ -208,7 +182,7 @@ def main(argv):
         return 2
     try:
         ops, stays, (conf, data, state) = plan(root, new)
-    except (MigrateError, profiles.ProfileError, paths.PathError) as e:
+    except (profiles.ProfileError, paths.PathError) as e:
         say(f"apod: {e}")
         return 2
     todo, conflicts = [], []

@@ -582,6 +582,17 @@ class NewLayoutTest(ProfileTomlTest):
         self.assertLessEqual({"brk", "brkhost", "notoken", "plain", "sshkey", "tokenother"}, set(r.stdout.split()))
         self.assertEqual(r.stderr, "")
 
+    def test_a_profile_left_in_the_legacy_folder(self):
+        old = self.home / ".agent-pod"
+        (old / "leftover").mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, old)
+        r = subprocess.run([APOD, "leftover", str(self.proj)], env=self.env, cwd=self.tmp, stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn(f"{old} is there too, and isn't used: apod migrate --layout moves what's in it", r.stderr)
+        self.assertIn(f"{old}/leftover is a profile of the legacy layout, which isn't used once one of the new "
+                      f"layout's folders is there (apod broker paths): apod migrate --layout moves it", r.stderr)
+
     def test_new_writes_one_file(self):
         r = subprocess.run([APOD, "new", "wiz2"], env=self.env, cwd=self.tmp, capture_output=True, text=True,
                            input="\n".join(["reader", "", "n", "", "", "n", "n", "n", "", "", "", "y"]) + "\n")
@@ -725,6 +736,17 @@ class MigrateLayoutChecksTest(unittest.TestCase):
         r = self.migrate(input="n\n", STUB_PS="c1", STUB_INSPECT="apod-other-proj-1 /x/proj /elsewhere/home")
         self.assertEqual(r.returncode, 1, r.stderr)  # it went on, to the question
         self.assertTrue((self.root / "p/home").is_dir() and not (self.tmp / "c").exists())
+        # Beside the new layout (one of its folders is there), its own `apod broker stop` won't do.
+        (self.tmp / "h").mkdir()
+        (self.tmp / "h/.agent-pod").symlink_to(self.root)
+        (self.tmp / "c").mkdir()
+        s = socket.socket(socket.AF_UNIX)
+        s.bind(str(self.root / "broker/admin.sock"))
+        s.listen()
+        r = self.migrate("--yes", APOD_ROOT="", HOME=str(self.tmp / "h"))
+        s.close()
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("a broker of the legacy layout is running: APOD_ROOT=~/.agent-pod apod broker stop", r.stderr)
 
     def test_it_asks_first(self):
         r = self.migrate(input="n\n")

@@ -40,7 +40,7 @@ try:
 except paths.PathError as e:
     sys.exit(f"apod-broker: {e}")
 CONFIG_DIR = PATHS.config      # config.toml, roles.toml, extensions/, profiles/
-ROOT = CONFIG_DIR               # its older name, in the extension API (the legacy layout's one folder)
+ROOT = PATHS.state              # the folder that holds broker/ (the legacy layout's one folder), for older extensions
 BDIR = PATHS.broker             # the broker's state: log, approvals, sessions' state, its home, tmp/
 SDIR = PATHS.sessions_state     # <id>.json: each session's saved state, never in a pod's folder
 RDIR = PATHS.sessions_run       # <id>/: each session's folder, mounted in its pod

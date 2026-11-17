@@ -1689,6 +1689,15 @@ class PathsTest(unittest.TestCase):
         (p.profiles / "folder").mkdir()
         self.assertEqual(p.profile_names(), ["b", "work"])
 
+    def test_extension_api_folders(self):
+        # ROOT, for extensions written before the new layout, still holds BDIR (state, never config).
+        code = "import api; print(api.ROOT, api.BDIR, api.CONFIG_DIR)"
+        for env, want in (({"APOD_CONFIG_DIR": "/n/c", "APOD_STATE_DIR": "/n/s"}, ["/n/s", "/n/s/broker", "/n/c"]),
+                          ({"APOD_ROOT": "/r"}, ["/r", "/r/broker", "/r"])):
+            r = subprocess.run([sys.executable, "-c", code], cwd=HERE / "broker", capture_output=True, text=True,
+                               env=host_env(HOME="/nonexistent", **env))
+            self.assertEqual(r.stdout.split(), want, r.stderr)
+
     def test_paths_command(self):
         env = dict(os.environ, HOME=str(self.home), APOD_CONFIG_DIR=str(self.home / "c"))
         for k in ("APOD_ROOT", "APOD_DATA_DIR", "APOD_STATE_DIR"):
