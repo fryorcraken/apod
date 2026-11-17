@@ -763,7 +763,9 @@ approvals; `apod broker keys` loads its keys.
   else in it, and says which. Run again, it finishes what a first run left; once done, there's
   nothing to migrate.
 - It says which mounts of a profile the new folders' [mount guard](reference.md#where-apod-keeps-its-files)
-  would refuse (a mount of `~/.config` or `~/.local` contains them now).
+  would refuse (a mount of `~/.config` or `~/.local` contains them now), and which profiles have
+  paths in `~/.agent-pod` (a key kept in a profile's folder, say): what they point to stays in
+  `~/.agent-pod.migrated`, so move it and fix the paths.
 - With `APOD_ROOT=DIR`, it moves `DIR` to the folders the `APOD_*_DIR` and `XDG_*` variables say;
   then unset `APOD_ROOT`.
 

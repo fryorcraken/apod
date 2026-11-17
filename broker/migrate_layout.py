@@ -216,8 +216,13 @@ def main(argv):
         say(f"\nThese stay in the legacy folder: {', '.join(stays)}.")
     say(f"Then {tilde(root)} becomes {tilde(dest)}: nothing is deleted.")
     # Mounts the new layout's guard refuses (a mount of ~/.config, say): say so before, not at launch.
+    # Paths into the legacy folder (a key in <profile>/ssh/, say) point into the renamed one after.
     for src, dst, how in todo:
         if isinstance(how, tuple):
+            spots = {str(root), tilde(root)}
+            if any(f"{x}/" in how[1] for x in spots):
+                say(f"apod: careful: {dst.name} has paths in {tilde(root)}/, which will be {tilde(dest)}/: move what "
+                    f"they point to (and fix them in {tilde(dst)}) after")
             try:
                 p = profiles.from_toml(profiles.tomllib.loads(how[1]), dst)
                 for mode, path in p["pod"]["mounts"]:

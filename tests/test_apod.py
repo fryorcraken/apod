@@ -748,6 +748,14 @@ class MigrateLayoutChecksTest(unittest.TestCase):
         self.assertEqual(r.returncode, 2, r.stderr)
         self.assertIn("a broker of the legacy layout is running: APOD_ROOT=~/.agent-pod apod broker stop", r.stderr)
 
+    def test_paths_into_the_legacy_folder(self):
+        (self.root / "p/ssh").mkdir()
+        (self.root / "p/profile.toml").write_text(f'broker = false\n[ssh-agent]\nkey = "{self.root}/p/ssh/id"\n')
+        r = self.migrate(input="n\n")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn(f"careful: p.toml has paths in {self.root}/, which will be {self.root}.migrated/", r.stderr)
+        self.assertIn("p/ssh", r.stderr)  # it stays behind, and the list says so
+
     def test_it_asks_first(self):
         r = self.migrate(input="n\n")
         self.assertEqual(r.returncode, 1)
