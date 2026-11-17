@@ -327,6 +327,15 @@ class OldFilesTest(Launcher, unittest.TestCase):
         self.assertIn(f"{self.root}/plain/mounts: rw mount {self.root} is refused", r.stderr)
         (self.root / "plain/mounts").write_text(f"{self.m}/ro1\nrw {self.m}/rw1\n{self.m}/missing\n")
 
+    def test_a_project_in_apods_folder_is_refused(self):
+        for proj in (self.root, self.root / "plain", self.root / "broker", self.root.parent):
+            self.log.write_text("")
+            r = subprocess.run([APOD, "plain", str(proj)], env=self.env, cwd=self.tmp, stdin=subprocess.DEVNULL,
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 2, proj)
+            self.assertIn(f"the project {proj} is refused: it ", r.stderr)
+            self.assertEqual(self.log.read_text(), "", "no pod")
+
     def test_python_3_11_is_required(self):
         old = self.tmp / "oldbin"
         old.mkdir()
@@ -541,6 +550,24 @@ class NewLayoutTest(ProfileTomlTest):
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 2)
         self.assertIn(f"{f}: rw mount {self.tmp}/state is refused: it is apod's state folder", r.stderr)
+
+    def test_a_project_in_apods_folders_is_refused(self):
+        (self.tmp / "state").mkdir(exist_ok=True)
+        for proj, what in ((self.tmp / "config", "is apod's config folder"), (self.tmp / "config/profiles", "is inside"),
+                           (self.tmp / "data", "is apod's data folder"), (self.tmp / "state", "is apod's state folder"),
+                           (self.rundir, "is apod's runtime folder"), (self.tmp, "contains apod's config folder")):
+            self.log.write_text("")
+            r = subprocess.run([APOD, "plain", str(proj)], env=self.env, cwd=self.tmp, stdin=subprocess.DEVNULL,
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 2, proj)
+            self.assertIn(f"the project {proj} is refused: it {what}", r.stderr)
+            self.assertEqual(self.log.read_text(), "", "no pod")
+        # The apod checkout may be the project (a pod working on apod), unlike a --rw mount of it.
+        self.log.write_text("")
+        r = subprocess.run([APOD, "plain", str(HERE)], env=self.env, cwd=self.tmp, stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"{HERE}:{HERE}:z", self.log.read_text())
 
     def test_names_a_profile_cant_have(self):
         for name, msg in (("x.google-credentials", "ends in .google-credentials"), ("worklog", "is an apod command or folder")):

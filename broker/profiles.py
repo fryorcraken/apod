@@ -319,6 +319,20 @@ def check_mount(mode, path, where, lay=None):
                            f"Mount the folders it needs")
 
 
+def check_project(project, lay=None):
+    """Refuse a launch's project folder (mounted read-write) that is, contains or is inside one of
+    apod's folders: `cd ~/.config && apod dev` would give the pod apod's configuration (its role,
+    the extensions the broker runs). Unlike a --ro/--rw mount, the project may be the apod
+    checkout: a pod that works on apod itself (SECURITY.md says what that gives it)."""
+    lay, p = lay or paths.layout(), real(project)
+    for label, x in lay.guarded:
+        x = real(str(x))
+        rel = "is" if p == x else "is inside" if inside(p, x) else "contains" if inside(x, p) else None
+        if rel:
+            raise ProfileError(f"the project {project} is refused: it {rel} {label} {x}, which {GUARDED_WHY[label]}. "
+                               f"Launch apod in another folder")
+
+
 # ---------------------------------------------------------------------------------------------
 
 def old_files_in(pdir):
@@ -418,13 +432,15 @@ def main(argv):
         print(USAGE, file=sys.stderr)
         return 2
     try:
+        if project:
+            check_project(project)  # mounted read-write
         p = load(spec, project) if spec else {"warnings": []}
         for mode, path in cli:
             if path is None:
                 raise ProfileError(USAGE)
             if not (project and real(path) == real(project)):
                 check_mount(mode, path, f"--{mode}")
-    except ProfileError as e:
+    except (ProfileError, paths.PathError) as e:
         print(f"apod: {e}", file=sys.stderr)
         return 2
     if not quiet:

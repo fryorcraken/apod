@@ -797,7 +797,8 @@ apod refuses mounts that would expose its own files: its config, data, state and
 ([where they are](reference.md#where-apod-keeps-its-files); `~/.agent-pod` in the legacy layout),
 the apod checkout, anything that contains them, and a read-write mount of your home folder. A
 read-only `~/.local/share/apod/worklog` (or a folder in it), `~/.local/state/apod/history.jsonl`
-and `~/.local/state/apod/broker/log.jsonl` are fine, for a pod that reviews them. The project folder stays writable
+and `~/.local/state/apod/broker/log.jsonl` are fine, for a pod that reviews them. The project folder can't be one of
+apod's folders or contain one either (apod won't launch in `~` or `~/.config`); it stays writable
 even inside a read-only entry. The first launch relabels mounted trees for SELinux (`:z`), which
 can take a while on big trees. A running pod can't gain mounts: exit and relaunch with
 `-- --continue`, or `apod resume`.

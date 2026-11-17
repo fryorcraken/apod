@@ -69,10 +69,12 @@ do and leaves a record of what it did.
   (`worklog/`, or one in it), `history.jsonl` and the broker's `log.jsonl`, for a pod that
   reviews them. The check follows symlinks and `..`. apod itself mounts, from these folders, only
   what the list above says: nothing from the config folder but the profile's
-  `<profile>.google-credentials.json`, read-only, when google-docs-mcp is enabled. The guard
-  doesn't cover the project folder, which is mounted read-write anyway (launching from `~` or from
-  the apod checkout is up to you), and it checks the paths when apod starts, not a symlink someone
-  changes later.
+  `<profile>.google-credentials.json`, read-only, when google-docs-mcp is enabled. The project
+  folder, mounted read-write, is checked too: apod won't launch in one of its folders, or in one
+  that contains them (`~`, `~/.config`, a dotfiles repository that holds `~/.config`). The project
+  may be the apod checkout, for a pod that works on apod: that pod can change the code a broker
+  started from that checkout runs. The guard checks the paths when apod starts, not a symlink
+  someone changes later.
 - **Environment:** the pod gets the variables of its profile's `[pod.env]` and `[pod] env_from`
   (yours, by name: apod passes `-e NAME` and podman reads the value, so it's in neither the
   profile's file nor podman's command line). Whatever is passed is in the pod: an API key passed

@@ -303,4 +303,5 @@ apod's folders (`~/.agent-pod` in the legacy layout) or the apod checkout, and a
 of your home folder: they hold the profiles' logins and settings and the broker's state. The
 exceptions are read-only mounts of the work logs (or one of them), `history.jsonl` and the
 broker's `log.jsonl`, for a pod that reviews them ([SECURITY.md](../SECURITY.md#the-container)).
-The launch folder is not checked.
+The project folder, mounted read-write, can't be, contain or be inside one of apod's folders
+either: launching in `~` or `~/.config` is refused. It may be the apod checkout.
