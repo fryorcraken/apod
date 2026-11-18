@@ -1,0 +1,3 @@
+# apod writes "unless A and B, do C" as A && B || C, where B is always a test: C running when
+# A succeeds and B fails is the point.
+disable=SC2015

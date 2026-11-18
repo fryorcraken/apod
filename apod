@@ -581,6 +581,7 @@ fi
 ghsecret=()
 if [ -z "$usebroker" ]; then
   # GitHub token: the podman secret gh-<profile>, or another profile's if [token] profile names one.
+  # shellcheck disable=SC2016 # $p is jq's (--arg p)
   ghprofile=$(pget --arg p "$profile" '.token.profile // $p')
   ghsecret=(--secret "gh-$ghprofile,type=env,target=GH_TOKEN")
   if ! podman secret exists "gh-$ghprofile"; then
@@ -684,6 +685,7 @@ fi
 declare -A mmode=(); morder=()
 want_mount() {  # <ro|rw> <path>; fails if the path doesn't exist
   local path p=$2
+  # shellcheck disable=SC2088 # a literal ~, expanded right here
   case $p in "~"|"~/"*) p=$HOME${p#"~"} ;; esac  # only ~ and ~/..., as the loader that checked it
   path=$(realpath -m "$p")
   [ -e "$path" ] || return 1
