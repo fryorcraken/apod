@@ -56,10 +56,11 @@ Then:
 python3 tests/test_broker.py            # the broker and its extensions, about three minutes
 python3 tests/test_apod.py              # the launcher: podman command lines, migrations, the wizard
 KEEP=1 python3 tests/test_broker.py     # keep the temporary folders to look at the broker's logs
-bash -n apod && shellcheck apod && zsh -n _apod
+bash -n apod && zsh -n _apod && shellcheck apod
 ```
 
-GitHub Actions runs the same on every push to the GitHub mirror (`.github/workflows/tests.yml`).
+GitHub Actions runs all of these on every push and pull request to the GitHub mirror, with Python
+3.11 and the newest (`.github/workflows/tests.yml`).
 
 The tests run git with your identity and git config switched off, so in an apod pod they never
 ask your broker to sign their commits. The legacy layout's tests put their sockets under `tmp/`:

@@ -9,29 +9,30 @@ on:
 jobs:
   tests:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15  # a run takes about 4; a hung test would otherwise run for 6 hours
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.14"]  # the oldest apod supports (README), and the newest
+        python: ["3.11", "3.15"]  # the oldest apod supports (README), and the newest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
       - name: Install zsh (for zsh -n _apod)
         run: sudo apt-get update -q && sudo apt-get install -y -q zsh
-      # The tests commit in throwaway repositories; the runner's git has no identity of its own.
-      - name: git identity
-        run: |
-          git config --global user.name "apod CI"
-          git config --global user.email "ci@apod.invalid"
-      - name: Launcher syntax
+      # The runner's tools change under us: when a run goes red with no change here, look here.
+      - name: Tool versions
+        run: python3 --version; git --version; gh --version; shellcheck --version; zsh --version
+      - name: Syntax
         run: bash -n apod && zsh -n _apod
+      # Each of the rest runs whatever the steps before it did (unless the run was cancelled).
       - name: Broker tests
+        if: ${{ !cancelled() }}
         run: python3 tests/test_broker.py
       - name: Launcher tests
-        if: success() || failure()  # whatever the broker tests did
+        if: ${{ !cancelled() }}
         run: python3 tests/test_apod.py
       - name: shellcheck
-        if: success() || failure()  # its notes don't hold up the tests
+        if: ${{ !cancelled() }}
         run: shellcheck apod
