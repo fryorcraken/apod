@@ -205,7 +205,8 @@ case ${1:-} in
     if [ -z "$n" ]; then
       for i in "${!labels[@]}"; do printf '%2d) %s\n' "$((i + 1))" "${labels[$i]}" >&2; done
       read -rp "Resume which? [1] " n < /dev/tty; n=${n:-1}
-      [[ $n =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] && [ "$n" -le ${#sids[@]} ] || { echo "apod: no such choice" >&2; exit 2; }
+      # No leading 0: bash reads 08 as octal, and $((n - 1)) would fail.
+      [[ $n =~ ^[1-9][0-9]*$ ]] && [ "$n" -le ${#sids[@]} ] || { echo "apod: no such choice" >&2; exit 2; }
     fi
     mapfile -t opts < <(jq -r '.opts[]' <<< "${lines[$((n - 1))]}")
     echo "apod: resuming ${labels[$((n - 1))]}" >&2
