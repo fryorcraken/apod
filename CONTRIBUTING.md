@@ -59,10 +59,10 @@ KEEP=1 python3 tests/test_broker.py     # keep the temporary folders to look at 
 bash -n apod && shellcheck apod && zsh -n _apod
 ```
 
-In an apod pod, run the suites with `env -u GIT_CONFIG_COUNT`: the pod's own git config would
-make the tests' commits ask the broker to sign them. The legacy layout's tests put their sockets
-under `tmp/`: if the checkout's path is too long for that, `APOD_TEST_TMP=/tmp/x` puts the
-temporary folders there (the new layout's sockets are in a short runtime folder anyway).
+The tests run git with your identity and git config switched off, so in an apod pod they never
+ask your broker to sign their commits. The legacy layout's tests put their sockets under `tmp/`:
+if the checkout's path is too long for that, `APOD_TEST_TMP=/tmp/x` puts the temporary folders
+there (the new layout's sockets are in a short runtime folder anyway).
 
 Don't test with your real apod folders (`~/.config/apod`, `~/.local/share/apod`,
 `~/.local/state/apod`, `$XDG_RUNTIME_DIR/apod`, or `~/.agent-pod`): they hold real tokens and

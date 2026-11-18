@@ -31,6 +31,13 @@ import unittest
 import zlib
 from pathlib import Path
 
+# git in the tests never uses your identity or git config. In an apod pod they come in through
+# GIT_CONFIG_* and GIT_COMMITTER_*, and would sign the tests' commits through your broker (asking
+# you on the host).
+for k in [k for k in os.environ if k.startswith(("GIT_CONFIG", "GIT_AUTHOR_", "GIT_COMMITTER_"))]:
+    del os.environ[k]
+os.environ.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+
 HERE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(HERE / "broker"))
 import paths  # noqa: E402 (where apod's files are, as the broker sees them)
