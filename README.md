@@ -67,8 +67,8 @@ apod keeps its files in `~/.config/apod` (what you write: profiles, roles, setti
 `~/.local/share/apod` (the profiles' homes, work logs), `~/.local/state/apod` (history, the
 broker's state) and `$XDG_RUNTIME_DIR/apod` (sockets): see the
 [reference](docs/reference.md#where-apod-keeps-its-files). An older install, with everything in
-`~/.agent-pod`, keeps working until you run `apod migrate --layout`
-([guide](docs/guides.md#migrating-to-the-new-layout)).
+`~/.agent-pod`, keeps working until you run `apod migrate --layout`, all at once or one profile
+at a time ([guide](docs/guides.md#migrating-to-the-new-layout)).
 
 The rest is needed only for what uses it:
 

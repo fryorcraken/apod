@@ -1664,8 +1664,13 @@ class PathsTest(unittest.TestCase):
                 (self.home / new).mkdir(parents=True)
                 p = self.lay()
                 self.assertFalse(p.legacy)
-                # ... and ~/.agent-pod, unused then, is pointed out.
-                self.assertEqual(p.notice, f"{old} is there too, and isn't used: apod migrate --layout moves what's in it")
+                # ... and ~/.agent-pod, with the profiles still in it (for the old apod), is pointed out.
+                self.assertEqual(p.notice, f"{old} still has profiles of the legacy layout (work), which only the old "
+                                           f"apod launches: apod migrate --layout PROFILE moves one")
+                (old / "work").rename(old / ".work")
+                self.assertEqual(self.lay().notice,
+                                 f"{old} is there too, and isn't used: apod migrate --layout moves what's in it")
+                (old / ".work").rename(old / "work")
                 (self.home / new).rmdir()
         self.assertTrue(self.lay().legacy)
         (self.home / "st/apod").mkdir(parents=True)  # the new folders where the environment says they are

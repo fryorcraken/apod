@@ -589,9 +589,10 @@ class NewLayoutTest(ProfileTomlTest):
         r = subprocess.run([APOD, "leftover", str(self.proj)], env=self.env, cwd=self.tmp, stdin=subprocess.DEVNULL,
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 2)
-        self.assertIn(f"{old} is there too, and isn't used: apod migrate --layout moves what's in it", r.stderr)
+        self.assertIn(f"{old} still has profiles of the legacy layout (leftover), which only the old apod launches: "
+                      f"apod migrate --layout PROFILE moves one", r.stderr)
         self.assertIn(f"{old}/leftover is a profile of the legacy layout, which isn't used once one of the new "
-                      f"layout's folders is there (apod broker paths): apod migrate --layout moves it", r.stderr)
+                      f"layout's folders is there (apod broker paths): apod migrate --layout leftover moves it", r.stderr)
 
     def test_new_writes_one_file(self):
         r = subprocess.run([APOD, "new", "wiz2"], env=self.env, cwd=self.tmp, capture_output=True, text=True,
@@ -755,6 +756,91 @@ class MigrateLayoutChecksTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stderr)
         self.assertIn(f"careful: p.toml has paths in {self.root}/, which will be {self.root}.migrated/", r.stderr)
         self.assertIn("p/ssh", r.stderr)  # it stays behind, and the list says so
+        # One profile at a time: its folder moves at once.
+        r = self.migrate("p", input="n\n")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn(f"careful: p.toml has paths in {self.root}/p/, which moves to {self.tmp}/old.migrated/p/", r.stderr)
+
+    def test_one_profile_at_a_time(self):
+        import socket
+        root, c, d, st = self.root, self.tmp / "c", self.tmp / "d", self.tmp / "s"
+        (root / "q/home").mkdir(parents=True)
+        (root / "q/home/f").write_text("q's")
+        (root / "q/profile.toml").write_text("broker = false\n")
+        (root / "q/google-credentials.json").write_text("{}")
+        (root / "q/.old").mkdir()
+        (root / "roles.toml").write_text("[roles.x]\n")
+        (root / "broker.toml").write_text('[gh]\nuser = "u"\n')
+        (root / "broker-extensions").mkdir()
+        (root / "broker-extensions/e.py").write_text("# e\n")
+        (root / "broker").mkdir()
+        (root / "broker/grants.json").write_text("{}")
+        (root / "history.jsonl").write_text('{"ts": 1, "profile": "p"}\n{"ts": 2, "profile": "q"}\n{"ts": 3, "profile": "p"}\n')
+        # The old broker runs, and so does a pod of p: q moves all the same.
+        s = socket.socket(socket.AF_UNIX)
+        s.bind(str(root / "broker/admin.sock"))
+        s.listen()
+        self.addCleanup(s.close)
+        running = dict(STUB_PS="c1", STUB_INSPECT=f"apod-p-proj-1 /x/proj {root}/p/home")
+        r = self.migrate("q", "--yes", **running)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((c / "profiles/q.toml").read_text(), "broker = false\n")
+        self.assertEqual((d / "profiles/q/home/f").read_text(), "q's")
+        self.assertTrue((c / "profiles/q.google-credentials.json").is_file())
+        # What the profiles share is copied (the old apod still reads it), and q's launches.
+        for old, copy in (("roles.toml", c / "roles.toml"), ("broker.toml", c / "config.toml"),
+                          ("broker-extensions/e.py", c / "extensions/e.py"), ("selinux", st / "selinux"),
+                          ("broker/grants.json", st / "broker/grants.json")):
+            self.assertEqual(copy.read_text(), (root / old).read_text(), old)
+        self.assertEqual([json.loads(l)["ts"] for l in (st / "history.jsonl").read_text().splitlines()], [2])
+        # The rest of q's folder is out of the old apod's sight; p is as it was.
+        self.assertFalse((root / "q").exists())
+        self.assertTrue((self.tmp / "old.migrated/q/profile.toml").is_file())
+        self.assertTrue((self.tmp / "old.migrated/q/.old").is_dir())
+        self.assertTrue((root / "p/home").is_dir() and (root / "p/env").is_file())
+        self.assertIn(f"{root} stays, for the old apod and the profiles still in it (p)", r.stderr)
+        # A pod of p stops p's migration; q is done.
+        r = self.migrate("p", "--yes", **running)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("pods of p are running (apod-p-proj-1)", r.stderr)
+        r = self.migrate("q", "--yes")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("q is in the new layout already: nothing to migrate", r.stderr)
+        for bad, msg in (("nope", f"no profile nope in {root}"), ("worklog", "is an apod command or folder")):
+            r = self.migrate(bad, "--yes")
+            self.assertEqual(r.returncode, 2)
+            self.assertIn(msg, r.stderr)
+        # All the rest, once the old broker is stopped: what's the same stays, the history is merged.
+        r = self.migrate("--yes")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("or migrate one profile at a time: apod migrate --layout PROFILE", r.stderr)
+        s.close()
+        (root / "broker/admin.sock").unlink()
+        r = self.migrate("--yes")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((d / "profiles/p/home").is_dir())
+        self.assertEqual([json.loads(l)["ts"] for l in (st / "history.jsonl").read_text().splitlines()], [1, 2, 3])
+        self.assertIn("roles.toml (the same in the new layout)", r.stderr)
+        self.assertIn("broker/grants.json (the new layout's broker has its own)", r.stderr)
+        self.assertFalse(root.exists())
+        self.assertTrue((self.tmp / "old.migrated.1/roles.toml").is_file())
+        self.assertIn(f"(and {self.tmp}/old.migrated, from the profiles moved one at a time)", r.stderr)
+
+    def test_one_profile_and_a_shared_file_already_there(self):
+        (self.root / "q").mkdir()
+        (self.root / "q/profile.toml").write_text("broker = false\n")
+        (self.root / "roles.toml").write_text("[roles.x]\n")
+        (self.tmp / "c").mkdir()
+        (self.tmp / "c/roles.toml").write_text("[roles.y]\n")
+        r = self.migrate("q", "--yes")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"note: {self.tmp}/c/roles.toml is the new layout's, and isn't the same as {self.root}/roles.toml, "
+                      f"which the old apod reads", r.stderr)
+        self.assertEqual((self.tmp / "c/roles.toml").read_text(), "[roles.y]\n")
+        # All at once, a different one is a conflict.
+        r = self.migrate("--yes")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn(f"  {self.tmp}/c/roles.toml\n", r.stderr)
 
     def test_it_asks_first(self):
         r = self.migrate(input="n\n")

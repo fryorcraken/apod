@@ -17,7 +17,7 @@ Every command, file, setting and variable. For how to set things up, see the
 apod <profile> [options] [dir] [-- agent args]   run an agent in a pod, in dir (default: the current folder)
 apod new [profile]                               create a profile, step by step (writes profiles/NAME.toml)
 apod migrate [profile | --all] [--yes]           legacy layout: old profile files to one profile.toml (the old files move to .old/)
-apod migrate --layout [--yes]                    the legacy layout (~/.agent-pod) to the new one
+apod migrate --layout [profile] [--yes]          the legacy layout (~/.agent-pod) to the new one: all of it, or one profile
 apod resume [--list|--latest|--claude] [dir]     resume a stopped Claude session started in dir
 apod history                                     folders and profiles launched, most recent first
 apod ps                                          running pods: profile, session, status, folder

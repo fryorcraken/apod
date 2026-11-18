@@ -769,6 +769,40 @@ approvals; `apod broker keys` loads its keys.
 - With `APOD_ROOT=DIR`, it moves `DIR` to the folders the `APOD_*_DIR` and `XDG_*` variables say;
   then unset `APOD_ROOT`.
 
+### One profile at a time
+
+To keep working while you move, run this version beside the one you have, under another name, and
+move one profile at a time, starting with one you aren't using:
+
+```sh
+ln -s ~/src/apod-new/apod ~/.local/bin/apod-new   # a checkout of this version
+apod-new migrate --layout weekly                  # one profile; it asks first
+apod-new weekly                                   # launch it with the new apod
+```
+
+`apod migrate --layout PROFILE` moves that profile's file, home and Google client as above, copies
+its launches from the history, and copies what the profiles share (`config.toml`, `roles.toml`,
+`extensions/`, the SELinux marker, the broker's approvals) when the new layout doesn't have them
+yet. The rest of its folder goes to `~/.agent-pod.migrated/PROFILE`, where the old apod doesn't
+see it. Only a pod of that profile stops it: the old broker and pods of the other profiles can go
+on running.
+
+While both run:
+
+- The old apod launches the profiles still in `~/.agent-pod`; the new one, the migrated ones (and
+  says, at each launch, which are left). Each has its broker, with its own sockets, approvals and
+  keys (`apod broker keys`, and `apod-new broker keys`).
+- What the profiles share is in both places: a change to your roles or `config.toml` goes in
+  both, `~/.agent-pod` for the old apod and `~/.config/apod` for the new one.
+- The old apod's [mount guard](reference.md#where-apod-keeps-its-files) doesn't know the new
+  folders: don't give its pods `~/.config`, `~/.local` or `$XDG_RUNTIME_DIR`.
+
+Once the last pods of the old apod are done, stop its broker (`apod broker stop`) and run
+`apod-new migrate --layout` for the rest. It takes the new layout as it finds it: what's the same
+there stays behind, the history is merged, and the old broker's log, approvals and CA stay where
+the new broker has its own. `~/.agent-pod` then becomes `~/.agent-pod.migrated.1` (beside the
+profiles' leftovers in `~/.agent-pod.migrated`). Point `apod` at the new version.
+
 ## Mounts, network and images
 
 **Mounts.** Only the project folder is mounted (read-write), plus the profile's home and

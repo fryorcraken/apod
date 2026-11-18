@@ -11,7 +11,7 @@ set -euo pipefail
 
 usage() {
   echo "usage: apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [--role R] [--scope S]... [--gh-user ACCOUNT] [--no-broker] [project-dir] [-- agent args...]" >&2
-  echo "       apod new [profile] | migrate [profile|--all] | migrate --layout | resume [--list|--latest|--claude] [dir] | history | ps | profiles | token <profile> [--rm] | google-auth <profile>" >&2
+  echo "       apod new [profile] | migrate [profile|--all] | migrate --layout [profile] | resume [--list|--latest|--claude] [dir] | history | ps | profiles | token <profile> [--rm] | google-auth <profile>" >&2
   echo "       apod broker [ui]|log [-f] [-n N]|pending|allow ID [--session|--role]|deny ID|sessions|roles|grants|scopes|keys|restart|stop" >&2
   echo "       apod selinux [install|remove|status]" >&2
   exit 2
@@ -513,7 +513,7 @@ phome=$(P .profile.home)
 if [ "$(P .profile.exists)" != true ]; then
   known=$(P '.all_profiles | keys | join(" ")') lr=$(P .legacy_root)
   if [ "$(P .legacy)" = false ] && [ -d "$lr/$profile" ]; then  # (legacy) left beside the new layout
-    echo "apod: no profile named $profile${known:+ (profiles: $known)}; $lr/$profile is a profile of the legacy layout, which isn't used once one of the new layout's folders is there (apod broker paths): apod migrate --layout moves it" >&2
+    echo "apod: no profile named $profile${known:+ (profiles: $known)}; $lr/$profile is a profile of the legacy layout, which isn't used once one of the new layout's folders is there (apod broker paths): apod migrate --layout $profile moves it" >&2
     exit 2
   fi
   echo "apod: no profile named $profile${known:+ (profiles: $known)}; to create it, see README, Quick start" >&2

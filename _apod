@@ -45,7 +45,9 @@ case ${words[2]} in
   token)    _arguments '1: :(token)' '2:profile:_apod_profiles' '3:option:(--rm)'; return ;;
   google-auth) _arguments '1: :(google-auth)' '2:profile:_apod_profiles'; return ;;
   new)      return ;;
-  migrate)  _arguments '1: :(migrate)' '2:profile:{_apod_profiles; compadd -- --all --layout}' '3:option:(--yes)'; return ;;
+  migrate)  _arguments '1: :(migrate)' '2:profile:{_apod_profiles; compadd -- --all --layout}' \
+              '3:profile or option:{[[ $words[3] == --layout ]] && _path_files -W "${APOD_ROOT:-$HOME/.agent-pod}" -/; compadd -- --yes}' \
+              '4:option:(--yes)'; return ;;
   resume)   _arguments '1: :(resume)' '(--latest --claude)--list[always list and ask]' \
               '(--list --claude)--latest[resume the newest without asking]' \
               '(--list --latest)--claude[use Claude'"'"'s own session picker]' '2:folder:_directories'; return ;;

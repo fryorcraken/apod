@@ -156,7 +156,11 @@ class Layout:
                 **({"ssh_agent_sock": self.runtime / f"ssh-{n}-{pid}.sock",
                     "ssh_agent_mount": self.runtime / f"ssh-{n}-{pid}.sock"} if pid else {})}
         if not self.legacy and self.legacy_root.is_dir():  # (legacy) left beside the new layout: say so
-            self.notice = f"{self.legacy_root} is there too, and isn't used: apod migrate --layout moves what's in it"
+            r = self.legacy_root
+            left = [d.name for d in sorted(r.iterdir()) if d.is_dir() and not name_error(d.name)]
+            self.notice = (f"{r} still has profiles of the legacy layout ({', '.join(left)}), which only the old apod "
+                           f"launches: apod migrate --layout PROFILE moves one" if left else
+                           f"{r} is there too, and isn't used: apod migrate --layout moves what's in it")
         self.roles = self.config / "roles.toml"
         self.log = self.broker / "log.jsonl"              # every request the broker decided
         self.daemon_log = self.broker / "broker.log"       # the broker's own output

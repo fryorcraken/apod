@@ -74,7 +74,9 @@ do and leaves a record of what it did.
   that contains them (`~`, `~/.config`, a dotfiles repository that holds `~/.config`). The project
   may be the apod checkout, for a pod that works on apod: that pod can change the code a broker
   started from that checkout runs. The guard checks the paths when apod starts, not a symlink
-  someone changes later.
+  someone changes later. An apod from before the new layout only knows `~/.agent-pod`: while you
+  run one beside this one ([one profile at a time](docs/guides.md#one-profile-at-a-time)), its
+  pods can be given the new folders.
 - **Environment:** the pod gets the variables of its profile's `[pod.env]` and `[pod] env_from`
   (yours, by name: apod passes `-e NAME` and podman reads the value, so it's in neither the
   profile's file nor podman's command line). Whatever is passed is in the pod: an API key passed
