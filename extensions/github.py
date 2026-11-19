@@ -2,7 +2,9 @@
 in the pod), which checks each fetch and each pushed ref and forwards the request to GitHub with
 the host gh account's token. Actions: github:fetch, github:fetch public (a public repository
 outside the scope), github:push branch|default-branch|tag|delete|other-ref, and github:push force
-for a branch update that isn't a fast-forward (with or without a lease: the broker can't tell)."""
+for a branch update that isn't a fast-forward (with or without a lease: the broker can't tell).
+A request for a repository outside the scope that GitHub answers 404 for (no such repository, or
+the account can't see it) is refused at once: approving it would only lead to a failed fetch."""
 import base64
 import http.client
 import json
@@ -15,7 +17,7 @@ from pathlib import Path
 import gitwire
 from api import (GIT_BODY_LIMIT, BrokerError, Provider, Request, check, evaluate, now, provider, read_body,
                  recently_allowed, rejected_msg, send_text)
-from gh import gh_query, gh_user, token_for
+from gh import gh_query, gh_run, gh_user, token_for
 
 UPSTREAM = os.environ.get("APOD_GH_GIT_UPSTREAM", "https://github.com")
 _repo_info = {}
@@ -23,13 +25,17 @@ _repo_info = {}
 
 def repo_info(sess, repo):
     """A repository's default branch and visibility, as the session's account sees it; cached for
-    five minutes, so a repository made private or a renamed default branch is seen soon."""
+    five minutes, so a repository made private or a renamed default branch is seen soon.
+    {"missing": True} when GitHub answers 404 (no such repository, or the account can't see it;
+    not cached, so one created since is seen at once); {} when GitHub couldn't be asked."""
     key = (gh_user(sess), repo)
     info, ts = _repo_info.get(key, (None, 0))
     if info is None or now() - ts > 300:
-        out = gh_query(sess, ["api", f"repos/{repo}", "--jq", "{default_branch, private}"])
+        r = gh_run(sess, ["api", f"repos/{repo}", "--jq", "{default_branch, private}"])
+        if r is not None and r.returncode != 0 and "(HTTP 404)" in r.stderr:
+            return {"missing": True}
         try:
-            info = json.loads(out or "")
+            info = json.loads(r.stdout if r is not None and r.returncode == 0 else "")
         except ValueError:
             return {}
         _repo_info[key] = (info, now())
@@ -77,14 +83,23 @@ def handle(h, sess, method):
     push = service == "git-receive-pack"
     req = Request("github", f"git {'push' if push else 'fetch'} github.com/{repo}")
     req.targets = [("gh", repo)]
+    if not push:
+        req.actions = ["github:fetch"]
+    info = {} if sess.in_scope(("gh", repo)) else repo_info(sess, repo)
+    if info.get("missing"):
+        # GitHub would answer "not found" whatever the user said, so nobody is asked.
+        who = gh_user(sess) or "the gh account"
+        req.display += f" (not found as {who})"
+        check(sess, req, ask=False)
+        return send_text(h, f"github.com/{repo}: not found as {who} (GitHub answers 404: no such repository, "
+                            "or the account can't see it), so the user wasn't asked. Check the name.", 404)
 
     def forward():
         conn, resp = upstream_request(sess, method, upath, body, h, gzip_ok=not push)
         relay_response(h, resp)
 
     if not push:
-        req.actions = ["github:fetch"]
-        if not sess.in_scope(("gh", repo)) and repo_info(sess, repo).get("private") is False:
+        if info.get("private") is False:
             req.actions, req.targets = ["github:fetch public"], []
         if method == "POST":
             # Checked (and logged) at the ref advertisement; the negotiation rounds follow it.

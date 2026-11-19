@@ -112,15 +112,21 @@ def gh_login_of(sess):
     return (sess.cfg.get("gh") or {}).get("login", "")
 
 
-def gh_query(sess, args, timeout=30):
-    """Run gh on the broker's own behalf (lookups); returns stdout or None."""
+def gh_run(sess, args, timeout=30):
+    """Run gh on the broker's own behalf (lookups): the finished process, or None if gh couldn't
+    run (no token, timed out)."""
     try:
-        r = subprocess.run([gh_bin(), *args], capture_output=True, text=True, timeout=timeout,
-                           env=gh_env(token_for(gh_user(sess))), cwd=BDIR / "home",
-                           stdin=subprocess.DEVNULL)
+        return subprocess.run([gh_bin(), *args], capture_output=True, text=True, timeout=timeout,
+                              env=gh_env(token_for(gh_user(sess))), cwd=BDIR / "home",
+                              stdin=subprocess.DEVNULL)
     except (subprocess.TimeoutExpired, BrokerError):
         return None
-    return r.stdout if r.returncode == 0 else None
+
+
+def gh_query(sess, args, timeout=30):
+    """gh_run's stdout, or None if gh failed."""
+    r = gh_run(sess, args, timeout)
+    return r.stdout if r is not None and r.returncode == 0 else None
 
 
 # ---------------------------------------------------------------------------------------------

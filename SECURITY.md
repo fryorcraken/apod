@@ -242,6 +242,8 @@ The broker turns each request into actions and targets, and checks them before a
   a separate one, so a pod's patches look like yours.
 - **Reads within the scope.** Roles allow broad reads on targets in scope, such as
   `api GET /repos/{repo}/*`, and `github:fetch public` allows fetching any public repository.
+  A fetch outside the scope also tells a pod whether the account can see a private repository:
+  one GitHub answers 404 for is refused at once, while one the account can see asks you.
   Private data in scope is readable. A read can also reach past the scope: a GraphQL query is
   scoped by its top-level fields, so one on an in-scope repository can follow links to others
   (its owner's repositories, a fork's parent), and REST lists such as forks do the same. Treat

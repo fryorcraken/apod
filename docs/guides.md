@@ -183,6 +183,9 @@ account can do.
 
 5. **The scope.** The project's GitHub remotes are in scope automatically. Add more with
    `scope = ["gh:ORG/*"]` or `--scope gh:ORG/REPO` ([Roles and scope](#roles-and-scope)).
+   Outside the scope, a fetch of a public repository goes through (`github:fetch public`), one
+   of a private repository the account can see waits for you, and one GitHub answers 404 for
+   (a wrong name, or a repository the account can't see) fails at once.
 6. **Check it** in a pod (`apod bot -a bash ~/src/org/repo`): `gh auth status` shows the account,
    role, scope and what's allowed; then `gh pr list` and a push of a branch.
 
