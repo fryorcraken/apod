@@ -58,8 +58,8 @@ do and leaves a record of what it did.
 - **Apod's own files stay out of reach (the mount guard).** apod refuses to start a pod with a
   mount that is, contains or is inside one of apod's folders (config `~/.config/apod`, data
   `~/.local/share/apod`, state `~/.local/state/apod`, runtime `$XDG_RUNTIME_DIR/apod`, wherever
-  the `APOD_*_DIR` and `XDG_*` variables put them; `~/.agent-pod` or `APOD_ROOT` in the legacy
-  layout) or the apod checkout, whether it comes from the profile or from `--ro`/`--rw`, and a
+  the `APOD_*_DIR` and `XDG_*` variables put them, and `~/.agent-pod`, which an older apod may
+  still read; `~/.agent-pod` or `APOD_ROOT` in the legacy layout) or the apod checkout, whether it comes from the profile or from `--ro`/`--rw`, and a
   read-write mount of your home folder. A pod that could write its `profiles/<profile>.toml` could
   give itself a role, scope and extensions on its next launch; one that could write the checkout
   could change the code the broker runs on the host; the data folder holds every profile's login,

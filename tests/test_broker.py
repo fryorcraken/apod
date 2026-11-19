@@ -2147,9 +2147,10 @@ class ProfileLoaderTest(unittest.TestCase):
         """The four folders of the new layout, and the read-only exceptions in them."""
         d = self.dir
         env = dict(self.env, APOD_CONFIG_DIR=str(d / "c"), APOD_DATA_DIR=str(d / "d"), APOD_STATE_DIR=str(d / "s"),
-                   APOD_RUNTIME_DIR=str(d / "r"))
+                   APOD_RUNTIME_DIR=str(d / "r"), HOME=str(d / "h"))
         del env["APOD_ROOT"]
-        for x in ("c/profiles", "c/extensions", "d/profiles/work/home", "d/worklog/s1", "s/broker/sessions", "r/sessions/x"):
+        for x in ("c/profiles", "c/extensions", "d/profiles/work/home", "d/worklog/s1", "s/broker/sessions", "r/sessions/x",
+                  "h/.agent-pod/old/home"):
             (d / x).mkdir(parents=True)
         for f in ("c/config.toml", "c/roles.toml", "s/history.jsonl", "s/broker/log.jsonl", "s/broker/grants.json",
                   "d/worklog/s1/worklog.md"):
@@ -2168,6 +2169,9 @@ class ProfileLoaderTest(unittest.TestCase):
                                (d / "s", "is apod's state folder"), (d / "s/broker/grants.json", "is inside apod's state folder"),
                                (d / "s/broker/sessions", "is inside apod's state folder"),
                                (d / "r", "is apod's runtime folder"), (d / "r/sessions/x", "is inside apod's runtime folder"),
+                               # The old apod's, beside this one: its profiles' settings and logins, its roles.
+                               (d / "h/.agent-pod", "is apod's legacy folder"),
+                               (d / "h/.agent-pod/old/home", "is inside apod's legacy folder"),
                                (d, "contains apod's config folder"), ("/", "contains apod's config folder"),
                                (HERE, "is the apod checkout")):
                 for mode in ("ro", "rw"):

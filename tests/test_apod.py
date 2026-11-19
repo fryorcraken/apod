@@ -553,9 +553,12 @@ class NewLayoutTest(ProfileTomlTest):
 
     def test_a_project_in_apods_folders_is_refused(self):
         (self.tmp / "state").mkdir(exist_ok=True)
+        self.addCleanup(shutil.rmtree, self.home / ".agent-pod")  # a profile left there is announced at each launch
         for proj, what in ((self.tmp / "config", "is apod's config folder"), (self.tmp / "config/profiles", "is inside"),
                            (self.tmp / "data", "is apod's data folder"), (self.tmp / "state", "is apod's state folder"),
-                           (self.rundir, "is apod's runtime folder"), (self.tmp, "contains apod's config folder")):
+                           (self.rundir, "is apod's runtime folder"), (self.tmp, "contains apod's config folder"),
+                           (self.home / ".agent-pod/old", "is inside apod's legacy folder")):
+            proj.mkdir(parents=True, exist_ok=True)
             self.log.write_text("")
             r = subprocess.run([APOD, "plain", str(proj)], env=self.env, cwd=self.tmp, stdin=subprocess.DEVNULL,
                                capture_output=True, text=True)
@@ -751,15 +754,25 @@ class MigrateLayoutChecksTest(unittest.TestCase):
 
     def test_paths_into_the_legacy_folder(self):
         (self.root / "p/ssh").mkdir()
-        (self.root / "p/profile.toml").write_text(f'broker = false\n[ssh-agent]\nkey = "{self.root}/p/ssh/id"\n')
+        (self.root / "p/profile.toml").write_text(
+            f'broker = false\n# a comment on {self.root}/p/ isn\'t a path\n[ssh-agent]\nkey = "{self.root}/p/ssh/id"\n'
+            f'[pod.env]\nKEYS = "{self.root}/keys"\n')
         r = self.migrate(input="n\n")
         self.assertEqual(r.returncode, 1, r.stderr)
-        self.assertIn(f"careful: p.toml has paths in {self.root}/, which will be {self.root}.migrated/", r.stderr)
+        self.assertIn(f"careful: p.toml has paths in {self.root}/, which will be {self.root}.migrated/: move what "
+                      f"they point to (and fix them in {self.tmp}/c/profiles/p.toml) after:\n"
+                      f'  4: key = "{self.root}/p/ssh/id"\n  6: KEYS = "{self.root}/keys"\n', r.stderr)
         self.assertIn("p/ssh", r.stderr)  # it stays behind, and the list says so
-        # One profile at a time: its folder moves at once.
+        # One profile at a time: its folder moves at once; the rest of the old folder, later.
         r = self.migrate("p", input="n\n")
         self.assertEqual(r.returncode, 1, r.stderr)
-        self.assertIn(f"careful: p.toml has paths in {self.root}/p/, which moves to {self.tmp}/old.migrated/p/", r.stderr)
+        self.assertIn(f"careful: p.toml has paths in {self.root}/p/, which moves to {self.tmp}/old.migrated/p/: move "
+                      f"what they point to (and fix them in {self.tmp}/c/profiles/p.toml) after:\n"
+                      f'  4: key = "{self.root}/p/ssh/id"\n', r.stderr)
+        self.assertIn(f"careful: p.toml has paths in {self.root}/, which is renamed once every profile is migrated: "
+                      f"move what they point to (and fix them in {self.tmp}/c/profiles/p.toml) after:\n"
+                      f'  6: KEYS = "{self.root}/keys"\n', r.stderr)
+        self.assertNotIn("a comment", r.stderr)
 
     def test_one_profile_at_a_time(self):
         import socket

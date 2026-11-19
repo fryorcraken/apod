@@ -290,6 +290,9 @@ GUARDED_WHY = {
     "apod's data folder": "holds every profile's home, with its logins: a pod could read another profile's",
     "apod's state folder": "holds the broker's state (its approvals, sessions and keys): a pod could read or change it",
     "apod's runtime folder": "holds the broker's sockets: a pod could approve its own requests",
+    "apod's legacy folder": "holds what an apod from before the new layout reads (its roles, broker extensions and "
+                            "the profiles still in it, with their logins): a pod could read them, or rewrite that "
+                            "apod's configuration",
     "the apod checkout": "is the code the broker runs on the host: a pod could change it",
 }
 

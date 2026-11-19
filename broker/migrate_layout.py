@@ -243,6 +243,17 @@ def history(src, dst, name):
     os.replace(tmp, dst)
 
 
+def lines_with(text, *parts):
+    """(number, line) of the lines of a profile's text that have one of `parts` in them, but for
+    comments."""
+    return [(n, line.strip()) for n, line in enumerate(text.splitlines(), 1)
+            if not line.lstrip().startswith("#") and any(x in line for x in parts)]
+
+
+def shown_lines(found):
+    return "\n".join(f"  {n}: {line}" for n, line in found)
+
+
 def same_text(target, text):
     try:
         return target.read_text() == text
@@ -363,13 +374,15 @@ def main(argv):
         if how[0] != "write":
             continue
         pname = dst.name[:-5]
-        if any(f"{x}/{pname}/" in how[1] for x in (root, tilde(root))) and name:
+        own = lines_with(how[1], *(f"{x}/{pname}/" for x in (root, tilde(root)))) if name else []
+        other = [x for x in lines_with(how[1], f"{root}/", f"{tilde(root)}/") if x not in own]
+        if own:
             say(f"apod: careful: {dst.name} has paths in {tilde(root / pname)}/, which moves to "
-                f"{tilde(rest)}/: move what they point to (and fix them in {tilde(dst)}) after")
-        elif any(f"{x}/" in how[1] for x in (root, tilde(root))):
+                f"{tilde(rest)}/: move what they point to (and fix them in {tilde(dst)}) after:\n{shown_lines(own)}")
+        if other:
             later = "is renamed once every profile is migrated" if name else f"will be {tilde(dest)}/"
             say(f"apod: careful: {dst.name} has paths in {tilde(root)}/, which {later}: move what they point to "
-                f"(and fix them in {tilde(dst)}) after")
+                f"(and fix them in {tilde(dst)}) after:\n{shown_lines(other)}")
         try:
             p = profiles.from_toml(profiles.tomllib.loads(how[1]), dst)
             for mode, path in p["pod"]["mounts"]:

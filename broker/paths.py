@@ -146,7 +146,9 @@ class Layout:
             self.selinux = self.state / "selinux"
             self.profiles = self.config / "profiles"
             self.guarded = [("apod's config folder", self.config), ("apod's data folder", self.data),
-                            ("apod's state folder", self.state), ("apod's runtime folder", self.runtime)]
+                            ("apod's state folder", self.state), ("apod's runtime folder", self.runtime),
+                            # (legacy) the old apod's, while one runs beside this one: its settings and logins
+                            ("apod's legacy folder", self.legacy_root)]
             p = self.profiles
             self._names = lambda: [f.name[:-5] for f in sorted(p.glob("*.toml")) if f.is_file()]
             self._profile = lambda n, pid: {

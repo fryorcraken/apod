@@ -299,7 +299,8 @@ isn't used. `APOD_ROOT=DIR` means the legacy
 layout rooted at `DIR`, whatever the other variables say.
 
 apod refuses a mount (`[pod] ro`/`rw`, `--ro`, `--rw`) that is, contains or is inside one of
-apod's folders (`~/.agent-pod` in the legacy layout) or the apod checkout, and a read-write mount
+apod's folders (and `~/.agent-pod`, which an older apod may still read; in the legacy layout,
+`~/.agent-pod` alone) or the apod checkout, and a read-write mount
 of your home folder: they hold the profiles' logins and settings and the broker's state. The
 exceptions are read-only mounts of the work logs (or one of them), `history.jsonl` and the
 broker's `log.jsonl`, for a pod that reviews them ([SECURITY.md](../SECURITY.md#the-container)).

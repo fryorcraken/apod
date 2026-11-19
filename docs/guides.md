@@ -763,9 +763,9 @@ approvals; `apod broker keys` loads its keys.
   else in it, and says which. Run again, it finishes what a first run left; once done, there's
   nothing to migrate.
 - It says which mounts of a profile the new folders' [mount guard](reference.md#where-apod-keeps-its-files)
-  would refuse (a mount of `~/.config` or `~/.local` contains them now), and which profiles have
-  paths in `~/.agent-pod` (a key kept in a profile's folder, say): what they point to stays in
-  `~/.agent-pod.migrated`, so move it and fix the paths.
+  would refuse (a mount of `~/.config` or `~/.local` contains them now), and which lines of a
+  profile have paths in `~/.agent-pod` (a key kept in a profile's folder, say): what they point to
+  stays in `~/.agent-pod.migrated`, so move it and fix the paths.
 - With `APOD_ROOT=DIR`, it moves `DIR` to the folders the `APOD_*_DIR` and `XDG_*` variables say;
   then unset `APOD_ROOT`.
 
@@ -794,8 +794,9 @@ While both run:
   keys (`apod broker keys`, and `apod-new broker keys`).
 - What the profiles share is in both places: a change to your roles or `config.toml` goes in
   both, `~/.agent-pod` for the old apod and `~/.config/apod` for the new one.
-- The old apod's [mount guard](reference.md#where-apod-keeps-its-files) doesn't know the new
-  folders: don't give its pods `~/.config`, `~/.local` or `$XDG_RUNTIME_DIR`.
+- The new apod's [mount guard](reference.md#where-apod-keeps-its-files) refuses `~/.agent-pod`
+  too, but the old one doesn't know the new folders: don't give its pods `~/.config`, `~/.local`
+  or `$XDG_RUNTIME_DIR`.
 
 Once the last pods of the old apod are done, stop its broker (`apod broker stop`) and run
 `apod-new migrate --layout` for the rest. It takes the new layout as it finds it: what's the same
