@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-# apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [--role R] [--scope S]... [--gh-user ACCOUNT] [--no-broker] [project-dir] [-- agent args...]
+# apod <profile> [-a claude|opencode|bash] [-p PRESET]... [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [--role R] [--scope S]... [--gh-user ACCOUNT] [--no-broker] [project-dir] [-- agent args...]
 # Run a coding agent in a podman container as a given GitHub identity.
 # Per profile: a persistent $HOME and a profile.toml (where: broker/paths.py, through apod-broker
 # paths): git identity, extra mounts, image, environment... and either the broker (no credentials
 # in the pod, the host's apod broker acts for it: gh, GitHub and Radicle remotes, commit signing,
 # ssh) or the podman secret gh-<profile> (GitHub token). In the legacy layout (~/.agent-pod),
 # profiles in the old files are read as before (apod migrate converts them). apod-broker profile
-# reads them all: see broker/profiles.py.
+# reads them all: see broker/profiles.py. A preset (-p, presets/NAME.toml in the config folder) is
+# pod settings any profile can launch with: image, mounts, network, volumes, environment.
 set -euo pipefail
 
 usage() {
-  echo "usage: apod <profile> [-a claude|opencode|bash] [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [--role R] [--scope S]... [--gh-user ACCOUNT] [--no-broker] [project-dir] [-- agent args...]" >&2
-  echo "       apod new [profile] | migrate [profile|--all] | migrate --layout [profile] | resume [--list|--latest|--claude] [dir] | history | ps | profiles | token <profile> [--rm] | google-auth <profile>" >&2
+  echo "usage: apod <profile> [-a claude|opencode|bash] [-p PRESET]... [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [--role R] [--scope S]... [--gh-user ACCOUNT] [--no-broker] [project-dir] [-- agent args...]" >&2
+  echo "       apod new [profile] | migrate [profile|--all] | migrate --layout [profile] | resume [--list|--latest|--claude] [dir] | history | ps | profiles | presets | token <profile> [--rm] | google-auth <profile>" >&2
   echo "       apod broker [ui]|log [-f] [-n N]|pending|allow ID [--session|--role]|deny ID|sessions|roles|grants|scopes|keys|restart|stop" >&2
   echo "       apod selinux [install|remove|status]" >&2
   exit 2
@@ -67,6 +68,7 @@ P() { jq -r "$@" <<< "$paths"; }
 # For shell completion.
 if [ "${1:-}" = --list-roles ]; then python3 "$apoddir/apod-broker" roles --plain 2>/dev/null | cut -f1; exit 0; fi
 if [ "${1:-}" = --list-profiles ]; then python3 "$apoddir/apod-broker" paths --json 2>/dev/null | jq -r '.all_profiles | keys[]'; exit 0; fi
+if [ "${1:-}" = --list-presets ]; then python3 "$apoddir/apod-broker" paths --json 2>/dev/null | jq -r '.all_presets | keys[]'; exit 0; fi
 if [ "${1:-}" = --list-connectors ]; then printf '%s\n' "${!connector_servers[@]}" "${local_mcps[@]}" | sort; exit 0; fi
 
 # Subcommands: manage a profile's GitHub token (podman secret gh-<profile>) and Google login,
@@ -147,9 +149,15 @@ case ${1:-} in
       | [(.ts | strflocaltime("%Y-%m-%d %H:%M")), .profile, "\(.n)x", .project] | @tsv' "$hist" | column -t -s $'\t'
     exit ;;
   ps)
-    podman ps --filter label=apod.profile --format json | jq -r '.[] | [.Labels["apod.profile"],
+    # The profile column says the presets too, as the launch did: "work -p logos".
+    podman ps --filter label=apod.profile --format json | jq -r '.[] | [.Labels["apod.profile"]
+        + (.Labels["apod.preset"] // "" | if . == "" then "" else " -p \(.)" end),
       (.Labels["apod.session"] // "" | .[:8]), .Status, .Labels["apod.project"]] | @tsv' | column -t -s $'\t'
     exit ;;
+  presets)
+    # Each preset (presets/NAME.toml in the config folder): what it sets, and its description.
+    need_python
+    shift; exec python3 "$apoddir/apod-broker" presets "$@" ;;
   resume)
     # Resume a stopped Claude session started in a folder (one launched by apod, with a saved
     # conversation), with the same profile and options. In a herdr pane that launched one of them,
@@ -486,10 +494,12 @@ role=      # broker role for this run (--role), else broker.toml's, else reader
 nobroker=  # --no-broker: no broker for this run, even with a broker.toml
 ghuser=    # --gh-user: the host gh account the broker acts as for this run, over [gh] user
 scopes=()     # extra broker scope for this run (--scope)
+presets=()    # presets for this run (-p), applied in order over the profile's [pod]
 recopts=("$profile")  # profile and options of this launch, for the history and apod resume
 while [ $# -gt 0 ]; do
   case $1 in
     -a)         [ $# -ge 2 ] || usage; agent=$2; recopts+=("$1" "$2"); shift 2 ;;
+    -p|--preset) [ $# -ge 2 ] || usage; IFS=, read -ra prs <<< "$2"; presets+=("${prs[@]}"); recopts+=("$1" "$2"); shift 2 ;;
     -i|--image) [ $# -ge 2 ] || usage; image=$2; recopts+=("$1" "$2"); shift 2 ;;
     -c|--connectors) [ $# -ge 2 ] || usage; IFS=, read -ra cs <<< "$2"; connectors+=("${cs[@]}"); recopts+=("$1" "$2"); shift 2 ;;
     -m|--ro)    [ $# -ge 2 ] || usage; climounts+=("ro $2"); recopts+=(--ro "$(realpath -m "$2")"); shift 2 ;;
@@ -519,14 +529,17 @@ if [ "$(P .profile.exists)" != true ]; then
   echo "apod: no profile named $profile${known:+ (profiles: $known)}; to create it, see README, Quick start" >&2
   exit 2
 fi
-# The profile's settings, from its profile.toml (or its old files), checked: JSON from apod-broker
-# profile. pget runs a jq filter on it; plist one that prints NUL-terminated records.
+# The profile's settings, from its profile.toml (or its old files), checked, with the presets' pod
+# settings over its own (-p): JSON from apod-broker profile. pget runs a jq filter on it; plist one
+# that prints NUL-terminated records.
 ldargs=(--profile "$profile" --project "$proj" --quiet)  # --ro/--rw: refused if they'd expose apod's own files
 for e in "${climounts[@]}"; do ldargs+=(--"${e%% *}" "${e#* }"); done
+for e in "${presets[@]}"; do ldargs+=(--preset "$e"); done
 pjson=$(python3 "$apoddir/apod-broker" profile "${ldargs[@]}") || exit 2
 pget() { jq -r "$@" <<< "$pjson"; }
 plist() { jq -j "$1" <<< "$pjson"; }
-# Image: -i, else the profile's [pod] image, else $APOD_IMAGE, else apod.
+# Image: -i, else the last preset's that sets one, else the profile's [pod] image, else $APOD_IMAGE,
+# else apod. The loader has applied the presets: .pod is the profile's with theirs over it.
 [ -n "$image" ] || image=$(pget '.pod.image // empty')
 image=${image:-${APOD_IMAGE:-apod}}
 # Network: podman's default (pasta) unless [pod] network says otherwise, e.g. "host" to share the
@@ -809,7 +822,8 @@ if [ -n "$usebroker" ]; then
 fi
 
 # Tell the agent where it is and what it can see (Claude: appended to its system prompt).
-context="You are running inside an apod container (podman), profile \"$profile\". Only these host paths are mounted:
+pnote=; [ ${#presets[@]} -eq 0 ] || pnote=", preset$([ ${#presets[@]} -gt 1 ] && echo s) $(IFS=,; echo "${presets[*]}")"
+context="You are running inside an apod container (podman), profile \"$profile\"$pnote. Only these host paths are mounted:
 - $proj (read-write, the project)"
 for p in "${rwmounts[@]}"; do
   if [ "$p" = "$gitcommon" ]; then context+=$'\n'"- $p (read-write, the git directory of the repository the project is a linked worktree of)"
@@ -935,6 +949,7 @@ run=(podman run --rm "${tty[@]}" --userns=keep-id
   "${mounts[@]}" "${podopts[@]}" -w "$proj")
 [ -z "$network" ] || run+=(--network "$network")
 run+=("${volumes[@]}" --label apod.profile="$profile" --label apod.project="$proj" --label apod.session="$session")
+[ ${#presets[@]} -eq 0 ] || run+=(--label apod.preset="$(IFS=,; echo "${presets[*]}")")
 
 # Remember this launch (apod history, apod resume).
 hist=$(P .history); mkdir -p "$(dirname "$hist")"

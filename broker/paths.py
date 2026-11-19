@@ -8,7 +8,7 @@ The layout follows the XDG Base Directory specification, on macOS too:
 
     config   $APOD_CONFIG_DIR, else ${XDG_CONFIG_HOME:-~/.config}/apod       what you write; versionable
              config.toml, roles.toml, extensions/, profiles/NAME.toml,
-             profiles/NAME.google-credentials.json
+             profiles/NAME.google-credentials.json, presets/NAME.toml
     data     $APOD_DATA_DIR, else ${XDG_DATA_HOME:-~/.local/share}/apod      what you'd back up
              profiles/NAME/home/ (a pod's $HOME), worklog/<session>/
     state    $APOD_STATE_DIR, else ${XDG_STATE_HOME:-~/.local/state}/apod    what the tools write
@@ -32,7 +32,8 @@ import sys
 from pathlib import Path
 
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-COMMANDS = ("new", "migrate", "resume", "history", "ps", "profiles", "token", "google-auth", "selinux", "broker", "gh")
+COMMANDS = ("new", "migrate", "resume", "history", "ps", "profiles", "presets", "token", "google-auth", "selinux",
+            "broker", "gh")
 LEGACY_FOLDERS = ("broker", "broker-extensions", "worklog")  # folders in ~/.agent-pod that aren't profiles
 NOTICE = "legacy layout: apod migrate --layout"
 
@@ -129,6 +130,7 @@ class Layout:
             self.selinux = r / "selinux"
             self.profiles = r
             self.homes = r  # <profile>/home: each profile's
+            self.presets = None  # presets are the new layout's only
             self.guarded = [("apod's folder", r)]
             self._names = lambda: [d.name for d in sorted(r.iterdir()) if d.is_dir()] if r.is_dir() else []
             self._profile = lambda n, pid: {
@@ -147,6 +149,7 @@ class Layout:
             self.selinux = self.state / "selinux"
             self.profiles = self.config / "profiles"
             self.homes = self.data / "profiles"  # <profile>/home: each profile's
+            self.presets = self.config / "presets"
             self.guarded = [("apod's config folder", self.config), ("apod's data folder", self.data),
                             ("apod's state folder", self.state), ("apod's runtime folder", self.runtime),
                             # (legacy) the old apod's, while one runs beside this one: its settings and logins
@@ -205,15 +208,33 @@ class Layout:
             raise PathError(why)
         return dict(self._profile(name, pid), name=name)
 
+    def preset_names(self):
+        """The presets there are, by name (none in the legacy layout)."""
+        if self.presets is None or not self.presets.is_dir():
+            return []
+        return [f.name[:-5] for f in sorted(self.presets.glob("*.toml")) if f.is_file() and NAME.fullmatch(f.name[:-5])]
+
+    def preset_file(self, name):
+        """A preset's file, presets/NAME.toml in the config folder, whether or not it exists.
+        Raises PathError for a name that can't be a preset's, and in the legacy layout, which has
+        no presets."""
+        if not NAME.fullmatch(name or ""):
+            raise PathError(f"{name!r} isn't a preset name: letters, digits, '.', '_' and '-', starting with a "
+                            f"letter or digit")
+        if self.presets is None:
+            raise PathError(f"preset {name}: presets are in the new layout only (apod migrate --layout)")
+        return self.presets / f"{name}.toml"
+
     def as_json(self, profile=None, pid=None):
         def s(v):
             return {k: s(x) for k, x in v.items()} if isinstance(v, dict) else str(v) if isinstance(v, Path) else v
         out = {k: getattr(self, k) for k in (
             "layout", "legacy", "notice", "config", "data", "state", "runtime", "config_file", "roles", "extensions",
-            "profiles", "worklog", "history", "broker", "selinux", "log", "grants", "sessions_state",
+            "profiles", "presets", "worklog", "history", "broker", "selinux", "log", "grants", "sessions_state",
             "sessions_run", "admin_sock", "agent_sock")}
         out["legacy_root"] = self.legacy_root
         out["all_profiles"] = {n: self.profile(n) for n in self.profile_names()}
+        out["all_presets"] = {n: self.preset_file(n) for n in self.preset_names()}
         if profile is not None:
             out["profile"] = self.profile(profile, pid)
         return s(out)
@@ -268,8 +289,9 @@ def main(argv):
     print(f"layout   {out['layout']}" + (f" ({out['legacy_root']}; {out['notice']})" if out["legacy"] else ""))
     for k in ("config", "data", "state", "runtime"):
         print(f"{k:<8} {out[k]}")
-    for k in ("config_file", "roles", "extensions", "profiles", "worklog", "history", "broker", "admin_sock"):
-        print(f"  {k:<12} {out[k]}")
+    for k in ("config_file", "roles", "extensions", "profiles", "presets", "worklog", "history", "broker", "admin_sock"):
+        if out[k] is not None:
+            print(f"  {k:<12} {out[k]}")
     for n, p in out["all_profiles"].items():
         print(f"  profile {n}: {p['file']}, home {p['home']}")
     if profile is not None:

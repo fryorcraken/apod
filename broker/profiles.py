@@ -30,7 +30,11 @@ NAME` prints it as JSON):
                      the broker uses, None for the profile's own
     ssh_agent        key (None when not set), confirm
     tables           the other tables of profile.toml (or of broker.toml): the extensions'
+    presets          the presets applied over pod (--preset NAME), [{name, file, description}]
     warnings         things to tell the user, as text
+
+A preset (presets/NAME.toml in the config folder, the new layout's only) is a [pod] table any
+profile can launch with: see load_preset. `apod-broker presets` lists them.
 """
 import json
 import os
@@ -99,6 +103,48 @@ def check_table(where, table, v, allowed):
         raise ProfileError(f"{where}: [{table}] has no key {', '.join(bad)} (it has {', '.join(sorted(allowed))})")
 
 
+def pod_from_toml(pod, where):
+    """The pod settings of a [pod] table (a profile's or a preset's), checked; its keys are known
+    (check_table)."""
+    out = empty()["pod"]
+    for k in ("image", "network"):
+        if k in pod:
+            out[k] = check_str(f"{where}: [pod]", k, pod[k], nospace=True)
+    for mode in ("ro", "rw"):
+        if mode in pod:
+            out["mounts"] += [[mode, expand(m)] for m in check_list(f"{where}: [pod]", mode, pod[mode])]
+    if "connectors" in pod:
+        out["connectors"] = check_list(f"{where}: [pod]", "connectors", pod["connectors"])
+    if "volumes" in pod:
+        vols = pod["volumes"]
+        if not isinstance(vols, dict) or not all(isinstance(k, str) and isinstance(v, str) and k and v.startswith("/")
+                                                 for k, v in vols.items()):
+            raise ProfileError(f'{where}: [pod] volumes is a table of NAME = "/path in the pod"')
+        out["volumes"] = dict(vols)
+    if "env" in pod:
+        env = pod["env"]
+        if not isinstance(env, dict) or not all(isinstance(v, str) for v in env.values()):
+            raise ProfileError(f"{where}: [pod.env] is a table of NAME = \"value\" (values are strings: quote them)")
+        for k in env:
+            if not ENV_NAME.fullmatch(k):
+                raise ProfileError(f"{where}: [pod.env] {k!r} isn't an environment variable name")
+            if k in IDENTITY_ENV:
+                raise ProfileError(f"{where}: [pod.env] {k}: the git identity is [git] name and email")
+        out["env"] = dict(env)
+    if "env_from" in pod:
+        # Names of host variables, passed by name at launch: the file holds no value.
+        names = check_list(f"{where}: [pod]", "env_from", pod["env_from"])
+        for k in names:
+            if not ENV_NAME.fullmatch(k):
+                raise ProfileError(f"{where}: [pod] env_from: {k!r} isn't an environment variable name")
+            if k in IDENTITY_ENV:
+                raise ProfileError(f"{where}: [pod] env_from: {k}: the git identity is [git] name and email")
+            if k in out["env"]:
+                raise ProfileError(f"{where}: [pod] env_from: {k} is in [pod.env] too: one or the other")
+        out["env_from"] = list(dict.fromkeys(names))
+    return out
+
+
 def from_toml(data, where):
     """The profile from a parsed profile.toml, checked."""
     p = empty()
@@ -127,42 +173,7 @@ def from_toml(data, where):
     for t, allowed in OWN_TABLES.items():
         if t in data:
             check_table(where, t, data[t], allowed)
-    pod = data.get("pod", {})
-    for k in ("image", "network"):
-        if k in pod:
-            p["pod"][k] = check_str(f"{where}: [pod]", k, pod[k], nospace=True)
-    for mode in ("ro", "rw"):
-        if mode in pod:
-            p["pod"]["mounts"] += [[mode, expand(m)] for m in check_list(f"{where}: [pod]", mode, pod[mode])]
-    if "connectors" in pod:
-        p["pod"]["connectors"] = check_list(f"{where}: [pod]", "connectors", pod["connectors"])
-    if "volumes" in pod:
-        vols = pod["volumes"]
-        if not isinstance(vols, dict) or not all(isinstance(k, str) and isinstance(v, str) and k and v.startswith("/")
-                                                 for k, v in vols.items()):
-            raise ProfileError(f'{where}: [pod] volumes is a table of NAME = "/path in the pod"')
-        p["pod"]["volumes"] = dict(vols)
-    if "env" in pod:
-        env = pod["env"]
-        if not isinstance(env, dict) or not all(isinstance(v, str) for v in env.values()):
-            raise ProfileError(f"{where}: [pod.env] is a table of NAME = \"value\" (values are strings: quote them)")
-        for k in env:
-            if not ENV_NAME.fullmatch(k):
-                raise ProfileError(f"{where}: [pod.env] {k!r} isn't an environment variable name")
-            if k in IDENTITY_ENV:
-                raise ProfileError(f"{where}: [pod.env] {k}: the git identity is [git] name and email")
-        p["pod"]["env"] = dict(env)
-    if "env_from" in pod:
-        # Names of host variables, passed by name at launch: the file holds no value.
-        names = check_list(f"{where}: [pod]", "env_from", pod["env_from"])
-        for k in names:
-            if not ENV_NAME.fullmatch(k):
-                raise ProfileError(f"{where}: [pod] env_from: {k!r} isn't an environment variable name")
-            if k in IDENTITY_ENV:
-                raise ProfileError(f"{where}: [pod] env_from: {k}: the git identity is [git] name and email")
-            if k in p["pod"]["env"]:
-                raise ProfileError(f"{where}: [pod] env_from: {k} is in [pod.env] too: one or the other")
-        p["pod"]["env_from"] = list(dict.fromkeys(names))
+    p["pod"] = pod_from_toml(data.get("pod", {}), where)
     for k, v in data.get("git", {}).items():
         p["git"][k] = check_str(f"{where}: [git]", k, v)
         if k.endswith("email") and not re.fullmatch(r"[^@\s]+@[^@\s]+", v):
@@ -395,6 +406,75 @@ def check_project(project, lay=None):
 
 
 # ---------------------------------------------------------------------------------------------
+# Presets: presets/NAME.toml in apod's config folder, pod settings any profile can launch with
+# (apod PROFILE -p NAME). A profile is who acts; a preset is only what the pod runs with: the
+# image, mounts, network, volumes and environment. Nothing in it reaches the broker (apod passes
+# it the pod's network, as it does without presets), so a preset can't change the role, the
+# scope or the identity. Connectors aren't in presets either: they act as the profile's own
+# Claude and Google logins.
+
+PRESET_POD = OWN_TABLES["pod"] - {"connectors"}
+
+
+def load_preset(name, lay=None):
+    """The preset NAME, checked: {name, file, description, pod} (pod as a profile's). Raises
+    ProfileError (in the legacy layout too, which has no presets)."""
+    lay = lay or paths.layout()
+    try:
+        f = lay.preset_file(name)
+    except paths.PathError as e:
+        raise ProfileError(str(e))
+    if not f.is_file():
+        known = lay.preset_names()
+        raise ProfileError(f"no preset {name}: {f} doesn't exist" + (f" (presets: {' '.join(known)})" if known else ""))
+    try:
+        data = tomllib.loads(f.read_text())
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
+        raise ProfileError(f"{f}: {e}")
+    for k, v in data.items():
+        if k == "description":
+            check_str(f, k, v)
+        elif k != "pod":
+            raise ProfileError(f"{f}: a preset has description = ... and [pod] only, not {k}: who acts, the role and "
+                               f"the scope are the profile's (apod PROFILE -p {name})")
+    pod = data.get("pod", {})
+    if not isinstance(pod, dict):
+        raise ProfileError(f"{f}: [pod] is a table")
+    if "description" in pod:
+        raise ProfileError(f"{f}: [pod] has description = ...: move it above [pod] (a key written after a [table] "
+                           f"line belongs to that table)")
+    if "connectors" in pod:
+        raise ProfileError(f"{f}: [pod] connectors: a preset has none, since connectors act as the profile's own "
+                           f"Claude and Google logins: set them in the profile's [pod] connectors, or with -c")
+    check_table(f, "pod", pod, PRESET_POD)
+    return {"name": name, "file": str(f), "description": data.get("description"), "pod": pod_from_toml(pod, f)}
+
+
+def apply_preset(pod, pre):
+    """Preset `pre`'s pod settings over `pod` (a profile's, or with earlier presets applied), in
+    place: its image and network replace the ones set before; its mounts come after theirs (apod
+    mounts a path once, with the last mode it's given); a volume replaces any volume at the same
+    path in the pod; its environment replaces the same names, [pod.env] and env_from alike."""
+    q = pre["pod"]
+    for k in ("image", "network"):
+        if q[k]:
+            pod[k] = q[k]
+    pod["mounts"] += q["mounts"]
+    for vname, vpath in q["volumes"].items():
+        for n in [n for n, p in pod["volumes"].items() if p == vpath]:
+            del pod["volumes"][n]
+        pod["volumes"][vname] = vpath
+    for k, v in q["env"].items():
+        pod["env"][k] = v
+        if k in pod["env_from"]:
+            pod["env_from"].remove(k)
+    for k in q["env_from"]:
+        pod["env"].pop(k, None)
+        if k not in pod["env_from"]:
+            pod["env_from"].append(k)
+
+
+# ---------------------------------------------------------------------------------------------
 
 def old_files_in(pdir):
     return [f for f in OLD_FILES if (Path(pdir) / f).exists()]
@@ -418,10 +498,11 @@ def locate(spec):
     return path.name, path, path / "profile.toml", path / "home"
 
 
-def load(spec, project=None, guard=True):
-    """The profile `spec` (a name, or a path: see locate), checked. Raises ProfileError. A mount of
-    the launch's `project` isn't checked: the project is mounted anyway. The broker (guard=False)
-    doesn't mount anything: apod checks the mounts when it launches."""
+def load(spec, project=None, guard=True, presets=()):
+    """The profile `spec` (a name, or a path: see locate), checked, with the `presets` (names)
+    applied over its pod settings, in order. Raises ProfileError. A mount of the launch's `project`
+    isn't checked: the project is mounted anyway. The broker (guard=False, no presets) doesn't
+    mount anything: apod checks the mounts when it launches."""
     name, pdir, f, home = locate(spec)
     old = old_files_in(pdir) if pdir else []  # the old files: a legacy profile folder's only
     warnings = []
@@ -449,6 +530,14 @@ def load(spec, project=None, guard=True):
     for mode, path in p["pod"]["mounts"] if guard else []:
         if not (project and real(path) == real(project)):
             check_mount(mode, path, where)
+    p["presets"] = []
+    for n in presets:
+        pre = load_preset(n)
+        for mode, path in pre["pod"]["mounts"] if guard else []:
+            if not (project and real(path) == real(project)):
+                check_mount(mode, path, pre["file"])
+        apply_preset(p["pod"], pre)
+        p["presets"].append({k: pre[k] for k in ("name", "file", "description")})
     return p
 
 
@@ -460,14 +549,21 @@ def names():
 # ---------------------------------------------------------------------------------------------
 # apod-broker profile --profile NAME ...
 
-USAGE = ("usage: apod-broker profile [--profile NAME | --profile-file FILE | --profile-dir DIR] [--project DIR] "
-         "[--ro PATH]... [--rw PATH]... [--json] [--quiet]\n"
+USAGE = ("usage: apod-broker profile [--profile NAME | --profile-file FILE | --profile-dir DIR] [--preset NAME]... "
+         "[--project DIR] [--ro PATH]... [--rw PATH]... [--json] [--quiet]\n"
          "(with no profile, it only checks the --ro and --rw mounts)")
 
 
 def main(argv):
-    spec, project, quiet, cli, it = None, None, False, [], iter(argv)
+    spec, project, quiet, cli, presets, it = None, None, False, [], [], iter(argv)
     for a in it:
+        if a == "--preset":
+            n = next(it, None)
+            if n is None:
+                print(USAGE, file=sys.stderr)
+                return 2
+            presets.append(n)
+            continue
         if a in ("--profile", "--profile-file", "--profile-dir"):
             spec = next(it, None)
             # A folder given as a name (no "/") is a folder still.
@@ -489,13 +585,13 @@ def main(argv):
         else:
             print(USAGE, file=sys.stderr)
             return 2
-    if not spec and not cli:
+    if not spec and (not cli or presets):
         print(USAGE, file=sys.stderr)
         return 2
     try:
         if project:
             check_project(project)  # mounted read-write
-        p = load(spec, project) if spec else {"warnings": []}
+        p = load(spec, project, presets=presets) if spec else {"warnings": []}
         for mode, path in cli:
             if path is None:
                 raise ProfileError(USAGE)
@@ -508,6 +604,37 @@ def main(argv):
         for w in p["warnings"]:
             print(f"apod: {w}", file=sys.stderr)
     print(json.dumps(p))
+    return 0
+
+
+def presets_main(argv):
+    """apod presets (apod-broker presets): each preset, with its description and what it sets."""
+    if argv:
+        print("usage: apod presets", file=sys.stderr)
+        return 2
+    lay = paths.layout()
+    if lay.presets is None:
+        print("apod: presets are in the new layout only (apod migrate --layout)", file=sys.stderr)
+        return 2
+    names = lay.preset_names()
+    if not names:
+        print(f"apod: no presets: {tilde(str(lay.presets))}/NAME.toml makes one (docs/reference.md#presets)",
+              file=sys.stderr)
+        return 0
+    for n in names:
+        try:
+            pre = load_preset(n, lay)
+        except ProfileError as e:
+            print(f"{n:<20} invalid: {e}")
+            continue
+        q = pre["pod"]
+        sets = [f"image {q['image']}"] if q["image"] else []
+        sets += [f"network {q['network']}"] if q["network"] else []
+        for what, k in (("mount", "mounts"), ("volume", "volumes"), ("variable", "env")):
+            c = len(q[k]) + (len(q["env_from"]) if k == "env" else 0)
+            if c:
+                sets.append(f"{c} {what}{'s' if c > 1 else ''}")
+        print(f"{n:<20} {', '.join(sets) or 'nothing'}" + (f"  ({pre['description']})" if pre["description"] else ""))
     return 0
 
 

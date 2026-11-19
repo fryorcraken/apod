@@ -13,9 +13,10 @@ if sys.argv[1:2] == ["paths"]:  # where apod's files are: for apod, which asks o
 if sys.argv[1:2] == ["migrate"] and "--layout" in sys.argv[2:]:  # the legacy layout to the new one
     import migrate_layout  # noqa: E402
     sys.exit(migrate_layout.main(sys.argv[2:]))
-if sys.argv[1:2] in (["profile"], ["migrate"]):  # profile settings: need neither the broker nor its extensions
+if sys.argv[1:2] in (["profile"], ["presets"], ["migrate"]):  # settings: need neither the broker nor its extensions
     import profiles  # noqa: E402
-    sys.exit(profiles.main(sys.argv[2:]) if sys.argv[1] == "profile" else profiles.migrate_main(sys.argv[2:]))
+    sys.exit({"profile": profiles.main, "presets": profiles.presets_main,
+              "migrate": profiles.migrate_main}[sys.argv[1]](sys.argv[2:]))
 
 import core  # noqa: E402
 core.load_extensions()  # extensions/*.py (gh, github, rad, sign, ssh, notify), and yours in extensions/ of apod's config folder

@@ -299,6 +299,17 @@ class OldFilesTest(Launcher, unittest.TestCase):
     def test_old_profiles_launch_as_before(self):
         self.run_cases("old files")
 
+    def test_presets_need_the_new_layout(self):
+        self.log.write_text("")
+        r = subprocess.run([APOD, "plain", "-p", "tools", str(self.proj)], env=self.env, cwd=self.tmp,
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("preset tools: presets are in the new layout only (apod migrate --layout)", r.stderr)
+        self.assertEqual(self.log.read_text(), "", "no pod")
+        r = subprocess.run([APOD, "presets"], env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("presets are in the new layout only", r.stderr)
+
     def test_old_files_are_announced(self):
         _, err = self.launch("plain")
         self.assertEqual(err.count("apod: legacy layout: apod migrate --layout, then unset APOD_ROOT"), 1, err)
@@ -637,6 +648,166 @@ class NewLayoutTest(ProfileTomlTest):
         self.assertIn(f"Created {self.tmp}/config/profiles/wiz2.toml", r.stderr)
         r = subprocess.run([APOD, "new", "wiz2"], env=self.env, cwd=self.tmp, capture_output=True, text=True, input="")
         self.assertIn("wiz2.toml already exists", r.stderr)
+
+
+class PresetTest(Launcher, unittest.TestCase):
+    """Presets, presets/NAME.toml in the config folder: pod settings any profile launches with (-p),
+    over the profile's own [pod] and under the command line's."""
+    LAYOUT = "xdg"
+
+    @classmethod
+    def make_profiles(cls):
+        m = cls.m
+        cls.toml_profile("who", f"""\
+            broker = false
+            [pod]
+            image = "whoimage"
+            ro = ["{m}/ro1"]
+            volumes = {{ "apod-who-nix" = "/nix" }}
+            env_from = ["APOD_TEST_FROM"]
+            [pod.env]
+            A = "1"
+            OVER = "profile"
+            [git]
+            name = "Who"
+            email = "who@example.org"
+            """)
+        cls.toml_profile("bot", '[gh]\nuser = "agentbot"\n[git]\nname = "Bot"\nemail = "bot@example.org"\n')
+        cls.preset("tools", f"""\
+            description = "the tools"
+            [pod]
+            image = "toolsimage"
+            network = "host"
+            ro = ["{m}/cli-ro"]
+            rw = ["{m}/ro1"]
+            volumes = {{ "apod-tools-nix" = "/nix" }}
+            [pod.env]
+            B = "2"
+            OVER = "tools"
+            APOD_TEST_FROM = "a value"
+            """)
+        cls.preset("second", '[pod]\nimage = "secondimage"\nenv_from = ["OVER"]\n[pod.env]\nB = "3"\n')
+
+    @classmethod
+    def preset(cls, name, text):
+        f = cls.P.preset_file(name)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(textwrap.dedent(text))
+        return f
+
+    def refused(self, *args):
+        """apod's stderr for a launch that must fail before any pod starts."""
+        self.log.write_text("")
+        r = subprocess.run([APOD, *args, str(self.proj)], env=self.env, cwd=self.tmp,
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertEqual(self.log.read_text(), "", "no pod")
+        return r.stderr
+
+    def test_a_preset_over_the_profile(self):
+        argv, _ = self.launch("who", "-p", "tools", extra_env={"APOD_TEST_FROM": "host value"})
+        self.assertIn("toolsimage", argv)
+        self.assertNotIn("whoimage", argv)
+        self.assertEqual(argv[argv.index("--network") + 1], "host")
+        # The profile's mount, read-write as the preset says, and the preset's own.
+        self.assertIn("@TMP@/mounts/ro1:@TMP@/mounts/ro1:z", argv)
+        self.assertNotIn("@TMP@/mounts/ro1:@TMP@/mounts/ro1:ro,z", argv)
+        self.assertIn("@TMP@/mounts/cli-ro:@TMP@/mounts/cli-ro:ro,z", argv)
+        # One volume at /nix: the preset's.
+        self.assertIn("apod-tools-nix:/nix", argv)
+        self.assertNotIn("apod-who-nix:/nix", argv)
+        # The environment: both, the preset's value over the profile's, a value over a name.
+        for e in ("-e A=1", "-e B=2", "-e OVER=tools", "-e APOD_TEST_FROM=a value"):
+            self.assertIn(e, argv)
+        self.assertNotIn("-e APOD_TEST_FROM", argv)
+        self.assertIn("apod.preset=tools", argv)
+        raw = self.log.read_text()
+        self.assertIn('profile "who", preset tools. Only these host paths are mounted', raw)
+        # Recorded with the launch, so that apod resume launches with it again.
+        last = json.loads(self.P.history.read_text().splitlines()[-1])
+        self.assertEqual(last["opts"], ["who", "-p", "tools"])
+        self.assertEqual(last["profile"], "who")
+
+    def test_without_a_preset_the_profile_alone(self):
+        argv, _ = self.launch("who", extra_env={"APOD_TEST_FROM": "host value"})
+        self.assertIn("whoimage", argv)
+        self.assertIn("@TMP@/mounts/ro1:@TMP@/mounts/ro1:ro,z", argv)
+        self.assertIn("apod-who-nix:/nix", argv)
+        self.assertIn("-e APOD_TEST_FROM", argv)
+        self.assertNotIn("--network", argv)
+        self.assertFalse(any(a.startswith("apod.preset=") for a in argv), argv)
+        self.assertIn('profile "who". Only these host paths are mounted', self.log.read_text())
+
+    def test_the_command_line_over_the_presets(self):
+        argv, _ = self.launch("who", "-p", "tools", "-i", "cliimage", "--ro", str(self.m / "ro1"))
+        self.assertIn("cliimage", argv)
+        self.assertNotIn("toolsimage", argv)
+        self.assertIn("@TMP@/mounts/ro1:@TMP@/mounts/ro1:ro,z", argv)
+
+    def test_presets_apply_in_order(self):
+        for opts in (["-p", "tools,second"], ["-p", "tools", "--preset", "second"]):
+            with self.subTest(opts=opts):
+                argv, _ = self.launch("who", *opts, extra_env={"OVER": "host"})
+                self.assertIn("secondimage", argv)
+                self.assertIn("-e B=3", argv)
+                self.assertIn("-e OVER", argv)  # second passes it by name, over tools' value
+                self.assertNotIn("-e OVER=tools", argv)
+                self.assertIn("apod-tools-nix:/nix", argv)  # what second doesn't set stays
+                self.assertIn("apod.preset=tools,second", argv)
+                self.assertIn('profile "who", presets tools,second.', self.log.read_text())
+        argv, _ = self.launch("who", "-p", "second,tools")
+        self.assertIn("toolsimage", argv)
+
+    def test_a_broker_profile_with_a_preset(self):
+        argv, _ = self.launch("bot", "-p", "tools", "-a", "bash")
+        self.assertIn("toolsimage", argv)
+        self.assertTrue(any(a.endswith(":/run/apod-broker") for a in argv), argv)
+
+    def test_a_presets_mounts_are_guarded(self):
+        f = self.preset("leaky", f'[pod]\nrw = ["{self.tmp}/config"]\n')
+        self.addCleanup(f.unlink)
+        err = self.refused("who", "-p", "leaky")
+        self.assertIn(f"{f}: rw mount {self.tmp}/config is refused: it is apod's config folder", err)
+
+    def test_what_a_preset_cant_set(self):
+        for text, msg in (
+                ('[pod]\nconnectors = ["gdoc"]\n', "[pod] connectors: a preset has none, since connectors act as the "
+                                                    "profile's own Claude and Google logins"),
+                ('role = "maintainer"\n', "a preset has description = ... and [pod] only, not role"),
+                ('scope = ["gh:acme/*"]\n', "a preset has description = ... and [pod] only, not scope"),
+                ('[gh]\nuser = "x"\n', "a preset has description = ... and [pod] only, not gh"),
+                ('[git]\nname = "x"\n', "a preset has description = ... and [pod] only, not git"),
+                ('[pod]\ndescription = "x"\n', "[pod] has description = ...: move it above [pod]"),
+                ('[pod]\nimages = "x"\n', "[pod] has no key images"),
+                ('[pod.env]\nGIT_AUTHOR_NAME = "x"\n', "[pod.env] GIT_AUTHOR_NAME: the git identity is [git] name and email"),
+                ('[pod]\nro = "x"\n', "[pod]: ro is a list of strings")):
+            with self.subTest(text=text):
+                f = self.preset("bad", text)
+                self.assertIn(f"{f}: {msg}", self.refused("who", "-p", "bad"))
+        f.unlink()
+
+    def test_names(self):
+        self.assertIn("'../x' isn't a preset name", self.refused("who", "-p", "../x"))
+        err = self.refused("who", "-p", "nope")
+        self.assertIn(f"no preset nope: {self.tmp}/config/presets/nope.toml doesn't exist (presets: second tools)", err)
+        r = subprocess.run([APOD, "--list-presets"], env=self.env, capture_output=True, text=True)  # for _apod
+        self.assertEqual(r.stdout.split(), ["second", "tools"])
+        # presets is a command, not a profile's name.
+        r = subprocess.run([APOD, "presets", str(self.proj)], env=self.env, capture_output=True, text=True)
+        self.assertIn("usage: apod presets", r.stderr)
+        self.assertIn("'presets' is an apod command or folder", paths.name_error("presets"))
+
+    def test_apod_presets_lists_them(self):
+        f = self.preset("broken", '[pod]\nconnectors = ["gdoc"]\n')
+        self.addCleanup(f.unlink)
+        r = subprocess.run([APOD, "presets"], env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        lines = r.stdout.splitlines()
+        self.assertEqual([l.split()[0] for l in lines], ["broken", "second", "tools"])
+        self.assertIn("invalid: ", lines[0])
+        self.assertEqual(lines[1].split(None, 1)[1], "image secondimage, 2 variables")
+        self.assertEqual(lines[2].split(None, 1)[1], "image toolsimage, network host, 2 mounts, 1 volume, 3 variables  "
+                                                     "(the tools)")
 
 
 class MigratedLayoutTest(Launcher, unittest.TestCase):

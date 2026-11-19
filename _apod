@@ -13,6 +13,7 @@ _apod_first() {
   local -a cmds
   cmds=('new:create a profile, step by step' 'migrate:move a profile'"'"'s old files into one profile.toml (--layout: ~/.agent-pod to the new layout)'
         'token:set, replace or remove a profile GitHub token' 'profiles:list profiles and token status'
+        'presets:list presets: pod settings any profile can launch with (-p)'
         'google-auth:sign a profile in to Google for google-docs-mcp'
         'resume:resume a stopped Claude session started in a folder (this pane'"'"'s, or pick)'
         'history:folders and profiles launched, most recent first'
@@ -21,6 +22,13 @@ _apod_first() {
         'selinux:let broker and ssh-agent pods keep SELinux labelling (install, remove, status)')
   _describe -t commands 'command' cmds
   _apod_profiles
+}
+
+_apod_presets() {
+  # presets/*.toml in apod's config folder
+  local -a presets
+  presets=(${(f)"$(apod --list-presets 2>/dev/null)"})
+  (( ${#presets} )) && _values -s , 'preset' $presets
 }
 
 _apod_roles() {
@@ -51,7 +59,7 @@ case ${words[2]} in
   resume)   _arguments '1: :(resume)' '(--latest --claude)--list[always list and ask]' \
               '(--list --claude)--latest[resume the newest without asking]' \
               '(--list --latest)--claude[use Claude'"'"'s own session picker]' '2:folder:_directories'; return ;;
-  profiles|history|ps) return ;;
+  profiles|presets|history|ps) return ;;
   selinux)  _arguments '1: :(selinux)' '2:action:(install remove status)'; return ;;
   broker|gh)
     if (( CURRENT == 3 )); then
@@ -79,6 +87,7 @@ esac
 # optional, and _arguments alone offers options only once the word starts with -).
 launchopts=(
   '-a[agent to run]:agent:(claude opencode bash)'
+  '*'{-p,--preset}'[pod settings from a preset: image, mounts, network, volumes, env]:presets:_apod_presets'
   '(-i --image)'{-i,--image}'[container image for this run]:image:_apod_images'
   '*'{-c,--connectors}'[enable claude.ai connectors for this run]:connectors:_apod_connectors'
   '*'{-m,--ro}'[mount a file or folder read-only]:path:_files'
