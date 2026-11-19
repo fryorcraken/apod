@@ -537,10 +537,20 @@ class NewLayoutTest(ProfileTomlTest):
             self.assertEqual(r.returncode, 2, opts)
             self.assertIn("is refused", r.stderr)
             self.assertEqual(self.log.read_text(), "", "no pod")
-        # Read-only, the work logs and the history are fine.
-        argv, _ = self.launch("plain", "--ro", str(self.tmp / "data/worklog"), "--ro", str(self.tmp / "state/history.jsonl"))
+        # Read-only, the work logs and the history are fine; the old apod's too, while it's beside this one.
+        old = self.home / ".agent-pod"
+        (old / "worklog").mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, old)  # a profile left there is announced at each launch
+        argv, _ = self.launch("plain", "--ro", str(self.tmp / "data/worklog"), "--ro", str(self.tmp / "state/history.jsonl"),
+                              "--ro", str(old / "worklog"))
         self.assertIn("@TMP@/data/worklog:@TMP@/data/worklog:ro,z", argv)
         self.assertIn("@TMP@/state/history.jsonl:@TMP@/state/history.jsonl:ro,z", argv)
+        self.assertIn("@TMP@/home/.agent-pod/worklog:@TMP@/home/.agent-pod/worklog:ro,z", argv)
+        for opts in (["--rw", str(old / "worklog")], ["--ro", str(old)]):
+            r = subprocess.run([APOD, "plain", *opts, str(self.proj)], env=self.env, cwd=self.tmp,
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 2, opts)
+            self.assertIn("apod's legacy folder", r.stderr)
         # So is a profile's own mount list.
         f = self.tmp / "config/profiles/plain.toml"
         text = f.read_text()

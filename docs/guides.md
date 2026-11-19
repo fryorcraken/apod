@@ -795,7 +795,10 @@ While both run:
 - What the profiles share is in both places: a change to your roles or `config.toml` goes in
   both, `~/.agent-pod` for the old apod and `~/.config/apod` for the new one.
 - The new apod's [mount guard](reference.md#where-apod-keeps-its-files) refuses `~/.agent-pod`
-  too, but the old one doesn't know the new folders: don't give its pods `~/.config`, `~/.local`
+  too, but for read-only mounts of its `worklog/`, `history.jsonl` and `broker/log.jsonl`: a
+  profile that reviews them can mount both those and the new ones
+  (`~/.local/share/apod/worklog`, `~/.local/state/apod/history.jsonl`,
+  `~/.local/state/apod/broker/log.jsonl`). The old one doesn't know the new folders: don't give its pods `~/.config`, `~/.local`
   or `$XDG_RUNTIME_DIR`.
 
 Once the last pods of the old apod are done, stop its broker (`apod broker stop`) and run

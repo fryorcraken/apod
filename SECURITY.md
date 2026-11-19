@@ -67,7 +67,7 @@ do and leaves a record of what it did.
   folder its sockets (through the admin socket, a pod could approve its own requests: a socket on
   a read-only mount still answers). The only exceptions are read-only mounts of the work logs
   (`worklog/`, or one in it), `history.jsonl` and the broker's `log.jsonl`, for a pod that
-  reviews them. The check follows symlinks and `..`. apod itself mounts, from these folders, only
+  reviews them (those in `~/.agent-pod` too, while an older apod runs beside this one). The check follows symlinks and `..`. apod itself mounts, from these folders, only
   what the list above says: nothing from the config folder but the profile's
   `<profile>.google-credentials.json`, read-only, when google-docs-mcp is enabled. The project
   folder, mounted read-write, is checked too: apod won't launch in one of its folders, or in one

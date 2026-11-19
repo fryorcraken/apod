@@ -2150,10 +2150,11 @@ class ProfileLoaderTest(unittest.TestCase):
                    APOD_RUNTIME_DIR=str(d / "r"), HOME=str(d / "h"))
         del env["APOD_ROOT"]
         for x in ("c/profiles", "c/extensions", "d/profiles/work/home", "d/worklog/s1", "s/broker/sessions", "r/sessions/x",
-                  "h/.agent-pod/old/home"):
+                  "h/.agent-pod/old/home", "h/.agent-pod/worklog/s0", "h/.agent-pod/broker"):
             (d / x).mkdir(parents=True)
         for f in ("c/config.toml", "c/roles.toml", "s/history.jsonl", "s/broker/log.jsonl", "s/broker/grants.json",
-                  "d/worklog/s1/worklog.md"):
+                  "d/worklog/s1/worklog.md", "h/.agent-pod/roles.toml", "h/.agent-pod/history.jsonl",
+                  "h/.agent-pod/broker/log.jsonl", "h/.agent-pod/broker/grants.json"):
             (d / f).write_text("")
         pf = d / "c/profiles/work.toml"
 
@@ -2172,22 +2173,31 @@ class ProfileLoaderTest(unittest.TestCase):
                                # The old apod's, beside this one: its profiles' settings and logins, its roles.
                                (d / "h/.agent-pod", "is apod's legacy folder"),
                                (d / "h/.agent-pod/old/home", "is inside apod's legacy folder"),
+                               (d / "h/.agent-pod/roles.toml", "is inside apod's legacy folder"),
+                               (d / "h/.agent-pod/broker/grants.json", "is inside apod's legacy folder"),
                                (d, "contains apod's config folder"), ("/", "contains apod's config folder"),
                                (HERE, "is the apod checkout")):
                 for mode in ("ro", "rw"):
                     e = err(mode, path, cli)
                     self.assertIn(f"{mode} mount {path}", e or f"allowed {mode} {path} cli={cli}")
                     self.assertIn(f"is refused: it {what}", e)
-            # Read-only, the work logs, the history and the broker's log are fine; not read-write.
+            # Read-only, the work logs, the history and the broker's log are fine; not read-write. The
+            # old apod's too, for a pod that reviews both while the two run.
             for path in (d / "d/worklog", d / "d/worklog/s1", d / "d/worklog/s1/worklog.md", d / "s/history.jsonl",
-                         d / "s/broker/log.jsonl"):
+                         d / "s/broker/log.jsonl", d / "h/.agent-pod/worklog", d / "h/.agent-pod/worklog/s0",
+                         d / "h/.agent-pod/history.jsonl", d / "h/.agent-pod/broker/log.jsonl"):
                 self.assertIsNone(err("ro", path, cli), path)
                 self.assertIn("is refused", err("rw", path, cli) or f"allowed rw {path}")
             self.assertIn("is inside apod's data folder", err("ro", d / "d/worklog/s1/../../profiles", cli) or "")
         e = err("rw", d / "r")
         self.assertIn("holds the broker's sockets", e)
+        self.assertIn(f"(Only read-only mounts of {d}/d/worklog, {d}/s/history.jsonl, {d}/s/broker/log.jsonl, "
+                      f"{d}/h/.agent-pod/worklog, {d}/h/.agent-pod/history.jsonl and {d}/h/.agent-pod/broker/log.jsonl "
+                      f"are allowed.)", e)
+        # Without the old folder, only the new layout's.
+        shutil.rmtree(d / "h/.agent-pod")
         self.assertIn(f"(Only read-only mounts of {d}/d/worklog, {d}/s/history.jsonl and {d}/s/broker/log.jsonl are "
-                      f"allowed.)", e)
+                      f"allowed.)", err("rw", d / "r"))
         self.assertIn(str(pf), e)
 
     def test_needs_no_broker_and_no_extensions(self):

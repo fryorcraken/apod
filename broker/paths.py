@@ -173,6 +173,9 @@ class Layout:
         self.agent_sock = self.runtime / "agent.sock"      # the broker's ssh-agent
         # Read-only mounts that are fine although they're in a guarded folder.
         self.readable = [self.worklog, self.history, self.log]
+        if not self.legacy and self.legacy_root.is_dir():  # (legacy) the old apod's too, while one runs beside this one
+            r = self.legacy_root
+            self.readable += [r / "worklog", r / "history.jsonl", r / "broker" / "log.jsonl"]
 
     def ensure_runtime(self):
         """The runtime folder, made (mode 0700) if it's missing; PathError if it isn't private
