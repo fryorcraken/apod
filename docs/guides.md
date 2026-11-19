@@ -871,7 +871,8 @@ gives pods IPv6 only, so IPv4-only destinations such as Tailscale hosts are unre
 included.
 
 **Images.** `Containerfile` builds the base `apod` image (Fedora, Claude Code, opencode, gh, git,
-Node, Python). A profile's `[pod] image`, `-i IMAGE` or `APOD_IMAGE` picks another. Two examples
+Node, Python). A profile's `[pod] image`, a preset's (below), `-i IMAGE` or
+`APOD_IMAGE` picks another. Two examples
 build on it:
 
 - `Containerfile.logos-toolchain`: Rust 1.98.1 and RISC Zero (cargo-risczero/r0vm 3.0.5), for
@@ -891,6 +892,31 @@ image = "logos-toolchain"
 
 Tools live under `/opt` so the mounted home can't hide them. Rebuild derived images after
 rebuilding `apod`.
+
+**Presets.** The image, mounts, network, volumes and environment belong to a kind of job more
+than to an identity: the same toolchain and source trees serve your own profile and a bot's. Rather
+than a profile for each pair (two homes and logins for one identity, its `[git]` and `[gh]`
+copied), put them in a preset, `presets/NAME.toml` in the config folder, and pick it at launch:
+
+```toml
+# ~/.config/apod/presets/logos.toml
+description = "Logos toolchain; the Logos repositories, read-only"
+[pod]
+image = "logos-toolchain"
+ro = ["~/src/logos-co", "~/src/logos-blockchain", "~/src/logos-messaging"]
+```
+
+```sh
+apod work -p logos ~/src/logos-co/some-repo     # your profile, with the Logos toolchain and trees
+apod bot -p logos ~/src/logos-co/some-repo      # the bot's identity, role and scope, the same pod settings
+apod work ~/src/rad/apod                        # neither: the Logos trees aren't mounted
+```
+
+A preset adds to the profile's own `[pod]` (mounts, volumes and variables join it; `image` and
+`network` replace it), and several apply in order (`-p logos,nix`); `-i`, `--ro` and `--rw` still
+win. It can't set the role, scope, identity or connectors, and the broker never sees it: a preset
+changes what the pod has, not what it may do. `apod presets` lists them. The rules are in the
+[reference](reference.md#presets).
 
 ## SELinux
 

@@ -5,6 +5,7 @@ Every command, file, setting and variable. For how to set things up, see the
 
 - [Commands](#commands)
 - [profile.toml](#profiletoml)
+- [Presets](#presets)
 - [roles.toml](#rolestoml)
 - [Scope kinds](#scope-kinds)
 - [How requests are classified](#how-requests-are-classified)
@@ -22,6 +23,7 @@ apod resume [--list|--latest|--claude] [dir]     resume a stopped Claude session
 apod history                                     folders and profiles launched, most recent first
 apod ps                                          running pods: profile, session, status, folder
 apod profiles                                    profiles: broker role, GitHub token, Google login
+apod presets                                     presets: what each sets, and its description
 apod token <profile> [--rm]                      set, replace or remove a profile's GitHub token
 apod google-auth <profile>                       sign a profile in to Google for google-docs-mcp
 apod selinux [install|remove|status]             SELinux labelling for broker and ssh-agent pods
@@ -33,7 +35,8 @@ Options for `apod <profile>`:
 | Option                          |                                                                                                                                                                                                      |
 | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `-a claude\|opencode\|bash`     | The agent (default `claude`); `bash` is a shell in the pod.                                                                                                                                          |
-| `-i`, `--image IMAGE`           | The image, over the profile's `[pod] image` and `APOD_IMAGE` (default `apod`).                                                                                                                       |
+| `-p`, `--preset NAME`           | A [preset](#presets)'s pod settings for this run, over the profile's `[pod]`: comma-separated, repeatable, applied in order.                                                                         |
+| `-i`, `--image IMAGE`           | The image, over the presets', the profile's `[pod] image` and `APOD_IMAGE` (default `apod`).                                                                                                         |
 | `-c`, `--connectors LIST`       | claude.ai connector groups for this run, comma-separated, repeatable; `none` turns them off. Replaces the profile's `[pod] connectors`. Claude only: ignored, with a warning, for opencode and bash. |
 | `--ro PATH` (`-m`), `--rw PATH` | Mount a file or folder for this run, read-only or read-write. Refused when it would expose apod's own files (see [Where apod keeps its files](#where-apod-keeps-its-files)).                         |
 | `--role ROLE`                   | The broker role for this run, over `profile.toml`'s `role`.                                                                                                                                          |
@@ -171,6 +174,46 @@ used and the old files are ignored, with a warning.
 | `ssh-key`          | `[ssh-agent] key`.                                                                                                  |
 | `ssh-confirm`      | `[ssh-agent] confirm = true`.                                                                                       |
 
+## Presets
+
+A preset is pod settings any profile can launch with: `presets/NAME.toml` in apod's
+[config folder](#where-apod-keeps-its-files), picked with `-p NAME` (`apod work -p logos`). The
+profile is *who* acts; a preset is what the pod runs with, for a kind of job: an image, mounts,
+network, volumes, environment. So there's one profile per identity and one preset per toolchain,
+not a profile for each pair of them.
+
+```toml
+# ~/.config/apod/presets/logos.toml
+description = "Logos toolchain; the Logos repositories, read-only"   # for apod presets
+
+[pod]
+image = "logos-toolchain"
+ro = ["~/src/logos-co", "~/src/logos-blockchain"]
+```
+
+A preset has a `[pod]` table with the keys of a profile's (`image`, `network`, `ro`, `rw`,
+`volumes`, `env_from`, `[pod.env]`), checked the same way, and an optional `description`.
+Anything else is an error: the role, the scope, the identity and the extensions' tables are the
+profile's, and so are `connectors`, which act as the profile's own Claude and Google logins (the
+profile's `[pod] connectors`, or `-c`). A preset's name is letters, digits, `.`, `_` and `-`.
+
+The presets apply in order, over the profile's `[pod]`, and the command line over them:
+
+| Key                     |                                                                                                                                                                                  |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `image`, `network`      | The last one set wins; `-i` over all of them.                                                                                                                                    |
+| `ro`, `rw`              | Added to the profile's. A path given twice is mounted once, with the last mode: a preset's over the profile's, `--ro`/`--rw` over both. The mount guard names the preset's file. |
+| `volumes`               | Added; a volume at the same path in the pod as an earlier one replaces it.                                                                                                       |
+| `[pod.env]`, `env_from` | Added; a name set again, as a value or in `env_from`, replaces the earlier one.                                                                                                  |
+
+The broker isn't told about presets: they change what the pod has, never what it may do through
+the broker (its role and scope). apod passes the broker the pod's network, as it does without
+presets, so a preset's `network = "host"` turns off gh-api as a profile's would. The pod's home is
+the profile's, so a profile's pods share its agent login and history whatever their presets, and
+the history records `-p`, so `apod resume` relaunches with the same ones. `apod presets` lists
+them with what each sets (an invalid one says why); `apod ps` shows them beside the profile
+(`work -p logos`). The legacy layout has no presets: `apod migrate --layout` first.
+
 ## roles.toml
 
 The built-in roles are in `roles.toml` in the apod checkout, and change when you update apod;
@@ -284,7 +327,7 @@ apod's files are in four folders, after the XDG Base Directory specification (on
 
 | Folder                                                                               | What's in it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| config: `$APOD_CONFIG_DIR`, else `${XDG_CONFIG_HOME:-~/.config}/apod`                | What you write: `config.toml` (the extension tables shared by every profile), `roles.toml` (your roles), `extensions/` (your [broker extensions](../EXTENSIONS.md)), `profiles/NAME.toml` (a [profile](#profiletoml)), `profiles/NAME.google-credentials.json` (its Google OAuth client).                                                                                                                                                                                                     |
+| config: `$APOD_CONFIG_DIR`, else `${XDG_CONFIG_HOME:-~/.config}/apod`                | What you write: `config.toml` (the extension tables shared by every profile), `roles.toml` (your roles), `extensions/` (your [broker extensions](../EXTENSIONS.md)), `profiles/NAME.toml` (a [profile](#profiletoml)), `profiles/NAME.google-credentials.json` (its Google OAuth client), `presets/NAME.toml` (a [preset](#presets)).                                                                                                                                                         |
 | data: `$APOD_DATA_DIR`, else `${XDG_DATA_HOME:-~/.local/share}/apod`                 | What you'd back up: `profiles/NAME/home/` (each profile's home), `worklog/<id>/worklog.md` (each session's [work log](guides.md#work-logs)).                                                                                                                                                                                                                                                                                                                                                  |
 | state: `$APOD_STATE_DIR`, else `${XDG_STATE_HOME:-~/.local/state}/apod`              | What the tools write: `history.jsonl` (every launch, for `apod history` and `apod resume`), `broker/` (the broker's state: `log.jsonl`, every request; `broker.log`, its own log; `grants.json`, approvals for roles; `sessions/<id>.json`, each session's saved state), `selinux` (written by `apod selinux install`).                                                                                                                                                                       |
 | runtime: `$APOD_RUNTIME_DIR`, else `$XDG_RUNTIME_DIR/apod`, else `$TMPDIR/apod-$UID` | Sockets only, mode 0700 (apod refuses one that isn't yours and private), gone at logout: the broker's `admin.sock` and `agent.sock` (its ssh-agent), `sessions/<id>/` (the folder a pod mounts at `/run/apod-broker`), `ssh-NAME-PID.sock` (a per-run ssh-agent). A session's state is in the state folder, so it comes back after a broker restart. A broker whose runtime folder went (at logout, without `loginctl enable-linger`) exits within seconds; the next launch starts a new one. |

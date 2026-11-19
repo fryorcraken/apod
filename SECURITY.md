@@ -53,15 +53,17 @@ do and leaves a record of what it did.
     `/run/apod-broker`), the pod-side commands (read-only) and what the extensions on for it mount
     (read-only: the gh-api CA's certificate, never its key);
   - with an `[ssh-agent]` key, the per-run ssh-agent's socket alone;
-  - the profile's `[pod] ro` and `rw` mounts, and those of `--ro` and `--rw` (see the guard below);
+  - the profile's `[pod] ro` and `rw` mounts, those of the launch's presets (`-p`), and those of `--ro`
+    and `--rw` (see the guard below);
   - your `~/.claude/CLAUDE.md` and `~/.claude/skills`, read-only.
 - **Apod's own files stay out of reach (the mount guard).** apod refuses to start a pod with a
   mount that is, contains or is inside one of apod's folders (config `~/.config/apod`, data
   `~/.local/share/apod`, state `~/.local/state/apod`, runtime `$XDG_RUNTIME_DIR/apod`, wherever
   the `APOD_*_DIR` and `XDG_*` variables put them, and `~/.agent-pod`, which an older apod may
-  still read; `~/.agent-pod` or `APOD_ROOT` in the legacy layout) or the apod checkout, whether it comes from the profile or from `--ro`/`--rw`, and a
+  still read; `~/.agent-pod` or `APOD_ROOT` in the legacy layout) or the apod checkout, whether it comes from the profile, a preset or `--ro`/`--rw`, and a
   read-write mount of your home folder. A pod that could write its `profiles/<profile>.toml` could
-  give itself a role, scope and extensions on its next launch; one that could write the checkout
+  give itself a role, scope and extensions on its next launch (and one that could write a
+  `presets/NAME.toml`, more mounts); one that could write the checkout
   could change the code the broker runs on the host; the data folder holds every profile's login,
   the state folder the broker's approvals, sessions and the gh-api CA's key, and the runtime
   folder its sockets (through the admin socket, a pod could approve its own requests: a socket on
@@ -86,10 +88,15 @@ do and leaves a record of what it did.
   transcripts of a profile that has no pod running. An apod from before the new layout only knows `~/.agent-pod`: while you
   run one beside this one ([one profile at a time](docs/guides.md#one-profile-at-a-time)), its
   pods can be given the new folders.
-- **Environment:** the pod gets the variables of its profile's `[pod.env]` and `[pod] env_from`
-  (yours, by name: apod passes `-e NAME` and podman reads the value, so it's in neither the
-  profile's file nor podman's command line). Whatever is passed is in the pod: an API key passed
-  this way is the agent's to use.
+- **Environment:** the pod gets the variables of its profile's `[pod.env]` and `[pod] env_from`,
+  and its presets' (yours, by name: apod passes `-e NAME` and podman reads the value, so it's in
+  neither the profile's file nor podman's command line). Whatever is passed is in the pod: an API
+  key passed this way is the agent's to use, whichever profile launches with that preset, so keep
+  an account's keys in its profile.
+- **Presets change what the pod has, not what it may do.** A preset (`-p`) sets only `[pod]`
+  keys: image, mounts, network, volumes, environment. It can't set the role, scope, identity,
+  connectors or an extension's table, and the broker isn't told about it, so a request is decided
+  the same with or without it.
 - **Processes:** the host's processes, other pods and their files are not visible.
 - **The desktop:** no display or Wayland socket is passed in. With `[clipboard] enabled`, the
   pod can ask the broker for an image on your clipboard (`clipboard:image`, checked like any
