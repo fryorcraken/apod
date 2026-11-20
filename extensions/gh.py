@@ -3,6 +3,7 @@ host's gh accounts, in an empty directory with a config and home of its own, aft
 the command line into actions ("gh:pr create", "gh:api GET /repos/{repo}/pulls",
 "gh:graphql mutation addComment") and targets (repositories, owners, projects)."""
 import base64
+import fnmatch
 import itertools
 import json
 import os
@@ -419,8 +420,11 @@ def classify_gh(sess, argv, ctx, files, stdin, work):
                 raise BrokerError("no repository: pass OWNER/REPO or -R OWNER/REPO")
             req.targets.append(("gh", r))
     elif group == "search":
+        # Within repositories or owners: in scope when they are, or when a gh-search: entry allows
+        # that kind of search across GitHub, which this narrows (see gh-search-in).
         rs, os_ = optall(flags, "repo"), optall(flags, "owner")
-        req.targets += [("gh", norm_repo(r)) for r in rs] + [("gh", o.lower()) for o in os_]
+        req.targets += [("gh-search-in", f"{sub} {norm_repo(r)}") for r in rs]
+        req.targets += [("gh-search-in", f"{sub} {o.lower()}") for o in os_]
         if not rs and not os_:  # across GitHub: in scope only with a gh-search: entry
             req.targets.append(("gh-search", sub))
     elif group == "project":
@@ -1019,10 +1023,12 @@ class GhProvider(Provider):
         out["context"].append(
             f"gh is a shim: commands run on the host as GitHub user {login}. gh auth token and "
             f"pr create --fill (pass --title and --body) are unavailable; gh repo clone and gh pr checkout "
-            f"run locally through git. Searches and lists across an owner (--owner X) need X itself in "
-            f"scope, and searches across GitHub (no --repo or --owner) a gh-search: entry: narrow them "
-            f"with --repo OWNER/REPO." + (f" In scope: searches across GitHub for {', '.join(sess.entries('gh-search'))}."
-                                          if sess.entries("gh-search") else ""))
+            f"run locally through git. Lists across an owner (gh repo list X) need X itself in scope, and so "
+            f"do searches with --owner X unless all of X's repositories are (X/*). Searches across GitHub "
+            f"(no --repo or --owner) need a gh-search: entry, which also allows its kind of search with any "
+            f"--repo or --owner; without one, narrow them with --repo OWNER/REPO."
+            + (f" In scope: searches across GitHub for {', '.join(sess.entries('gh-search'))}."
+               if sess.entries("gh-search") else ""))
         return True
 
 
@@ -1033,22 +1039,37 @@ def _gh_owner_entries(sess):
     return [p.lower() for p in sess.entries("gh") if "/" not in p]
 
 
+def _gh_search_in(sess, v):
+    """A gh search with --repo R or --owner O (value "KIND R" or "KIND O"): in scope with a
+    gh-search:KIND entry, since it narrows a search across GitHub; else when R is, or, for O,
+    when O itself is (gh:O) or every repository of O is (gh:O/*), as it finds only those."""
+    kind, _, t = v.partition(" ")
+    if sess.in_scope(("gh-search", kind)) or sess.in_scope(("gh", t)):
+        return True
+    return "/" not in t and any(fnmatch.fnmatchcase(t, p.lower().rpartition("/")[0])
+                                for p in sess.entries("gh") if p.lower().rpartition("/")[2] == "*")
+
+
 # gh:OWNER/REPO is a repository (patterns too: gh:OWNER/*); gh:OWNER is the owner itself
 # (owner-level reads, its project list, creating repositories there).
 scope_kind("gh", provider="gh", parse=lambda v: v.strip().lower().removesuffix(".git"), remote=github_repo,
            old=("repo", "owner"), bare=True,  # earlier forms: repo:, owner:, and OWNER/REPO alone
-           help="gh:OWNER/REPO (gh:OWNER/* for every repository of OWNER), gh:OWNER (the owner itself)")
+           help="gh:OWNER/REPO (gh:OWNER/* for every repository of OWNER, and gh search --owner OWNER), "
+                "gh:OWNER (the owner itself)")
 scope_kind("gh-project", provider="gh", parse=lambda v: v.strip().lower(), old=("project",),
            help="gh-project:OWNER/NUMBER (gh-project:OWNER/* for all of OWNER's projects)")
 scope_kind("gh-search", provider="gh", parse=lambda v: "*" if v.strip().lower() == "all" else v.strip().lower(),
            label=lambda v: f"gh-search:{v} (gh search {v} across GitHub)",
-           help="gh-search:prs (gh search prs without --repo or --owner: across GitHub, as the account sees it; "
-                "also issues, code, commits, repos; gh-search:all for every one)")
+           help="gh-search:prs (gh search prs across GitHub, as the account sees it, and with any --repo or "
+                "--owner; also issues, code, commits, repos; gh-search:all for every one)")
 # Target kinds that are checked against those entries, not written in the scope themselves.
 scope_kind("gh-projects-of", provider="gh", entry=False,
            match=lambda sess, v: v in _gh_owner_entries(sess) or any(
                p.lower().split("/")[0] == v for p in sess.entries("gh-project")),
            grant=lambda v: ("gh-project", f"{v}/*"), label=lambda v: f"gh-project:{v}/*")
+scope_kind("gh-search-in", provider="gh", entry=False, match=_gh_search_in,
+           grant=lambda v: ("gh", v.partition(" ")[2]),
+           label=lambda v: f"gh:{v.partition(' ')[2]} (or gh-search:{v.partition(' ')[0]})")
 scope_kind("gh-fork-into", provider="gh", entry=False,
            match=lambda sess, v: v == gh_login_of(sess).lower() or v in _gh_owner_entries(sess),
            grant=lambda v: ("gh", v), label=lambda v: f"gh:{v} (fork into)")

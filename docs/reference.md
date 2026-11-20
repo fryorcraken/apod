@@ -250,15 +250,15 @@ top of [`roles.toml`](../roles.toml) and [below](#how-requests-are-classified).
 
 ## Scope kinds
 
-| Entry                                           | Extension  | Covers                                                                                                                                                                    |
-| ----------------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `gh:OWNER/REPO`, `gh:OWNER/*`                   | gh, github | A repository: gh commands, API calls and git pushes and fetches.                                                                                                          |
-| `gh:OWNER`                                      | gh         | The owner itself: owner-level reads, its project list, creating repositories there.                                                                                       |
-| `gh-project:OWNER/NUMBER`, `gh-project:OWNER/*` | gh         | A project board.                                                                                                                                                          |
-| `gh-search:prs`, `gh-search:all`                | gh         | `gh search prs` (or issues, code, commits, repos) without `--repo` or `--owner`: across GitHub, as the account sees it, private repositories included. `all`: every kind. |
-| `rad:RID`                                       | rad        | A Radicle repository.                                                                                                                                                     |
-| `ssh:HOST`, `ssh:USER@HOST`                     | ssh        | A host as named in the host's ssh config: as the user that config gives it (its `User`, else your user name), or as USER.                                                 |
-| `git-local:PATH`                                | git-sign   | Signing in a repository with no GitHub or Radicle remote, by its folder.                                                                                                  |
+| Entry                                           | Extension  | Covers                                                                                                                                                                          |
+| ----------------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `gh:OWNER/REPO`, `gh:OWNER/*`                   | gh, github | A repository: gh commands, API calls and git pushes and fetches. `gh:OWNER/*` also covers `gh search --owner OWNER`.                                                            |
+| `gh:OWNER`                                      | gh         | The owner itself: owner-level reads, its project list, creating repositories there.                                                                                             |
+| `gh-project:OWNER/NUMBER`, `gh-project:OWNER/*` | gh         | A project board.                                                                                                                                                                |
+| `gh-search:prs`, `gh-search:all`                | gh         | `gh search prs` (or issues, code, commits, repos): across GitHub, as the account sees it, private repositories included, and with any `--repo` or `--owner`. `all`: every kind. |
+| `rad:RID`                                       | rad        | A Radicle repository.                                                                                                                                                           |
+| `ssh:HOST`, `ssh:USER@HOST`                     | ssh        | A host as named in the host's ssh config: as the user that config gives it (its `User`, else your user name), or as USER.                                                       |
+| `git-local:PATH`                                | git-sign   | Signing in a repository with no GitHub or Radicle remote, by its folder.                                                                                                        |
 
 Values take shell-style patterns, case-insensitive. Automatically in scope, each when its
 extension is on for the pod: the project's GitHub remotes (with `[gh] user`), its Radicle
@@ -277,7 +277,9 @@ The broker turns each request into actions (what it does) and targets (what it t
   (`gh api graphql` only) by operation and top-level field (`graphql mutation addComment`), with
   `repository`, `organization`/`user` arguments and node ids (looked up on GitHub) as targets; a
   query or mutation that can't be scoped that way waits for approval. `gh search` targets its
-  `--repo` and `--owner` values; without either, `gh-search:KIND` (`gh-search:prs`). Never allowed: `gh auth`,
+  `--repo` and `--owner` values, in scope also with `gh-search:KIND` (it narrows a search across
+  GitHub), and an owner also with `gh:OWNER/*`; without either, `gh-search:KIND`
+  (`gh-search:prs`). Never allowed: `gh auth`,
   `config`, `extension`, `alias`, `ssh-key`, `gpg-key`, `codespace`, `browse`, `repo deploy-key
   add`, and GraphQL subscriptions; `repo set-default`, `run download`, `release download` and
   `gist clone` (they need the pod's files); `pr checkout` and `repo clone` run in the pod

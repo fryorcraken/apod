@@ -601,6 +601,25 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual(self.ran("search", "code", "x", sess=sess)["argv"][:2], ["search", "code"])
         self.assertEqual(self.ran("search", "issues", "x", sess=sess)["argv"][:2], ["search", "issues"])
 
+    def test_search_with_repo_or_owner(self):
+        # --repo and --owner narrow a search across GitHub: a gh-search: entry for that kind covers
+        # them, whatever they name; other kinds still need the repository or owner in scope.
+        sess = self.register("reader", ["gh:acme/widget", "gh-search:prs"])
+        self.assertEqual(self.ran("search", "prs", "--repo", "other/thing", sess=sess)["argv"][:2], ["search", "prs"])
+        self.assertEqual(self.ran("search", "prs", "--owner", "Other", sess=sess)["argv"][:2], ["search", "prs"])
+        self.assertEqual(self.ran("search", "issues", "--repo", "acme/widget", sess=sess)["argv"][:2],
+                         ["search", "issues"])
+        r = self.gh("search", "issues", "--owner", "other", sess=sess, expect=1)
+        self.assertIn("gh:other (or gh-search:issues)", r.stderr)
+        # An owner whose every repository is in scope (gh:OWNER/*): a search finds only those.
+        sess = self.register("reader", ["gh:mclaw/*", "gh:acme/w*", "gh:b*/*"])
+        self.assertEqual(self.ran("search", "repos", "--owner", "MClaw", sess=sess)["argv"][:2], ["search", "repos"])
+        self.assertEqual(self.ran("search", "code", "x", "--owner", "bee", sess=sess)["argv"][:2], ["search", "code"])
+        r = self.gh("search", "repos", "--owner", "acme", sess=sess, expect=1)  # only some of acme's
+        self.assertIn("gh:acme (or gh-search:repos)", r.stderr)
+        sess = self.register("reader", ["gh:acme"])  # the owner itself, as before
+        self.assertEqual(self.ran("search", "commits", "--owner", "acme", sess=sess)["argv"][:2], ["search", "commits"])
+
     def test_agent_sees_permissions_and_session_name(self):
         sess = self.register("pm", ["gh:acme/widget", "gh-project:acme/11"])
         self.assertIn("project item-edit", sess["context"])

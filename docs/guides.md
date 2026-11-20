@@ -624,15 +624,15 @@ boards) and `gh-search:` (searches across GitHub). Values take shell-style patte
 the profile's `scope`, and `--scope`. Forks and repositories the session
 creates join it. The kinds:
 
-| Entry                                           | Covers                                                                                                                                                                 |
-| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `gh:OWNER/REPO`, `gh:OWNER/*`                   | A repository: gh commands, API calls, git fetches and pushes.                                                                                                          |
-| `gh:OWNER`                                      | The owner itself: owner-level reads, its project list, creating repositories there.                                                                                    |
-| `gh-project:OWNER/NUMBER`, `gh-project:OWNER/*` | A project board.                                                                                                                                                       |
-| `gh-search:prs`, `gh-search:all`                | `gh search prs` (or issues, code, commits, repos) without `--repo` or `--owner`: across GitHub, private repositories the account can read included. `all`: every kind. |
-| `rad:RID`                                       | A Radicle repository.                                                                                                                                                  |
-| `ssh:HOST`, `ssh:USER@HOST`                     | A host as named in your ssh config: as the user that config gives it, or as USER.                                                                                      |
-| `git-local:PATH`                                | Signing in a repository with no GitHub or Radicle remote, by its folder.                                                                                               |
+| Entry                                           | Covers                                                                                                                                                                       |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `gh:OWNER/REPO`, `gh:OWNER/*`                   | A repository: gh commands, API calls, git fetches and pushes. `gh:OWNER/*` also covers `gh search --owner OWNER`.                                                            |
+| `gh:OWNER`                                      | The owner itself: owner-level reads, its project list, creating repositories there.                                                                                          |
+| `gh-project:OWNER/NUMBER`, `gh-project:OWNER/*` | A project board.                                                                                                                                                             |
+| `gh-search:prs`, `gh-search:all`                | `gh search prs` (or issues, code, commits, repos): across GitHub, private repositories the account can read included, and with any `--repo` or `--owner`. `all`: every kind. |
+| `rad:RID`                                       | A Radicle repository.                                                                                                                                                        |
+| `ssh:HOST`, `ssh:USER@HOST`                     | A host as named in your ssh config: as the user that config gives it, or as USER.                                                                                            |
+| `git-local:PATH`                                | Signing in a repository with no GitHub or Radicle remote, by its folder.                                                                                                     |
 
 Extensions add kinds (yours too); `apod broker scopes` lists them all, with the extension each
 belongs to. An entry of a kind no extension

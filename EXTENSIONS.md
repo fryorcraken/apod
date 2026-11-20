@@ -298,13 +298,13 @@ broker: the route (method, path) → your handler(h, sess, method)
 With `gh`, for a `dev` pod working in a clone of `acme/widget` (so its scope is
 `gh:acme/widget`):
 
-| In the pod                   | Action                   | Target                                  | Outcome                                         |
-| ---------------------------- | ------------------------ | --------------------------------------- | ----------------------------------------------- |
-| `gh pr create`               | `gh:pr create`           | `gh` `acme/widget`                      | goes through: `dev` allows it, in scope         |
-| `gh pr create -R acme/other` | `gh:pr create`           | `gh` `acme/other`                       | waits: not in scope                             |
-| `gh pr merge 12`             | `gh:pr merge`            | `gh` `acme/widget`                      | waits: `dev` doesn't allow merging              |
-| `gh api /rate_limit`         | `gh:api GET /rate_limit` | none                                    | goes through: `reader` (and so `dev`) allows it |
-| `gh search repos broker`     | `gh:search repos`        | `unscoped` `search repos across GitHub` | waits: can't be scoped                          |
+| In the pod                   | Action                   | Target              | Outcome                                                   |
+| ---------------------------- | ------------------------ | ------------------- | --------------------------------------------------------- |
+| `gh pr create`               | `gh:pr create`           | `gh` `acme/widget`  | goes through: `dev` allows it, in scope                   |
+| `gh pr create -R acme/other` | `gh:pr create`           | `gh` `acme/other`   | waits: not in scope                                       |
+| `gh pr merge 12`             | `gh:pr merge`            | `gh` `acme/widget`  | waits: `dev` doesn't allow merging                        |
+| `gh api /rate_limit`         | `gh:api GET /rate_limit` | none                | goes through: `reader` (and so `dev`) allows it           |
+| `gh search repos broker`     | `gh:search repos`        | `gh-search` `repos` | waits: not in scope (a profile can add `gh-search:repos`) |
 
 **A request with no target** touches nothing the scope could name: your own rate limit isn't any
 repository's. It's checked against the role alone. In this extension, a `systemctl:list` action that lists
@@ -314,8 +314,10 @@ anywhere.
 **A request you can't scope** is different: it does touch things, but you can't tell which. A
 search across all of GitHub reaches any repository. Give it the target `("unscoped", "what it
 is")`: that kind is the core's, never in scope, so the request always waits, whatever the role.
-Approving it for the session remembers that one (`unscoped` `search repos across GitHub`), so
-the same request goes through for the rest of the session.
+Approving it for the session remembers that one, so the same request goes through for the rest
+of the session. If users will want to allow such a request up front, declare a scope kind for it
+instead, as `gh` does: a search across GitHub targets `gh-search` `repos`, which a profile's
+`gh-search:repos` entry puts in scope.
 
 **Name the extension after the command it stands for.** An extension gives pods limited access
 to a command line tool on the host, so call it what the agent would type: `gh` for `gh`,
