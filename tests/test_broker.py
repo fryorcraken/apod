@@ -1581,6 +1581,29 @@ class PackCommitsTest(unittest.TestCase):
                                "-c", "commit.gpgsign=false", *a], env=env, input=input, capture_output=True,
                               check=True).stdout
 
+    @staticmethod
+    def delta_bases(pack):
+        """(kind, kind of its base) for each OFS_DELTA (6) in the pack."""
+        i, kinds, out = 12, {}, []
+        for _ in range(int.from_bytes(pack[8:12], "big")):
+            start, c = i, pack[i]
+            kind, i = (c >> 4) & 7, i + 1
+            while c & 0x80:
+                c, i = pack[i], i + 1
+            if kind == 6:
+                c, i = pack[i], i + 1
+                off = c & 0x7f
+                while c & 0x80:
+                    c, i = pack[i], i + 1
+                    off = ((off + 1) << 7) | (c & 0x7f)
+                out.append((6, kinds[start - off]))
+            elif kind == 7:
+                i += 20
+            d = zlib.decompressobj()
+            d.decompress(pack[i:])
+            i, kinds[start] = len(pack) - len(d.unused_data), kind
+        return out
+
     def test_two_commits_on_one_file(self):
         # The newer copy of f is a delta (OFS_DELTA) on the older, itself a delta (REF_DELTA) on the copy the
         # server has: the pack is still read, and the push is a fast-forward.
@@ -1598,6 +1621,7 @@ class PackCommitsTest(unittest.TestCase):
         base, c1, c2 = self.git("rev-list", "-n", "3", "HEAD").decode().split()[::-1]
         pack = self.git("pack-objects", "--revs", "--stdout", "--thin", "--delta-base-offset", "-q",
                         input=f"{c2}\n^{base}\n".encode())
+        self.assertIn((6, 7), self.delta_bases(pack), "git built no OFS_DELTA on a REF_DELTA: this tests nothing")
         commits = gitwire.pack_commits(pack)
         self.assertEqual(commits, {c2: [c1], c1: [base]})
         self.assertTrue(gitwire.fast_forward(base, c2, commits, lambda a, b: self.fail("asked the server")))

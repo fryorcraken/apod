@@ -110,10 +110,6 @@ def handle_push(h, sess, req, repo, upath, body):
     try:
         data = gitwire.push_data(body, h.headers.get("Content-Encoding", "").lower() == "gzip")
         cmds, caps, _, offset = gitwire.parse_push(data)
-        try:
-            commits = gitwire.pack_commits(data[offset:])
-        except (IndexError, ValueError, zlib.error):
-            commits = None
     except (BrokerError, ValueError, zlib.error) as e:
         return send_text(h, f"couldn't read the push: {e}")
     default = repo_info(sess, repo).get("default_branch")
@@ -127,8 +123,15 @@ def handle_push(h, sess, req, repo, upath, body):
         return gh_query(sess, ["api", f"repos/{repo}/compare/{a}...{b}", "--jq", ".status"]) in ("ahead\n", "identical\n")
 
     # A branch update that isn't a fast-forward (git push --force or --force-with-lease) is its own action.
-    force = [r for o, n, r in cmds if o != gitwire.ZERO and n != gitwire.ZERO and r.startswith("refs/heads/")
-             and not gitwire.fast_forward(o, n, commits, is_ancestor)]
+    # The pack is read only when there's such an update to check: it holds every object, inflated.
+    updates = [(o, n, r) for o, n, r in cmds if o != gitwire.ZERO and n != gitwire.ZERO and r.startswith("refs/heads/")]
+    commits = None
+    if updates:
+        try:
+            commits = gitwire.pack_commits(data[offset:])
+        except (IndexError, ValueError, zlib.error):
+            pass
+    force = [r for o, n, r in updates if not gitwire.fast_forward(o, n, commits, is_ancestor)]
     if force:
         kinds.append("push force")
     req.actions = list(dict.fromkeys("github:" + k for k in kinds)) or ["github:push"]

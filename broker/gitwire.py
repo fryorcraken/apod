@@ -102,6 +102,9 @@ def _delta(base, delta):
     return bytes(out)
 
 
+SKIPPED = (None, None)  # pack_commits: an object it can't rebuild
+
+
 def pack_commits(pack):
     """The commits in a push's pack: {oid: [parent oids]}, or None when the pack can't be read.
     An object stored as a delta against one the pack doesn't carry (a thin pack) is skipped, and so
@@ -112,16 +115,16 @@ def pack_commits(pack):
         return {} if not pack else None
     count = int.from_bytes(pack[8:12], "big")
     i, objs, by_oid, commits = 12, {}, {}, {}
+    view = memoryview(pack)  # slices of it aren't copies
     types = {1: b"commit", 2: b"tree", 3: b"blob", 4: b"tag"}
     for _ in range(count):
         start = i
         c = pack[i]
         i += 1
-        kind, shift = (c >> 4) & 7, 4
-        while c & 0x80:
+        kind = (c >> 4) & 7
+        while c & 0x80:  # the inflated size: not needed
             c = pack[i]
             i += 1
-            shift += 7
         base = None
         if kind == 6:  # OFS_DELTA
             c = pack[i]
@@ -135,18 +138,22 @@ def pack_commits(pack):
         elif kind == 7:  # REF_DELTA
             base = ("ref", pack[i:i + 20].hex())
             i += 20
-        d = zlib.decompressobj()
-        data = d.decompress(pack[i:])
-        i = len(pack) - len(d.unused_data)
+        # Inflated a piece at a time: handing zlib the rest of the pack would copy it, for each object.
+        d, parts = zlib.decompressobj(), []
+        while not d.eof:
+            piece = view[i:i + 65536]
+            if not piece:
+                return None  # cut short
+            parts.append(d.decompress(piece))
+            i += len(piece)
+        i -= len(d.unused_data)
+        data = b"".join(parts)
         if base:
             b = objs.get(base[1]) if base[0] == "ofs" else by_oid.get(base[1])
-            if b is None:
-                if base[0] == "ref":
-                    objs[start] = (None, None)  # thin pack: a base the server has
-                    continue
-                return None
-            if b[0] is None:  # a delta on a skipped object: skipped too
-                objs[start] = (None, None)
+            if b is None and base[0] == "ofs":
+                return None  # no object starts there
+            if b is None or b is SKIPPED:  # a base only the server has (a thin pack), or a skipped one
+                objs[start] = SKIPPED
                 continue
             t, data = b[0], _delta(b[1], data)
         else:
