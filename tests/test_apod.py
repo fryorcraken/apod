@@ -614,12 +614,17 @@ class NewLayoutTest(ProfileTomlTest):
             self.assertEqual(r.returncode, 2, proj)
             self.assertIn(f"the project {proj} is refused: it {what}", r.stderr)
             self.assertEqual(self.log.read_text(), "", "no pod")
-        # The apod checkout may be the project (a pod working on apod), unlike a --rw mount of it.
+        # The apod checkout may be the project (a pod working on apod), unlike a --rw mount of it. A
+        # copy of it, next to this test's apod folders: this checkout contains them, in its tmp/.
+        checkout = Path(tempfile.mkdtemp(dir=self.tmp.parent, prefix="apod-checkout-"))
+        self.addCleanup(shutil.rmtree, checkout)
+        shutil.copytree(HERE, checkout, dirs_exist_ok=True, symlinks=True,
+                        ignore=lambda d, names: {"tmp", ".git"} & set(names) if Path(d) == HERE else ())
         self.log.write_text("")
-        r = subprocess.run([APOD, "plain", str(HERE)], env=self.env, cwd=self.tmp, stdin=subprocess.DEVNULL,
-                           capture_output=True, text=True)
+        r = subprocess.run([checkout / "apod", "plain", str(checkout)], env=self.env, cwd=self.tmp,
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn(f"{HERE}:{HERE}:z", self.log.read_text())
+        self.assertIn(f"{checkout}:{checkout}:z", self.log.read_text())
 
     def test_names_a_profile_cant_have(self):
         for name, msg in (("x.google-credentials", "ends in .google-credentials"), ("worklog", "is an apod command or folder")):
