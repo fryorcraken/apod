@@ -651,8 +651,8 @@ class NewLayoutTest(ProfileTomlTest):
 
 
 class PresetTest(Launcher, unittest.TestCase):
-    """Presets, presets/NAME.toml in the config folder: pod settings any profile launches with (-p),
-    over the profile's own [pod] and under the command line's."""
+    """Presets, presets/NAME.toml in the config folder: pod settings, a role and a scope any profile
+    launches with (-p), over the profile's own and under the command line's."""
     LAYOUT = "xdg"
 
     @classmethod
@@ -687,6 +687,7 @@ class PresetTest(Launcher, unittest.TestCase):
             APOD_TEST_FROM = "a value"
             """)
         cls.preset("second", '[pod]\nimage = "secondimage"\nenv_from = ["OVER"]\n[pod.env]\nB = "3"\n')
+        cls.preset("job", 'description = "a job"\nrole = "pm"\nscope = ["gh:acme/gadget"]\n')
 
     @classmethod
     def preset(cls, name, text):
@@ -763,6 +764,47 @@ class PresetTest(Launcher, unittest.TestCase):
         self.assertIn("toolsimage", argv)
         self.assertTrue(any(a.endswith(":/run/apod-broker") for a in argv), argv)
 
+    def broker_note(self):
+        """The broker's role and scope lines in the agent's note."""
+        raw = self.log.read_text()
+        return (re.search(r"apod broker: role ([^\s,.]+)", raw).group(1),
+                re.search(r"Scope \(the repositories[^)]*\): (.*)\.\n", raw).group(1).split(", "))
+
+    def test_a_presets_role_and_scope(self):
+        """As --role and --scope: the role over the profile's, the scope added to the launch's."""
+        self.launch("bot", "-p", "job")
+        role, scope = self.broker_note()
+        self.assertEqual(role, "pm")
+        self.assertIn("gh:acme/gadget", scope)
+        self.assertIn("gh:acme/widget", scope)  # the project's remote, as ever
+        last = json.loads(self.P.history.read_text().splitlines()[-1])
+        self.assertEqual(last["opts"], ["bot", "-p", "job"])  # resume reads the preset again
+        # The command line's role over the preset's; its scope with the preset's.
+        self.launch("bot", "-p", "job", "--role", "dev", "--scope", "gh:acme/other")
+        role, scope = self.broker_note()
+        self.assertEqual(role, "dev")
+        self.assertIn("gh:acme/gadget", scope)
+        self.assertIn("gh:acme/other", scope)
+        # The last preset's role.
+        f = self.preset("reader", 'role = "reader"\n')
+        self.addCleanup(f.unlink)
+        self.launch("bot", "-p", "job,reader")
+        self.assertEqual(self.broker_note()[0], "reader")
+        self.launch("bot", "-p", "reader,job")
+        self.assertEqual(self.broker_note()[0], "pm")
+
+    def test_a_presets_role_turns_the_broker_on(self):
+        """who has broker = false: a preset's role or scope turns the broker on, as --role does,
+        and --no-broker refuses it."""
+        argv, _ = self.launch("who", "-p", "job")
+        self.assertTrue(any(a.endswith(":/run/apod-broker") for a in argv), argv)
+        self.assertEqual(self.broker_note()[0], "pm")
+        err = self.refused("who", "-p", "tools,job", "--no-broker")
+        self.assertIn("apod: preset job sets a role or a scope, which need the broker, which --no-broker turns off",
+                      err)
+        argv, _ = self.launch("who", "-p", "tools", "--no-broker")  # pod settings alone: no broker needed
+        self.assertFalse(any(a.endswith(":/run/apod-broker") for a in argv), argv)
+
     def test_a_presets_mounts_are_guarded(self):
         f = self.preset("leaky", f'[pod]\nrw = ["{self.tmp}/config"]\n')
         self.addCleanup(f.unlink)
@@ -773,11 +815,16 @@ class PresetTest(Launcher, unittest.TestCase):
         for text, msg in (
                 ('[pod]\nconnectors = ["gdoc"]\n', "[pod] connectors: a preset has none, since connectors act as the "
                                                     "profile's own Claude and Google logins"),
-                ('role = "maintainer"\n', "a preset has description = ... and [pod] only, not role"),
-                ('scope = ["gh:acme/*"]\n', "a preset has description = ... and [pod] only, not scope"),
-                ('[gh]\nuser = "x"\n', "a preset has description = ... and [pod] only, not gh"),
-                ('[git]\nname = "x"\n', "a preset has description = ... and [pod] only, not git"),
+                ('allow = ["gh:issue edit"]\n', "a preset has description, role, scope and [pod] only, not allow"),
+                ('broker = false\n', "a preset has description, role, scope and [pod] only, not broker"),
+                ('[gh]\nuser = "x"\n', "a preset has description, role, scope and [pod] only, not gh"),
+                ('[git]\nname = "x"\n', "a preset has description, role, scope and [pod] only, not git"),
+                ('role = "none"\n', 'role = "none": a preset doesn\'t turn the broker off (--no-broker does)'),
+                ('role = "a b"\n', "role is a string without spaces, not empty"),
+                ('scope = "gh:acme/*"\n', "scope is a list of strings"),
                 ('[pod]\ndescription = "x"\n', "[pod] has description = ...: move it above [pod]"),
+                ('[pod]\nrole = "pm"\n', "[pod] has role = ...: move it above [pod]"),
+                ('[pod]\nscope = ["gh:acme/*"]\n', "[pod] has scope = ...: move it above [pod]"),
                 ('[pod]\nimages = "x"\n', "[pod] has no key images"),
                 ('[pod.env]\nGIT_AUTHOR_NAME = "x"\n', "[pod.env] GIT_AUTHOR_NAME: the git identity is [git] name and email"),
                 ('[pod]\nro = "x"\n', "[pod]: ro is a list of strings")):
@@ -789,9 +836,10 @@ class PresetTest(Launcher, unittest.TestCase):
     def test_names(self):
         self.assertIn("'../x' isn't a preset name", self.refused("who", "-p", "../x"))
         err = self.refused("who", "-p", "nope")
-        self.assertIn(f"no preset nope: {self.tmp}/config/presets/nope.toml doesn't exist (presets: second tools)", err)
+        self.assertIn(f"no preset nope: {self.tmp}/config/presets/nope.toml doesn't exist (presets: job second tools)",
+                      err)
         r = subprocess.run([APOD, "--list-presets"], env=self.env, capture_output=True, text=True)  # for _apod
-        self.assertEqual(r.stdout.split(), ["second", "tools"])
+        self.assertEqual(r.stdout.split(), ["job", "second", "tools"])
         # presets is a command, not a profile's name.
         r = subprocess.run([APOD, "presets", str(self.proj)], env=self.env, capture_output=True, text=True)
         self.assertIn("usage: apod presets", r.stderr)
@@ -803,10 +851,11 @@ class PresetTest(Launcher, unittest.TestCase):
         r = subprocess.run([APOD, "presets"], env=self.env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         lines = r.stdout.splitlines()
-        self.assertEqual([l.split()[0] for l in lines], ["broken", "second", "tools"])
+        self.assertEqual([l.split()[0] for l in lines], ["broken", "job", "second", "tools"])
         self.assertIn("invalid: ", lines[0])
-        self.assertEqual(lines[1].split(None, 1)[1], "image secondimage, 2 variables")
-        self.assertEqual(lines[2].split(None, 1)[1], "image toolsimage, network host, 2 mounts, 1 volume, 3 variables  "
+        self.assertEqual(lines[1].split(None, 1)[1], "role pm, scope gh:acme/gadget  (a job)")
+        self.assertEqual(lines[2].split(None, 1)[1], "image secondimage, 2 variables")
+        self.assertEqual(lines[3].split(None, 1)[1], "image toolsimage, network host, 2 mounts, 1 volume, 3 variables  "
                                                      "(the tools)")
 
 

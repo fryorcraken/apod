@@ -569,8 +569,9 @@ broker extensions NAME` what each role allows of one extension.
 | `pm`         | Project boards                 | reader, plus project boards (items, fields, templates) and creating, editing and commenting on issues.                                                  |
 | `ops`        | Hosts                          | ssh to the hosts in scope, sign commits; fetch only.                                                                                                    |
 
-A pod's role is `--role`, else its profile's `role =`, else `reader`. One profile can take
-different roles per launch: `apod bot --role pm ~/src/org/planning`.
+A pod's role is `--role`, else its [preset](#mounts-network-and-images)'s `role =`, else its
+profile's, else `reader`. One profile can take different roles per launch:
+`apod bot --role pm ~/src/org/planning`, or `apod bot -p triage` with the role in a preset.
 
 **Adding to the role, for one profile.** `allow` and `deny` in the profile's `profile.toml` add
 actions to its role or take them away, for that profile's pods only, whatever role they launch
@@ -914,9 +915,24 @@ apod work ~/src/rad/apod                        # neither: the Logos trees aren'
 
 A preset adds to the profile's own `[pod]` (mounts, volumes and variables join it; `image` and
 `network` replace it), and several apply in order (`-p logos,nix`); `-i`, `--ro` and `--rw` still
-win. It can't set the role, scope, identity or connectors, and the broker never sees it: a preset
-changes what the pod has, not what it may do. `apod presets` lists them. The rules are in the
-[reference](reference.md#presets).
+win.
+
+A job can also come with what the agent may do, and where: a preset's `role` and `scope` are what
+`--role` and `--scope` would give, so a triage job needn't be typed out at each launch:
+
+```toml
+# ~/.config/apod/presets/logos-triage.toml
+description = "Triage the issues of the Logos ecosystem repositories"
+role = "pm"                                             # issues and boards: edit, label, close
+scope = ["gh:logos-co/ecosystem", "gh:logos-co/rfp"]    # added to the profile's
+[pod]
+rw = ["~/src/logos-co/ecosystem", "~/src/logos-co/rfp"]
+```
+
+`apod work -p logos-triage` acts as `work`'s identity, with the `pm` role and those repositories
+in scope; `--role` still wins. Who acts (the git identity, the GitHub account, the keys), the
+profile's own `allow` and `deny`, and its connectors stay the profile's. `apod presets` lists
+them. The rules are in the [reference](reference.md#presets).
 
 ## SELinux
 

@@ -63,7 +63,7 @@ do and leaves a record of what it did.
   still read; `~/.agent-pod` or `APOD_ROOT` in the legacy layout) or the apod checkout, whether it comes from the profile, a preset or `--ro`/`--rw`, and a
   read-write mount of your home folder. A pod that could write its `profiles/<profile>.toml` could
   give itself a role, scope and extensions on its next launch (and one that could write a
-  `presets/NAME.toml`, more mounts); one that could write the checkout
+  `presets/NAME.toml`, a role, scope and mounts); one that could write the checkout
   could change the code the broker runs on the host; the data folder holds every profile's login,
   the state folder the broker's approvals, sessions and the gh-api CA's key, and the runtime
   folder its sockets (through the admin socket, a pod could approve its own requests: a socket on
@@ -93,10 +93,14 @@ do and leaves a record of what it did.
   neither the profile's file nor podman's command line). Whatever is passed is in the pod: an API
   key passed this way is the agent's to use, whichever profile launches with that preset, so keep
   an account's keys in its profile.
-- **Presets change what the pod has, not what it may do.** A preset (`-p`) sets only `[pod]`
-  keys: image, mounts, network, volumes, environment. It can't set the role, scope, identity,
-  connectors or an extension's table, and the broker isn't told about it, so a request is decided
-  the same with or without it.
+- **A preset's role and scope are the command line's.** A preset (`-p`) sets `[pod]` keys
+  (image, mounts, network, volumes, environment) and, optionally, a `role` and a `scope`, which
+  apod passes to the broker as `--role` and `--scope`: a launch with a preset may do what the same
+  launch with those options may. Its scope only adds; its role replaces the profile's, a wider one
+  as well as a narrower one, so a preset is as trusted as the profile files beside it (both in
+  the config folder, which the guard keeps out of the pods). It can't set the identity, the
+  profile's `allow` and `deny`, connectors or an extension's table, and the broker never reads it:
+  the role and scope it ends with are in the session, and in `apod broker sessions`.
 - **Processes:** the host's processes, other pods and their files are not visible.
 - **The desktop:** no display or Wayland socket is passed in. With `[clipboard] enabled`, the
   pod can ask the broker for an image on your clipboard (`clipboard:image`, checked like any

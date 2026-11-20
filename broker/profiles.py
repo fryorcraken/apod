@@ -30,11 +30,12 @@ NAME` prints it as JSON):
                      the broker uses, None for the profile's own
     ssh_agent        key (None when not set), confirm
     tables           the other tables of profile.toml (or of broker.toml): the extensions'
-    presets          the presets applied over pod (--preset NAME), [{name, file, description}]
+    presets          the presets applied (--preset NAME), [{name, file, description, role, scope}]:
+                     their pod settings are in pod, their role in role, their scope in scope
     warnings         things to tell the user, as text
 
-A preset (presets/NAME.toml in the config folder, the new layout's only) is a [pod] table any
-profile can launch with: see load_preset. `apod-broker presets` lists them.
+A preset (presets/NAME.toml in the config folder, the new layout's only) is a [pod] table, a role
+and a scope that any profile can launch with: see load_preset. `apod-broker presets` lists them.
 """
 import json
 import os
@@ -406,19 +407,23 @@ def check_project(project, lay=None):
 
 
 # ---------------------------------------------------------------------------------------------
-# Presets: presets/NAME.toml in apod's config folder, pod settings any profile can launch with
-# (apod PROFILE -p NAME). A profile is who acts; a preset is only what the pod runs with: the
-# image, mounts, network, volumes and environment. Nothing in it reaches the broker (apod passes
-# it the pod's network, as it does without presets), so a preset can't change the role, the
-# scope or the identity. Connectors aren't in presets either: they act as the profile's own
-# Claude and Google logins.
+# Presets: presets/NAME.toml in apod's config folder, a kind of job any profile can launch with
+# (apod PROFILE -p NAME). A profile is who acts; a preset is what the pod runs with (the image,
+# mounts, network, volumes and environment) and, if it says so, the role and scope it works
+# with. apod passes those to the broker as it does --role and --scope (the broker reads the
+# profile's own file, not the presets), so they are no more than what the command line can
+# give. Who acts (git identity, GitHub account, keys) and what else the profile allows or denies
+# stay the profile's. Connectors aren't in presets either: they act as the profile's own Claude
+# and Google logins.
 
 PRESET_POD = OWN_TABLES["pod"] - {"connectors"}
+PRESET_KEYS = ("description", "role", "scope")
 
 
 def load_preset(name, lay=None):
-    """The preset NAME, checked: {name, file, description, pod} (pod as a profile's). Raises
-    ProfileError (in the legacy layout too, which has no presets)."""
+    """The preset NAME, checked: {name, file, description, role, scope, pod} (role None when not
+    set; pod as a profile's). Raises ProfileError (in the legacy layout too, which has no
+    presets)."""
     lay = lay or paths.layout()
     try:
         f = lay.preset_file(name)
@@ -434,20 +439,28 @@ def load_preset(name, lay=None):
     for k, v in data.items():
         if k == "description":
             check_str(f, k, v)
+        elif k == "role":
+            check_str(f, k, v, nospace=True)
+            if v == "none":
+                raise ProfileError(f'{f}: role = "none": a preset doesn\'t turn the broker off (--no-broker does)')
+        elif k == "scope":
+            check_list(f, k, v)
         elif k != "pod":
-            raise ProfileError(f"{f}: a preset has description = ... and [pod] only, not {k}: who acts, the role and "
-                               f"the scope are the profile's (apod PROFILE -p {name})")
+            raise ProfileError(f"{f}: a preset has description, role, scope and [pod] only, not {k}: who acts, and "
+                               f"what else it may do, are the profile's (apod PROFILE -p {name})")
     pod = data.get("pod", {})
     if not isinstance(pod, dict):
         raise ProfileError(f"{f}: [pod] is a table")
-    if "description" in pod:
-        raise ProfileError(f"{f}: [pod] has description = ...: move it above [pod] (a key written after a [table] "
-                           f"line belongs to that table)")
+    for k in PRESET_KEYS:
+        if k in pod:
+            raise ProfileError(f"{f}: [pod] has {k} = ...: move it above [pod] (a key written after a [table] "
+                               f"line belongs to that table)")
     if "connectors" in pod:
         raise ProfileError(f"{f}: [pod] connectors: a preset has none, since connectors act as the profile's own "
                            f"Claude and Google logins: set them in the profile's [pod] connectors, or with -c")
     check_table(f, "pod", pod, PRESET_POD)
-    return {"name": name, "file": str(f), "description": data.get("description"), "pod": pod_from_toml(pod, f)}
+    return {"name": name, "file": str(f), "description": data.get("description"), "role": data.get("role"),
+            "scope": list(data.get("scope", [])), "pod": pod_from_toml(pod, f)}
 
 
 def apply_preset(pod, pre):
@@ -500,9 +513,11 @@ def locate(spec):
 
 def load(spec, project=None, guard=True, presets=()):
     """The profile `spec` (a name, or a path: see locate), checked, with the `presets` (names)
-    applied over its pod settings, in order. Raises ProfileError. A mount of the launch's `project`
-    isn't checked: the project is mounted anyway. The broker (guard=False, no presets) doesn't
-    mount anything: apod checks the mounts when it launches."""
+    applied over it, in order: their pod settings over its pod (apply_preset), the last role one
+    sets over its role, their scope after its scope. Raises ProfileError. A mount of the launch's
+    `project` isn't checked: the project is mounted anyway. The broker (guard=False, no presets)
+    doesn't mount anything: apod checks the mounts when it launches, and passes the presets' role
+    and scope to the broker as --role and --scope."""
     name, pdir, f, home = locate(spec)
     old = old_files_in(pdir) if pdir else []  # the old files: a legacy profile folder's only
     warnings = []
@@ -537,7 +552,10 @@ def load(spec, project=None, guard=True, presets=()):
             if not (project and real(path) == real(project)):
                 check_mount(mode, path, pre["file"])
         apply_preset(p["pod"], pre)
-        p["presets"].append({k: pre[k] for k in ("name", "file", "description")})
+        if pre["role"]:
+            p["role"] = pre["role"]
+        p["scope"] += [s for s in pre["scope"] if s not in p["scope"]]
+        p["presets"].append({k: pre[k] for k in ("name", "file", "description", "role", "scope")})
     return p
 
 
@@ -628,7 +646,9 @@ def presets_main(argv):
             print(f"{n:<20} invalid: {e}")
             continue
         q = pre["pod"]
-        sets = [f"image {q['image']}"] if q["image"] else []
+        sets = [f"role {pre['role']}"] if pre["role"] else []
+        sets += [f"scope {' '.join(pre['scope'])}"] if pre["scope"] else []
+        sets += [f"image {q['image']}"] if q["image"] else []
         sets += [f"network {q['network']}"] if q["network"] else []
         for what, k in (("mount", "mounts"), ("volume", "volumes"), ("variable", "env")):
             c = len(q[k]) + (len(q["env_from"]) if k == "env" else 0)

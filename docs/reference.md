@@ -35,17 +35,17 @@ Options for `apod <profile>`:
 | Option                          |                                                                                                                                                                                                      |
 | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `-a claude\|opencode\|bash`     | The agent (default `claude`); `bash` is a shell in the pod.                                                                                                                                          |
-| `-p`, `--preset NAME`           | A [preset](#presets)'s pod settings for this run, over the profile's `[pod]`: comma-separated, repeatable, applied in order.                                                                         |
+| `-p`, `--preset NAME`           | A [preset](#presets) for this run: its pod settings over the profile's `[pod]`, its role and scope as `--role` and `--scope`. Comma-separated, repeatable, applied in order.                         |
 | `-i`, `--image IMAGE`           | The image, over the presets', the profile's `[pod] image` and `APOD_IMAGE` (default `apod`).                                                                                                         |
 | `-c`, `--connectors LIST`       | claude.ai connector groups for this run, comma-separated, repeatable; `none` turns them off. Replaces the profile's `[pod] connectors`. Claude only: ignored, with a warning, for opencode and bash. |
 | `--ro PATH` (`-m`), `--rw PATH` | Mount a file or folder for this run, read-only or read-write. Refused when it would expose apod's own files (see [Where apod keeps its files](#where-apod-keeps-its-files)).                         |
-| `--role ROLE`                   | The broker role for this run, over `profile.toml`'s `role`.                                                                                                                                          |
+| `--role ROLE`                   | The broker role for this run, over the presets' and `profile.toml`'s `role`.                                                                                                                         |
 | `--scope KIND:VALUE`            | Add to the broker scope for this run; repeatable.                                                                                                                                                    |
 | `--gh-user ACCOUNT`             | The host `gh` account the broker acts as for this run, over `[gh] user`.                                                                                                                             |
 | `--no-broker`                   | No broker for this run, even for a profile that uses it.                                                                                                                                             |
 | `-- ARGS`                       | Anything after `--` goes to the agent (`-- --continue`).                                                                                                                                             |
 
-`--role`, `--scope` and `--gh-user` use the broker even for a profile with `broker = false`.
+`--role`, `--scope` and `--gh-user`, and a preset with a role or a scope, use the broker even for a profile with `broker = false`.
 
 `apod broker` subcommands:
 
@@ -176,42 +176,52 @@ used and the old files are ignored, with a warning.
 
 ## Presets
 
-A preset is pod settings any profile can launch with: `presets/NAME.toml` in apod's
+A preset is a kind of job any profile can launch with: `presets/NAME.toml` in apod's
 [config folder](#where-apod-keeps-its-files), picked with `-p NAME` (`apod work -p logos`). The
-profile is *who* acts; a preset is what the pod runs with, for a kind of job: an image, mounts,
-network, volumes, environment. So there's one profile per identity and one preset per toolchain,
-not a profile for each pair of them.
+profile is *who* acts; a preset is what the pod runs with (an image, mounts, network, volumes,
+environment) and, if it says so, the role and scope it works with. So there's one profile per
+identity and one preset per kind of job, not a profile for each pair of them.
 
 ```toml
 # ~/.config/apod/presets/logos.toml
-description = "Logos toolchain; the Logos repositories, read-only"   # for apod presets
+description = "Logos: triage the issues of two repositories, with their checkouts"   # for apod presets
+role = "pm"                                         # as --role pm
+scope = ["gh:logos-co/ecosystem", "gh:logos-co/rfp"]   # as --scope, for each
 
 [pod]
 image = "logos-toolchain"
-ro = ["~/src/logos-co", "~/src/logos-blockchain"]
+ro = ["~/src/logos-co"]
+rw = ["~/src/logos-co/ecosystem", "~/src/logos-co/rfp"]
 ```
 
-A preset has a `[pod]` table with the keys of a profile's (`image`, `network`, `ro`, `rw`,
-`volumes`, `env_from`, `[pod.env]`), checked the same way, and an optional `description`.
-Anything else is an error: the role, the scope, the identity and the extensions' tables are the
-profile's, and so are `connectors`, which act as the profile's own Claude and Google logins (the
-profile's `[pod] connectors`, or `-c`). A preset's name is letters, digits, `.`, `_` and `-`.
+A preset has an optional `description`, `role` and `scope` (above its `[pod]`, as in a profile),
+and a `[pod]` table with the keys of a profile's (`image`, `network`, `ro`, `rw`, `volumes`,
+`env_from`, `[pod.env]`), checked the same way. Anything else is an error: who acts (the git
+identity, the GitHub account, the keys), the profile's `allow` and `deny`, `broker` and the
+extensions' tables are the profile's, and so are `connectors`, which act as the profile's own
+Claude and Google logins (the profile's `[pod] connectors`, or `-c`). A preset's name is letters,
+digits, `.`, `_` and `-`.
 
-The presets apply in order, over the profile's `[pod]`, and the command line over them:
+The presets apply in order, over the profile, and the command line over them:
 
 | Key                     |                                                                                                                                                                                  |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `role`                  | The last one set wins, over the profile's; `--role` over all of them.                                                                                                            |
+| `scope`                 | Added to the profile's, the project's remotes and `--scope`.                                                                                                                     |
 | `image`, `network`      | The last one set wins; `-i` over all of them.                                                                                                                                    |
 | `ro`, `rw`              | Added to the profile's. A path given twice is mounted once, with the last mode: a preset's over the profile's, `--ro`/`--rw` over both. The mount guard names the preset's file. |
 | `volumes`               | Added; a volume at the same path in the pod as an earlier one replaces it.                                                                                                       |
 | `[pod.env]`, `env_from` | Added; a name set again, as a value or in `env_from`, replaces the earlier one.                                                                                                  |
 
-The broker isn't told about presets: they change what the pod has, never what it may do through
-the broker (its role and scope). apod passes the broker the pod's network, as it does without
-presets, so a preset's `network = "host"` turns off gh-api as a profile's would. The pod's home is
-the profile's, so a profile's pods share its agent login and history whatever their presets, and
-the history records `-p`, so `apod resume` relaunches with the same ones. `apod presets` lists
-them with what each sets (an invalid one says why); `apod ps` shows them beside the profile
+A preset's role and scope are what `--role` and `--scope` would give: apod passes them to the
+broker as those (the broker reads the profile's file, never the presets), so a preset that sets
+one turns the broker on, as `--role` does for a `broker = false` profile, and `--no-broker` with
+it is an error. The broker's note to the agent, and `gh auth status`, say the role and scope it
+ended up with. apod passes the broker the pod's network, as it does without presets, so a
+preset's `network = "host"` turns off gh-api as a profile's would. The pod's home is the
+profile's, so a profile's pods share its agent login and history whatever their presets, and the
+history records `-p`, so `apod resume` relaunches with the same ones. `apod presets` lists them
+with what each sets (an invalid one says why); `apod ps` shows them beside the profile
 (`work -p logos`). The legacy layout has no presets: `apod migrate --layout` first.
 
 ## roles.toml

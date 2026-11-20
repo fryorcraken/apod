@@ -7,7 +7,8 @@
 # ssh) or the podman secret gh-<profile> (GitHub token). In the legacy layout (~/.agent-pod),
 # profiles in the old files are read as before (apod migrate converts them). apod-broker profile
 # reads them all: see broker/profiles.py. A preset (-p, presets/NAME.toml in the config folder) is
-# pod settings any profile can launch with: image, mounts, network, volumes, environment.
+# a kind of job any profile can launch with: pod settings (image, mounts, network, volumes,
+# environment), and a role and scope for the broker, as --role and --scope give.
 set -euo pipefail
 
 usage() {
@@ -490,11 +491,11 @@ image=
 proj=
 climounts=()  # "mode path" entries from --ro/--rw, for this run only
 connectors=() # claude.ai connector groups enabled for this run (-c)
-role=      # broker role for this run (--role), else broker.toml's, else reader
+role=      # broker role for this run (--role), else a preset's, else the profile's, else reader
 nobroker=  # --no-broker: no broker for this run, even with a broker.toml
 ghuser=    # --gh-user: the host gh account the broker acts as for this run, over [gh] user
 scopes=()     # extra broker scope for this run (--scope)
-presets=()    # presets for this run (-p), applied in order over the profile's [pod]
+presets=()    # presets for this run (-p), applied in order over the profile's [pod], role and scope
 recopts=("$profile")  # profile and options of this launch, for the history and apod resume
 while [ $# -gt 0 ]; do
   case $1 in
@@ -529,8 +530,8 @@ if [ "$(P .profile.exists)" != true ]; then
   echo "apod: no profile named $profile${known:+ (profiles: $known)}; to create it, see README, Quick start" >&2
   exit 2
 fi
-# The profile's settings, from its profile.toml (or its old files), checked, with the presets' pod
-# settings over its own (-p): JSON from apod-broker profile. pget runs a jq filter on it; plist one
+# The profile's settings, from its profile.toml (or its old files), checked, with the presets'
+# over its own (-p): JSON from apod-broker profile. pget runs a jq filter on it; plist one
 # that prints NUL-terminated records.
 ldargs=(--profile "$profile" --project "$proj" --quiet)  # --ro/--rw: refused if they'd expose apod's own files
 for e in "${climounts[@]}"; do ldargs+=(--"${e%% *}" "${e#* }"); done
@@ -553,13 +554,24 @@ while IFS=$'\t' read -r vname vpath; do
 done < <(pget '.pod.volumes | to_entries[] | [.key, .value] | @tsv')
 
 # Broker: when the profile uses it (broker = true, the default of a profile.toml; an old profile
-# with a broker.toml), or --role, --scope or --gh-user is given; --no-broker turns it off. The
-# role comes from --role, else the profile's, else reader.
+# with a broker.toml), or --role, --scope or --gh-user is given, or a preset sets a role or a
+# scope; --no-broker turns it off. The role comes from --role, else the last preset's that sets
+# one, else the profile's, else reader. The presets' scope adds to the profile's, as --scope does:
+# the broker reads the profile's file, not the presets, so theirs go to it as --role and --scope.
 usebroker=
 [ "$role" = none ] && { role=; nobroker=1; }  # the old way to say --no-broker
+prole=$(pget '[.presets[].role | values] | last // empty')
+pscopes=()
+while IFS= read -r -d '' s; do pscopes+=("$s"); done < <(plist '.presets[].scope[] | "\(.)\u0000"')
 if [ -n "$nobroker" ]; then
   [ ${#scopes[@]} -eq 0 ] && [ -z "$role" ] && [ -z "$ghuser" ] || { echo "apod: --role, --scope and --gh-user need the broker, which --no-broker turns off" >&2; exit 2; }
-elif [ -n "$role" ] || [ ${#scopes[@]} -gt 0 ] || [ -n "$ghuser" ] || [ "$(pget .broker)" = true ]; then usebroker=1; fi
+  [ -z "$prole" ] && [ ${#pscopes[@]} -eq 0 ] || {
+    echo "apod: preset $(pget '[.presets[] | select(.role or (.scope | length > 0)) | .name] | join(",")') sets a role or a scope, which need the broker, which --no-broker turns off" >&2; exit 2; }
+else
+  [ -n "$role" ] || role=$prole
+  scopes+=("${pscopes[@]}")
+  if [ -n "$role" ] || [ ${#scopes[@]} -gt 0 ] || [ -n "$ghuser" ] || [ "$(pget .broker)" = true ]; then usebroker=1; fi
+fi
 # What the loader says (old profile files, a profile.toml beside them). With the broker, its
 # session says it with its own warnings; here without.
 if [ -z "$usebroker" ]; then
