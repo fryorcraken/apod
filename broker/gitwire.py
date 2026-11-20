@@ -104,7 +104,8 @@ def _delta(base, delta):
 
 def pack_commits(pack):
     """The commits in a push's pack: {oid: [parent oids]}, or None when the pack can't be read.
-    An object stored as a delta against one the pack doesn't carry (a thin pack) is skipped: if it's
+    An object stored as a delta against one the pack doesn't carry (a thin pack) is skipped, and so
+    is a delta on a skipped object (git chains them: a file changed twice in a push): if it's
     a commit, the walk in fast_forward stops there and asks the server, which doesn't have it, so the
     push counts as a force push (it can't be shown not to be)."""
     if pack[:4] != b"PACK":
@@ -141,11 +142,11 @@ def pack_commits(pack):
             b = objs.get(base[1]) if base[0] == "ofs" else by_oid.get(base[1])
             if b is None:
                 if base[0] == "ref":
-                    objs[start] = None  # thin pack: a base the server has
+                    objs[start] = (None, None)  # thin pack: a base the server has
                     continue
                 return None
-            if b[0] is None:
-                objs[start] = None
+            if b[0] is None:  # a delta on a skipped object: skipped too
+                objs[start] = (None, None)
                 continue
             t, data = b[0], _delta(b[1], data)
         else:

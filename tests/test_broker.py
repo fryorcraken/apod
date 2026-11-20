@@ -13,6 +13,7 @@ import socket
 import struct
 import http.server
 import getpass
+import hashlib
 import json
 import re
 import os
@@ -27,11 +28,13 @@ import textwrap
 import threading
 import time
 import unittest
+import zlib
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(HERE / "broker"))
 import paths  # noqa: E402 (where apod's files are, as the broker sees them)
+import gitwire  # noqa: E402
 
 BROKER = HERE / "apod-broker"
 # The variables that say where apod's folders are: the tests set their own.
@@ -1567,6 +1570,71 @@ class BrokerTest(unittest.TestCase):
         ui.wait(timeout=5)
         os.close(master)
         self.assertEqual(ui.returncode, 0)
+
+
+class PackCommitsTest(unittest.TestCase):
+    """gitwire.pack_commits: the commits in a push's thin pack, which tell a fast-forward from a force push."""
+
+    def git(self, *a, input=None):
+        env = host_env(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        return subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=t", "-c", "user.email=t@t",
+                               "-c", "commit.gpgsign=false", *a], env=env, input=input, capture_output=True,
+                              check=True).stdout
+
+    def test_two_commits_on_one_file(self):
+        # The newer copy of f is a delta (OFS_DELTA) on the older, itself a delta (REF_DELTA) on the copy the
+        # server has: the pack is still read, and the push is a fast-forward.
+        self.repo = Path(tempfile.mkdtemp(prefix="apod-pack-"))
+        self.addCleanup(shutil.rmtree, self.repo, ignore_errors=True)
+        self.git("init", "-q")
+        f = self.repo / "f"
+        f.write_text("".join(f"line {n} of a file long enough to be stored as a delta\n" for n in range(300)))
+        self.git("add", "f")
+        self.git("commit", "-q", "-m", "base")
+        for n in (1, 2):
+            with f.open("a") as fh:
+                fh.write(f"more {n}\n")
+            self.git("commit", "-q", "-am", f"c{n}")
+        base, c1, c2 = self.git("rev-list", "-n", "3", "HEAD").decode().split()[::-1]
+        pack = self.git("pack-objects", "--revs", "--stdout", "--thin", "--delta-base-offset", "-q",
+                        input=f"{c2}\n^{base}\n".encode())
+        commits = gitwire.pack_commits(pack)
+        self.assertEqual(commits, {c2: [c1], c1: [base]})
+        self.assertTrue(gitwire.fast_forward(base, c2, commits, lambda a, b: self.fail("asked the server")))
+
+    def test_delta_chain_on_a_thin_base(self):
+        # Deltas on deltas on an object only the server has: all skipped, the commit after them still read.
+        def entry(kind, data, base=b""):
+            n = len(data)
+            h = [kind << 4 | n & 0x0f]
+            n >>= 4
+            while n:
+                h[-1] |= 0x80
+                h.append(n & 0x7f)
+                n >>= 7
+            return bytes(h) + base + zlib.compress(data)
+
+        def ofs(off):
+            out = [off & 0x7f]
+            off >>= 7
+            while off:
+                off -= 1
+                out.insert(0, 0x80 | off & 0x7f)
+                off >>= 7
+            return bytes(out)
+
+        parent = "1" * 40
+        commit = f"tree {'2' * 40}\nparent {parent}\nauthor t <t@t> 0 +0000\ncommitter t <t@t> 0 +0000\n\nx\n".encode()
+        delta = b"\x05\x05\x05hello"
+        objs, at, prev = [], 12, None
+        for kind in (7, 6, 6, 1):  # REF_DELTA on an object not in the pack, two OFS_DELTAs, each on the one before
+            base = bytes.fromhex("3" * 40) if kind == 7 else ofs(at - prev) if kind == 6 else b""
+            objs.append(entry(kind, commit if kind == 1 else delta, base))
+            prev, at = at, at + len(objs[-1])
+        pack = b"PACK" + struct.pack(">II", 2, len(objs)) + b"".join(objs)
+        oid = hashlib.sha1(b"commit %d\0" % len(commit) + commit).hexdigest()
+        self.assertEqual(gitwire.pack_commits(pack), {oid: [parent]})
+
 
 class PathsTest(unittest.TestCase):
     """broker/paths.py: where apod's files are, for each environment."""

@@ -15,7 +15,7 @@ agents alike.
 | `broker/profiles.py`     | Reads a profile (`apod-broker profile`), the mount guard, `apod migrate`.                                                                                                     |
 | `extensions/`            | The shipped broker extensions, one file each.                                                                                                                                 |
 | `roles.toml`             | The built-in roles.                                                                                                                                                           |
-| `tests/test_broker.py`   | The broker's tests: a real broker, throwaway apod folders, stub programs; `paths.py` and the profile loader.                                                                  |
+| `tests/test_broker.py`   | The broker's tests: a real broker, throwaway apod folders, stub programs; `paths.py`, the profile loader and `gitwire.py`'s pack reader.                                      |
 | `tests/test_apod.py`     | The launcher's tests: a stub `podman` that records the command line, compared with `tests/golden/`, in both layouts.                                                          |
 | `tools/mdtables.py`      | Aligns the Markdown tables.                                                                                                                                                   |
 | `README.md`              | The pitch, install, quick start, concepts, and links to the rest.                                                                                                             |
