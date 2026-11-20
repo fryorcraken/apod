@@ -68,7 +68,7 @@ FAKE_GH = textwrap.dedent(f"""\
         x, _, y = ab.partition("...")
         r = subprocess.run(["git", "-C", f"@UPSTREAM@/{{repo}}.git", "merge-base", "--is-ancestor", x, y])
         print("identical" if x == y else "ahead" if r.returncode == 0 else "diverged"); sys.exit()
-    if a[:1] == ["api"] and a[1] in ("repos/other/missing", "repos/other/down"):  # as gh fails on an HTTP error
+    if a[:2] in (["api", "repos/other/missing"], ["api", "repos/other/down"]):  # as gh fails on an HTTP error
         code = "Not Found (HTTP 404)" if a[1].endswith("missing") else "Bad Gateway (HTTP 502)"
         print('{{"message": "' + code.split(" (")[0] + '"}}'); print("gh: " + code, file=sys.stderr); sys.exit(1)
     if a[:1] == ["api"] and a[1].startswith("repos/") and "--jq" in a:
@@ -944,10 +944,20 @@ class BrokerTest(unittest.TestCase):
         self.assertIn("git fetch github.com/other/missing (not found as agentbot)", self.admin("log", "-n", "1").stdout)
         # A private repository the account sees, or a lookup that failed otherwise, still asks.
         for repo in ("other/secret", "other/down"):
-            r = subprocess.run(["git", "ls-remote", f"https://github.com/{repo}"], env=e, capture_output=True, text=True)
-            self.assertNotEqual(r.returncode, 0)
-            self.assertIn("out of this session's scope", r.stderr)
-            self.assertIn("timed out", self.admin("log", "-n", "1").stdout)
+            p = subprocess.Popen(["git", "ls-remote", f"https://github.com/{repo}"], env=e, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, text=True)
+            eid = None
+            for _ in range(30):
+                time.sleep(0.1)
+                out = self.admin("pending").stdout
+                if f"github.com/{repo}" in out:
+                    eid = out.split()[0]
+                    break
+            self.assertIsNotNone(eid, f"{repo} didn't ask")
+            self.admin("deny", eid)
+            _, err = p.communicate(timeout=20)
+            self.assertNotEqual(p.returncode, 0)
+            self.assertIn("out of this session's scope", err)
 
     def test_git_push_approved_while_waiting(self):
         e = self.git_env(self.sess)

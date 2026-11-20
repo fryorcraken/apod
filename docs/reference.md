@@ -240,9 +240,9 @@ The broker turns each request into actions (what it does) and targets (what it t
   passed on). `--force-with-lease` and `--force` look the same to the broker: the lease is checked
   by git in the pod. For GitHub, the broker reads the commits in the push and asks GitHub about
   the ones it already has; a push it can't show to be a fast-forward counts as a force push. A
-  fetch or push of a GitHub repository outside the scope that GitHub answers 404 for (no such
+  fetch of a GitHub repository outside the scope that GitHub answers 404 for (no such
   repository, or the account can't see it) is refused at once, without asking, and shown as
-  `git fetch github.com/OWNER/REPO (not found as ACCOUNT)`.
+  `git fetch github.com/OWNER/REPO (not found as LOGIN)`.
 - **git-sign**: `git-sign:commit`, `git-sign:tag`; `git-sign:as other` when the author, committer or tagger isn't
   the profile's identity; `git-sign:other` for anything that isn't a commit or tag. The target is the
   repository, by the remote the branch pushes to, else its folder (`git-local:`).
