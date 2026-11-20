@@ -582,6 +582,9 @@ class BrokerTest(unittest.TestCase):
         # -h as a flag's value isn't a help request: gh would run the command.
         r = self.gh("issue", "create", "-R", "evil/repo", "--title", "-h", "--body", "x", expect=1)
         self.assertIn("needs your approval", r.stderr)
+        # -R in a cluster of short flags (-d is --delete-branch).
+        r = self.gh("pr", "merge", "-dR", "evil/repo", "5", expect=1)
+        self.assertIn("out of this session's scope: gh:evil/repo", r.stderr)
 
     def test_search_across_github(self):
         # A search without --repo or --owner is across GitHub: in scope only with gh-search:.
@@ -737,6 +740,57 @@ class BrokerTest(unittest.TestCase):
         seq = tui.notify_seq("osc777", "a;b", "evil\x1b]0;pwned\x07 x")
         self.assertEqual(seq, "\x1b]777;notify;a,b;evil ]0,pwned  x\x1b\\")
         self.assertEqual(tui.notify_seq("bell", "t", "b"), "")
+
+    def test_gh_help_in_either_layout(self):
+        # The broker learns gh's flags from its --help, and gh 2.104 changed how it lists booleans. In
+        # either layout, `-dR other/repo` is -d and -R other/repo (the repository the scope checks),
+        # and --admin the flag of `pr merge --admin`. The rest of the tests read the runner's gh.
+        sys.path.insert(0, str(HERE / "broker"))
+        sys.path.append(str(HERE / "extensions"))
+        os.environ.pop("APOD_ROOT", None)
+        for k, v in self.layout_env.items():
+            os.environ.setdefault(k, v)
+        import api
+        import gh
+        usage = "USAGE\n  gh pr merge [<number> | <url> | <branch>] [flags]\n\n"
+        before_2_104 = usage + textwrap.dedent("""\
+            FLAGS
+                  --admin                   Use administrator privileges to merge a pull request
+              -d, --delete-branch           Delete the local and remote branch after merge
+              -t, --subject text            Subject text for the merge commit
+
+            INHERITED FLAGS
+                  --help                     Show help for command
+              -R, --repo [HOST/]OWNER/REPO   Select another repository using the [HOST/]OWNER/REPO format
+            """)
+        since_2_104 = usage + textwrap.dedent("""\
+            FLAGS
+                  --admin[=true|false]           Use administrator privileges to merge a pull request
+              -d, --delete-branch[=true|false]   Delete the local and remote branch after merge
+              -t, --subject text                 Subject text for the merge commit
+
+            INHERITED FLAGS
+                  --help[=true|false]        Show help for command
+              -R, --repo [HOST/]OWNER/REPO   Select another repository using the [HOST/]OWNER/REPO format
+            """)
+        for text in (before_2_104, since_2_104):
+            s = gh.parse_help(text, ["pr", "merge"])
+            self.assertEqual(s.canon, ["pr", "merge"])
+            self.assertEqual(s.flags, {"admin": None, "delete-branch": None, "subject": "text", "help": None,
+                                       "repo": "[HOST/]OWNER/REPO"})
+            self.assertEqual(s.short, {"d": "delete-branch", "t": "subject", "R": "repo"})
+            self.assertEqual(gh.parse_flags(s, ["-dR", "other/repo", "5"]),
+                             ([("delete-branch", None), ("repo", "other/repo")], ["5"]))
+            self.assertEqual(gh.parse_flags(s, ["21", "--admin"]), ([("admin", None)], ["21"]))
+        # An optional value comes only after =: --commit abc is --commit and a positional abc.
+        s = gh.parse_help('FLAGS\n  -c, --commit string[="last"]   Select another commit\n'
+                          '      --help[=true|false]        Show help for command\n', ["browse"])
+        self.assertEqual(gh.parse_flags(s, ["--commit", "abc"]), ([("commit", None)], ["abc"]))
+        self.assertEqual(gh.parse_flags(s, ["--commit=abc"]), ([("commit", "abc")], []))
+        # A layout it doesn't know: no gh rather than flags it can't check.
+        with self.assertRaisesRegex(api.BrokerError, "layout the broker doesn't read"):
+            gh.parse_help(usage + "FLAGS\n  --admin=BOOL   Use administrator privileges\n"
+                          "  --help=BOOL    Show help for command\n", ["pr", "merge"])
 
     def test_links_in_text_are_not_targets(self):
         body = "see https://github.com/other/research and https://github.com/orgs/other/projects/3"

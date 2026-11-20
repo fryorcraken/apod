@@ -153,8 +153,14 @@ def spec(path):
     if r.returncode:
         _specs[key] = None
         return None
+    _specs[key] = s = parse_help(r.stdout, path)
+    return s
+
+
+def parse_help(text, path):
+    """The Spec of gh <path>, from the text of its --help."""
     s, section = Spec(), None
-    for line in r.stdout.splitlines():
+    for line in text.splitlines():
         if line and not line[0].isspace():
             section = line.strip()
             continue
@@ -167,14 +173,22 @@ def spec(path):
             if m:
                 s.subs.add(m.group(1))
         elif section in ("FLAGS", "INHERITED FLAGS"):
-            m = re.match(r"\s+(?:-(\w), )?--([\w-]+)(?: (\S+))?(?:\s{2,}|$)", line)
+            # "-t, --title string": a flag that takes a value (named string). One that doesn't shows no
+            # name: a boolean ("--draft", "--draft[=true|false]" since gh 2.104), or a flag whose value
+            # is optional ('--commit string[="last"]': its value comes only as --commit=SHA).
+            m = re.match(r"\s+(?:-(\w), )?--([\w-]+)(?: (\S+?))?(\[=[^\]]*\])?(?:\s{2,}|$)", line)
             if m:
-                s.flags[m.group(2)] = m.group(3)
+                s.flags[m.group(2)] = None if m.group(4) else m.group(3)
                 if m.group(1):
                     s.short[m.group(1)] = m.group(2)
+    if "help" not in s.flags:
+        # Every gh command lists --help. Without it, gh lists its flags in a layout this doesn't
+        # read, and the flags it misses would go to gh unchecked: with -d unknown, gh's -d -R in
+        # `-dR OWNER/REPO` hides the repository from the scope check.
+        raise BrokerError(f"`{' '.join(['gh', *path, '--help'])}` lists the flags in a layout the broker doesn't "
+                          f"read (a newer gh?), so it can't check them: it refuses gh until apod reads it")
     if s.canon is None:
         s.canon = list(path)
-    _specs[key] = s
     return s
 
 
