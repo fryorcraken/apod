@@ -297,17 +297,35 @@ GUARDED_WHY = {
 }
 
 
+# A profile's Claude transcripts, in <folder>/<profile>/ (paths.py: Layout.transcripts_in).
+TRANSCRIPTS = ("home", ".claude", "projects")
+
+
+def in_transcripts(p, lay):
+    """Whether real path p is, or is inside, a profile's Claude transcripts: <profile>/home/.claude/projects
+    in a folder of lay.transcripts_in. The profile's pods write in their home, so its .claude or
+    projects may be a symlink a pod made: p is matched as it resolves, never against that folder's
+    own realpath (a `projects` that leads back to the home, and its login, would pass)."""
+    for x in lay.transcripts_in:
+        x = real(str(x)).rstrip("/")
+        parts = p[len(x) + 1:].split("/") if p.startswith(x + "/") else []
+        if parts[1:4] == list(TRANSCRIPTS) and not paths.name_error(parts[0]):
+            return True
+    return False
+
+
 def check_mount(mode, path, where, lay=None):
     """Refuse a mount that would let a pod read or change apod's own configuration: one that is,
     contains or is inside one of apod's folders (paths.py: the profiles' settings and logins, the
     broker's keys, state and sockets) or this checkout (the code the host runs), and a read-write
-    mount of your home folder. A read-only mount of the work logs (or one of them), the history or
-    the broker's request log is fine. `where` says what asked for it; `lay` is the layout (the
-    current one by default)."""
+    mount of your home folder. A read-only mount of the work logs (or one of them), the history,
+    the broker's request log or a profile's Claude transcripts (or what's in them) is fine. `where`
+    says what asked for it; `lay` is the layout (the current one by default)."""
     lay, p = lay or paths.layout(), real(path)
     readable = [real(str(x)) for x in lay.readable]
-    if mode == "ro" and any(inside(p, x) for x in readable):
+    if mode == "ro" and (any(inside(p, x) for x in readable) or in_transcripts(p, lay)):
         return
+    readable += [f"{real(str(x))}/<profile>/{'/'.join(TRANSCRIPTS)}" for x in lay.transcripts_in]
     for label, x in lay.guarded + [("the apod checkout", CHECKOUT)]:
         x = real(str(x))
         rel = "is" if p == x else "is inside" if inside(p, x) else "contains" if inside(x, p) else None

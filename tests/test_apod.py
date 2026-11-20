@@ -551,6 +551,17 @@ class NewLayoutTest(ProfileTomlTest):
                                stdin=subprocess.DEVNULL, capture_output=True, text=True)
             self.assertEqual(r.returncode, 2, opts)
             self.assertIn("apod's legacy folder", r.stderr)
+        # Another profile's transcripts, read-only, for a pod that reviews its sessions; not read-write,
+        # nor the home around them.
+        tr = self.tmp / "data/profiles/brk/home/.claude/projects"
+        tr.mkdir(parents=True)
+        self.launch("plain", "--ro", str(tr))
+        self.assertIn(f"{tr}:{tr}:ro,z", self.log.read_text().split("\n"))
+        for opts in (["--rw", str(tr)], ["--ro", str(tr.parent)]):
+            r = subprocess.run([APOD, "plain", *opts, str(self.proj)], env=self.env, cwd=self.tmp,
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 2, opts)
+            self.assertIn("is inside apod's data folder", r.stderr)
         # So is a profile's own mount list.
         f = self.tmp / "config/profiles/plain.toml"
         text = f.read_text()

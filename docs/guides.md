@@ -798,10 +798,11 @@ While both run:
 - What the profiles share is in both places: a change to your roles or `config.toml` goes in
   both, `~/.agent-pod` for the old apod and `~/.config/apod` for the new one.
 - The new apod's [mount guard](reference.md#where-apod-keeps-its-files) refuses `~/.agent-pod`
-  too, but for read-only mounts of its `worklog/`, `history.jsonl` and `broker/log.jsonl`: a
-  profile that reviews them can mount both those and the new ones
-  (`~/.local/share/apod/worklog`, `~/.local/state/apod/history.jsonl`,
-  `~/.local/state/apod/broker/log.jsonl`). The old one doesn't know the new folders: don't give its pods `~/.config`, `~/.local`
+  too, but for read-only mounts of its `worklog/`, `history.jsonl`, `broker/log.jsonl` and its
+  profiles' transcripts (`<profile>/home/.claude/projects`): a profile that reviews them can
+  mount both those and the new ones (`~/.local/share/apod/worklog`,
+  `~/.local/state/apod/history.jsonl`, `~/.local/state/apod/broker/log.jsonl`,
+  `~/.local/share/apod/profiles/<profile>/home/.claude/projects`). The old one doesn't know the new folders: don't give its pods `~/.config`, `~/.local`
   or `$XDG_RUNTIME_DIR`.
 
 Once the last pods of the old apod are done, stop its broker (`apod broker stop`) and run
@@ -839,8 +840,10 @@ for the same path; a missing command-line path is an error, a missing profile pa
 apod refuses mounts that would expose its own files: its config, data, state and runtime folders
 ([where they are](reference.md#where-apod-keeps-its-files); `~/.agent-pod` in the legacy layout),
 the apod checkout, anything that contains them, and a read-write mount of your home folder. A
-read-only `~/.local/share/apod/worklog` (or a folder in it), `~/.local/state/apod/history.jsonl`
-and `~/.local/state/apod/broker/log.jsonl` are fine, for a pod that reviews them. The project folder can't be one of
+read-only `~/.local/share/apod/worklog` (or a folder in it), `~/.local/state/apod/history.jsonl`,
+`~/.local/state/apod/broker/log.jsonl` and a profile's transcripts,
+`~/.local/share/apod/profiles/<profile>/home/.claude/projects` (or a folder in it), are fine, for
+a pod that reviews them ([work logs](#work-logs)). The project folder can't be one of
 apod's folders or contain one either (apod won't launch in `~` or `~/.config`); it stays writable
 even inside a read-only entry. The first launch relabels mounted trees for SELinux (`:z`), which
 can take a while on big trees. A running pod can't gain mounts: exit and relaunch with
@@ -949,6 +952,20 @@ since a pod writes them, be careful about handing them to an agent on the host t
 access than the pods did: run the review in a pod, with the logs mounted read-only
 (`apod reviewer --ro ~/.local/share/apod/worklog ~/reports`), rather than with your own `claude`.
 opencode isn't told about its log yet (only Claude gets apod's notes at startup).
+
+For more than the agent's account, mount a profile's Claude transcripts too, read-only:
+`~/.local/share/apod/profiles/<profile>/home/.claude/projects` (a folder per project, with a
+`<session>.jsonl` per session, the same id as the session's work log), or one project's folder
+in it. Only that folder is allowed, not the rest of the home, which holds the profile's login.
+
+```sh
+apod reviewer --ro ~/.local/share/apod/worklog --ro ~/.local/share/apod/profiles/work/home/.claude/projects ~/reports
+```
+
+The transcripts hold everything the sessions saw: the files they read and their commands' output
+(a token one printed included). Like the logs, they're the pods' to write: a pod can put anything
+there, its own login included ([SECURITY.md](../SECURITY.md#the-container)). opencode's sessions
+aren't covered: they're elsewhere in the home.
 
 ## History, resume and herdr
 

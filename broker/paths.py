@@ -128,10 +128,11 @@ class Layout:
             self.broker = r / "broker"
             self.selinux = r / "selinux"
             self.profiles = r
+            self.homes = r  # <profile>/home: each profile's
             self.guarded = [("apod's folder", r)]
             self._names = lambda: [d.name for d in sorted(r.iterdir()) if d.is_dir()] if r.is_dir() else []
             self._profile = lambda n, pid: {
-                "dir": r / n, "file": r / n / "profile.toml", "home": r / n / "home",
+                "dir": r / n, "file": r / n / "profile.toml", "home": self.homes / n / "home",
                 "google_credentials": r / n / "google-credentials.json",
                 "exists": (r / n).is_dir(), "ssh_agent_dir": r / n / "agent",
                 **({"ssh_agent_sock": r / n / "agent" / f"ssh-{pid}.sock", "ssh_agent_mount": r / n / "agent"}
@@ -145,6 +146,7 @@ class Layout:
             self.broker = self.state / "broker"
             self.selinux = self.state / "selinux"
             self.profiles = self.config / "profiles"
+            self.homes = self.data / "profiles"  # <profile>/home: each profile's
             self.guarded = [("apod's config folder", self.config), ("apod's data folder", self.data),
                             ("apod's state folder", self.state), ("apod's runtime folder", self.runtime),
                             # (legacy) the old apod's, while one runs beside this one: its settings and logins
@@ -152,7 +154,7 @@ class Layout:
             p = self.profiles
             self._names = lambda: [f.name[:-5] for f in sorted(p.glob("*.toml")) if f.is_file()]
             self._profile = lambda n, pid: {
-                "dir": None, "file": p / f"{n}.toml", "home": self.data / "profiles" / n / "home",
+                "dir": None, "file": p / f"{n}.toml", "home": self.homes / n / "home",
                 "google_credentials": p / f"{n}.google-credentials.json",
                 "exists": (p / f"{n}.toml").is_file(), "ssh_agent_dir": self.runtime,
                 **({"ssh_agent_sock": self.runtime / f"ssh-{n}-{pid}.sock",
@@ -171,11 +173,15 @@ class Layout:
         self.sessions_run = self.runtime / "sessions"      # <id>/: each session's folder, mounted in its pod
         self.admin_sock = self.runtime / "admin.sock"
         self.agent_sock = self.runtime / "agent.sock"      # the broker's ssh-agent
-        # Read-only mounts that are fine although they're in a guarded folder.
+        # Read-only mounts that are fine although they're in a guarded folder: these, and a
+        # profile's Claude transcripts (<profile>/home/.claude/projects in a folder of
+        # transcripts_in; profiles.py checks those, since the profile's pods write there).
         self.readable = [self.worklog, self.history, self.log]
+        self.transcripts_in = [self.homes]
         if not self.legacy and self.legacy_root.is_dir():  # (legacy) the old apod's too, while one runs beside this one
             r = self.legacy_root
             self.readable += [r / "worklog", r / "history.jsonl", r / "broker" / "log.jsonl"]
+            self.transcripts_in.append(r)
 
     def ensure_runtime(self):
         """The runtime folder, made (mode 0700) if it's missing; PathError if it isn't private

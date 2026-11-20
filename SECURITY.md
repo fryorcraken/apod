@@ -66,15 +66,22 @@ do and leaves a record of what it did.
   the state folder the broker's approvals, sessions and the gh-api CA's key, and the runtime
   folder its sockets (through the admin socket, a pod could approve its own requests: a socket on
   a read-only mount still answers). The only exceptions are read-only mounts of the work logs
-  (`worklog/`, or one in it), `history.jsonl` and the broker's `log.jsonl`, for a pod that
-  reviews them (those in `~/.agent-pod` too, while an older apod runs beside this one). The check follows symlinks and `..`. apod itself mounts, from these folders, only
+  (`worklog/`, or one in it), `history.jsonl`, the broker's `log.jsonl` and a profile's Claude
+  transcripts (`profiles/<profile>/home/.claude/projects` in the data folder, or a folder in it),
+  for a pod that reviews them (those in `~/.agent-pod` too, while an older apod runs beside this
+  one). The check follows symlinks and `..`, the transcripts' too: a profile's pods write in its
+  home, and a `.claude/projects` one of them turned into a symlink (to its `.claude`, with the
+  login, or anywhere else) is checked where it leads, and refused. apod itself mounts, from these folders, only
   what the list above says: nothing from the config folder but the profile's
   `<profile>.google-credentials.json`, read-only, when google-docs-mcp is enabled. The project
   folder, mounted read-write, is checked too: apod won't launch in one of its folders, or in one
   that contains them (`~`, `~/.config`, a dotfiles repository that holds `~/.config`). The project
   may be the apod checkout, for a pod that works on apod: that pod can change the code a broker
   started from that checkout runs. The guard checks the paths when apod starts, not a symlink
-  someone changes later. An apod from before the new layout only knows `~/.agent-pod`: while you
+  someone changes later. So a running pod could, when another is launched with its profile's
+  transcripts, swap a folder in them for a symlink between the check and the mount, and give
+  that pod (read-only) wherever it leads on the host: if that matters, mount the transcripts of
+  a profile that has no pod running. An apod from before the new layout only knows `~/.agent-pod`: while you
   run one beside this one ([one profile at a time](docs/guides.md#one-profile-at-a-time)), its
   pods can be given the new folders.
 - **Environment:** the pod gets the variables of its profile's `[pod.env]` and `[pod] env_from`
@@ -88,7 +95,10 @@ do and leaves a record of what it did.
   hands the pod whatever image is copied at that moment, a screenshot of something private
   included.
 - **Profiles are separate:** each has its own home, so its own Claude login, history and
-  settings. One profile's pod can't read another's.
+  settings. One profile's pod can't read another's, but for the transcripts you mount in it. A
+  profile's transcripts hold what its sessions saw (the files they read, their commands' output,
+  a token one printed) and whatever its pods wrote there, their Claude login included if one
+  copied it in: mount them only in a pod you'd trust with what that profile's pods could read.
 - **The agent is told what it can see:** Claude's system prompt lists the mounts and, with the
   broker, the role and scope. That's for the agent's benefit, not a security control.
 

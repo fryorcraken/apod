@@ -2188,10 +2188,14 @@ class ProfileLoaderTest(unittest.TestCase):
 
     def test_mount_guard(self):
         root = self.dir
-        for d in ("worklog/s1", "broker", "work/home"):
+        for d in ("worklog/s1", "broker", "work/home/.claude/projects/-p", "evil/home/.claude"):
             (root / d).mkdir(parents=True, exist_ok=True)
         (root / "history.jsonl").write_text("")
         (root / "broker/log.jsonl").write_text("")
+        (root / "work/home/.claude/projects/-p/s1.jsonl").write_text("")
+        # A pod that made its transcripts folder a symlink to its .claude (its login).
+        (root / "evil/home/.claude/projects").symlink_to("..")
+        tr = root / "work/home/.claude/projects"
         for how in ({}, {"cli": True}, {"old": True}):
             # Refused: the apod folder, what's in it, what holds it, and the checkout.
             for path in (root, root / "work", root / "work/home", root / "broker", root / "broker/sessions",
@@ -2201,14 +2205,18 @@ class ProfileLoaderTest(unittest.TestCase):
                     err = self.mount_error(mode, path, **how)
                     self.assertIn(f"{mode} mount {path}", err or f"allowed {mode} {path} {how}")
                     self.assertIn("is refused", err)
-            # Allowed: read-only, the worklog and what's in it, the history, the broker's log.
+            # Allowed: read-only, the worklog and what's in it, the history, the broker's log, a
+            # profile's transcripts and what's in them.
             for path in (root / "worklog", root / "worklog/s1", root / "worklog/s1/worklog.md", root / "history.jsonl",
-                         root / "broker/log.jsonl", "/etc", "~/projects"):
+                         root / "broker/log.jsonl", tr, tr / "-p", tr / "-p/s1.jsonl", "/etc", "~/projects"):
                 self.assertIsNone(self.mount_error("ro", path, **how), f"{path} {how}")
             # ... but not read-write, nor by a path that leads elsewhere.
-            for path in (root / "worklog", root / "worklog/s1", root / "history.jsonl", root / "broker/log.jsonl"):
+            for path in (root / "worklog", root / "worklog/s1", root / "history.jsonl", root / "broker/log.jsonl", tr,
+                         tr / "-p"):
                 self.assertIn("is refused", self.mount_error("rw", path, **how) or "")
-            self.assertIn("is refused", self.mount_error("ro", root / "worklog/s1/../../broker", **how) or "")
+            for path in (root / "worklog/s1/../../broker", tr / "..", tr / "-p/../../.credentials.json",
+                         root / "evil/home/.claude/projects", root / "broker/home/.claude/projects"):
+                self.assertIn("is inside apod's folder", self.mount_error("ro", path, **how) or f"allowed ro {path}")
             # Your home folder: not read-write; folders in it are fine.
             self.assertIn("is your home folder", self.mount_error("rw", "~", **how) or "")
             self.assertIn("is your home folder", self.mount_error("rw", "/home/agent-test", **how) or "")
@@ -2226,6 +2234,8 @@ class ProfileLoaderTest(unittest.TestCase):
         self.assertIn(str(self.pdir / "profile.toml"), err)
         self.assertIn("is inside apod's folder", err)
         self.assertIn("rewrite its own configuration", err)
+        self.assertIn(f"{root.resolve()}/history.jsonl, {root.resolve()}/broker/log.jsonl and "
+                      f"{root.resolve()}/<profile>/home/.claude/projects are allowed.)", err)
         self.assertIn(str(self.pdir / "mounts"), self.mount_error("rw", root, old=True))
         self.assertTrue(self.mount_error("rw", root, cli=True).startswith("apod: --rw: rw mount"))
         # The launch folder is mounted anyway: no check (a pod working on apod itself).
@@ -2270,13 +2280,17 @@ class ProfileLoaderTest(unittest.TestCase):
         env = dict(self.env, APOD_CONFIG_DIR=str(d / "c"), APOD_DATA_DIR=str(d / "d"), APOD_STATE_DIR=str(d / "s"),
                    APOD_RUNTIME_DIR=str(d / "r"), HOME=str(d / "h"))
         del env["APOD_ROOT"]
-        for x in ("c/profiles", "c/extensions", "d/profiles/work/home", "d/worklog/s1", "s/broker/sessions", "r/sessions/x",
-                  "h/.agent-pod/old/home", "h/.agent-pod/worklog/s0", "h/.agent-pod/broker"):
+        for x in ("c/profiles", "c/extensions", "d/profiles/work/home/.claude/projects/-p", "d/profiles/evil/home/.claude",
+                  "d/worklog/s1", "s/broker/sessions", "r/sessions/x", "h/.agent-pod/old/home/.claude/projects",
+                  "h/.agent-pod/worklog/s0", "h/.agent-pod/broker"):
             (d / x).mkdir(parents=True)
         for f in ("c/config.toml", "c/roles.toml", "s/history.jsonl", "s/broker/log.jsonl", "s/broker/grants.json",
-                  "d/worklog/s1/worklog.md", "h/.agent-pod/roles.toml", "h/.agent-pod/history.jsonl",
-                  "h/.agent-pod/broker/log.jsonl", "h/.agent-pod/broker/grants.json"):
+                  "d/worklog/s1/worklog.md", "d/profiles/work/home/.claude/projects/-p/s1.jsonl",
+                  "d/profiles/work/home/.claude/.credentials.json", "h/.agent-pod/roles.toml",
+                  "h/.agent-pod/history.jsonl", "h/.agent-pod/broker/log.jsonl", "h/.agent-pod/broker/grants.json"):
             (d / f).write_text("")
+        (d / "d/profiles/evil/home/.claude/projects").symlink_to("..")  # leads to its login
+        tr = d / "d/profiles/work/home/.claude/projects"
         pf = d / "c/profiles/work.toml"
 
         def err(mode, path, cli=False):
@@ -2302,23 +2316,32 @@ class ProfileLoaderTest(unittest.TestCase):
                     e = err(mode, path, cli)
                     self.assertIn(f"{mode} mount {path}", e or f"allowed {mode} {path} cli={cli}")
                     self.assertIn(f"is refused: it {what}", e)
-            # Read-only, the work logs, the history and the broker's log are fine; not read-write. The
-            # old apod's too, for a pod that reviews both while the two run.
+            # Read-only, the work logs, the history, the broker's log and a profile's transcripts are
+            # fine; not read-write. The old apod's too, for a pod that reviews both while the two run.
             for path in (d / "d/worklog", d / "d/worklog/s1", d / "d/worklog/s1/worklog.md", d / "s/history.jsonl",
-                         d / "s/broker/log.jsonl", d / "h/.agent-pod/worklog", d / "h/.agent-pod/worklog/s0",
-                         d / "h/.agent-pod/history.jsonl", d / "h/.agent-pod/broker/log.jsonl"):
+                         d / "s/broker/log.jsonl", tr, tr / "-p", tr / "-p/s1.jsonl", d / "h/.agent-pod/worklog",
+                         d / "h/.agent-pod/worklog/s0", d / "h/.agent-pod/history.jsonl",
+                         d / "h/.agent-pod/broker/log.jsonl", d / "h/.agent-pod/old/home/.claude/projects"):
                 self.assertIsNone(err("ro", path, cli), path)
                 self.assertIn("is refused", err("rw", path, cli) or f"allowed rw {path}")
-            self.assertIn("is inside apod's data folder", err("ro", d / "d/worklog/s1/../../profiles", cli) or "")
+            # Not the home around the transcripts, by a path or by a symlink a pod made there; not a
+            # folder that isn't a profile's.
+            for path in (d / "d/worklog/s1/../../profiles", tr / "..", tr / "-p/../../.credentials.json",
+                         d / "d/profiles/evil/home/.claude/projects", d / "d/profiles/new/home/.claude/projects",
+                         d / "d/profiles/work/.claude/projects", d / "d/work/home/.claude/projects"):
+                self.assertIn("is inside apod's data folder", err("ro", path, cli) or f"allowed ro {path}")
+            self.assertIn("is inside apod's legacy folder", err("ro", d / "h/.agent-pod/broker/home/.claude/projects", cli)
+                          or "allowed the broker's home")
         e = err("rw", d / "r")
         self.assertIn("holds the broker's sockets", e)
         self.assertIn(f"(Only read-only mounts of {d}/d/worklog, {d}/s/history.jsonl, {d}/s/broker/log.jsonl, "
-                      f"{d}/h/.agent-pod/worklog, {d}/h/.agent-pod/history.jsonl and {d}/h/.agent-pod/broker/log.jsonl "
-                      f"are allowed.)", e)
+                      f"{d}/h/.agent-pod/worklog, {d}/h/.agent-pod/history.jsonl, {d}/h/.agent-pod/broker/log.jsonl, "
+                      f"{d}/d/profiles/<profile>/home/.claude/projects and "
+                      f"{d}/h/.agent-pod/<profile>/home/.claude/projects are allowed.)", e)
         # Without the old folder, only the new layout's.
         shutil.rmtree(d / "h/.agent-pod")
-        self.assertIn(f"(Only read-only mounts of {d}/d/worklog, {d}/s/history.jsonl and {d}/s/broker/log.jsonl are "
-                      f"allowed.)", err("rw", d / "r"))
+        self.assertIn(f"(Only read-only mounts of {d}/d/worklog, {d}/s/history.jsonl, {d}/s/broker/log.jsonl and "
+                      f"{d}/d/profiles/<profile>/home/.claude/projects are allowed.)", err("rw", d / "r"))
         self.assertIn(str(pf), e)
 
     def test_needs_no_broker_and_no_extensions(self):
