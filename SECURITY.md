@@ -69,9 +69,11 @@ do and leaves a record of what it did.
   (`worklog/`, or one in it), `history.jsonl`, the broker's `log.jsonl` and a profile's Claude
   transcripts (`profiles/<profile>/home/.claude/projects` in the data folder, or a folder in it),
   for a pod that reviews them (those in `~/.agent-pod` too, while an older apod runs beside this
-  one). The check follows symlinks and `..`, the transcripts' too: a profile's pods write in its
-  home, and a `.claude/projects` one of them turned into a symlink (to its `.claude`, with the
-  login, or anywhere else) is checked where it leads, and refused. apod itself mounts, from these folders, only
+  one). The check follows symlinks and `..`, and refuses a path that goes through a symlink in
+  apod's folders, wherever it leads: pods write their homes and work logs there, and one could
+  turn its `.claude/projects` into a symlink to `~/.ssh` for a reviewer to be given your keys. A
+  folder with such a symlink in it is fine: in the pod that mounts it, the symlink leads to that
+  pod's own files. apod itself mounts, from these folders, only
   what the list above says: nothing from the config folder but the profile's
   `<profile>.google-credentials.json`, read-only, when google-docs-mcp is enabled. The project
   folder, mounted read-write, is checked too: apod won't launch in one of its folders, or in one
@@ -79,9 +81,9 @@ do and leaves a record of what it did.
   may be the apod checkout, for a pod that works on apod: that pod can change the code a broker
   started from that checkout runs. The guard checks the paths when apod starts, not a symlink
   someone changes later. So a running pod could, when another is launched with its profile's
-  transcripts, swap a folder in them for a symlink between the check and the mount, and give
-  that pod (read-only) wherever it leads on the host: if that matters, mount the transcripts of
-  a profile that has no pod running. An apod from before the new layout only knows `~/.agent-pod`: while you
+  transcripts (or its work log), swap a folder in them for a symlink between the check and the
+  mount, and give that pod (read-only) wherever it leads on the host: if that matters, mount the
+  transcripts of a profile that has no pod running. An apod from before the new layout only knows `~/.agent-pod`: while you
   run one beside this one ([one profile at a time](docs/guides.md#one-profile-at-a-time)), its
   pods can be given the new folders.
 - **Environment:** the pod gets the variables of its profile's `[pod.env]` and `[pod] env_from`

@@ -301,33 +301,73 @@ GUARDED_WHY = {
 TRANSCRIPTS = ("home", ".claude", "projects")
 
 
-def in_transcripts(p, lay):
+def in_transcripts(p, folders):
     """Whether real path p is, or is inside, a profile's Claude transcripts: <profile>/home/.claude/projects
-    in a folder of lay.transcripts_in. The profile's pods write in their home, so its .claude or
-    projects may be a symlink a pod made: p is matched as it resolves, never against that folder's
-    own realpath (a `projects` that leads back to the home, and its login, would pass)."""
-    for x in lay.transcripts_in:
-        x = real(str(x)).rstrip("/")
-        parts = p[len(x) + 1:].split("/") if p.startswith(x + "/") else []
-        if parts[1:4] == list(TRANSCRIPTS) and not paths.name_error(parts[0]):
-            return True
+    in one of folders (Layout.transcripts_in, resolved)."""
+    for x in folders:
+        if p != x and inside(p, x):
+            parts = os.path.relpath(p, x).split("/")
+            if parts[1:4] == list(TRANSCRIPTS) and not paths.name_error(parts[0]):
+                return True
     return False
+
+
+def symlinks(path):
+    """The symlinks that resolving path follows, each where it is (its folder resolved), as
+    realpath -m follows them: missing parts are fine. None for a loop."""
+    found = []
+
+    def walk(base, rest):
+        for name in rest.split("/"):
+            if name in ("", "."):
+                continue
+            if name == "..":
+                base = os.path.dirname(base)
+                continue
+            nxt = os.path.join(base, name)
+            if not os.path.islink(nxt):
+                base = nxt
+                continue
+            found.append(nxt)
+            if len(found) > 40:
+                raise RecursionError
+            t = os.readlink(nxt)
+            base = walk("/" if t.startswith("/") else base, t)
+        return base
+    p = expand(path)
+    try:
+        walk("/", p if p.startswith("/") else os.path.join(os.getcwd(), p))
+    except RecursionError:
+        return None
+    return found
 
 
 def check_mount(mode, path, where, lay=None):
     """Refuse a mount that would let a pod read or change apod's own configuration: one that is,
     contains or is inside one of apod's folders (paths.py: the profiles' settings and logins, the
-    broker's keys, state and sockets) or this checkout (the code the host runs), and a read-write
-    mount of your home folder. A read-only mount of the work logs (or one of them), the history,
-    the broker's request log or a profile's Claude transcripts (or what's in them) is fine. `where`
-    says what asked for it; `lay` is the layout (the current one by default)."""
+    broker's keys, state and sockets) or this checkout (the code the host runs), one whose path
+    goes through a symlink in them (a pod's, maybe: it writes its home and work log), and a
+    read-write mount of your home folder. A read-only mount of the work logs (or one of them), the
+    history, the broker's request log or a profile's Claude transcripts (or what's in them) is
+    fine. `where` says what asked for it; `lay` is the layout (the current one by default)."""
     lay, p = lay or paths.layout(), real(path)
+    guarded = [(label, real(str(x))) for label, x in lay.guarded + [("the apod checkout", CHECKOUT)]]
+    links = symlinks(path)
+    if links is None:
+        raise ProfileError(f"{where}: {mode} mount {path} is refused: too many levels of symlinks (a loop?)")
+    for link in links:
+        for label, x in guarded:
+            if inside(link, x):
+                raise ProfileError(f"{where}: {mode} mount {path} is refused: it goes through {link}, a symlink in "
+                                   f"{label} {x}, where pods write (their homes and work logs; the checkout, for "
+                                   f"one that works on apod): one may have made it to give another pod whatever it "
+                                   f"leads to. Mount where it leads instead, if that's what you mean")
     readable = [real(str(x)) for x in lay.readable]
-    if mode == "ro" and (any(inside(p, x) for x in readable) or in_transcripts(p, lay)):
+    homes = [real(str(x)) for x in lay.transcripts_in]
+    if mode == "ro" and (any(inside(p, x) for x in readable) or in_transcripts(p, homes)):
         return
-    readable += [f"{real(str(x))}/<profile>/{'/'.join(TRANSCRIPTS)}" for x in lay.transcripts_in]
-    for label, x in lay.guarded + [("the apod checkout", CHECKOUT)]:
-        x = real(str(x))
+    readable += [f"{x}/<profile>/{'/'.join(TRANSCRIPTS)}" for x in homes]
+    for label, x in guarded:
         rel = "is" if p == x else "is inside" if inside(p, x) else "contains" if inside(x, p) else None
         if rel:
             raise ProfileError(f"{where}: {mode} mount {path}{'' if p == expand(path) else f' ({p})'} is refused: it "

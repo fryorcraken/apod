@@ -2193,9 +2193,17 @@ class ProfileLoaderTest(unittest.TestCase):
         (root / "history.jsonl").write_text("")
         (root / "broker/log.jsonl").write_text("")
         (root / "work/home/.claude/projects/-p/s1.jsonl").write_text("")
-        # A pod that made its transcripts folder a symlink to its .claude (its login).
+        # Symlinks a pod could make where it writes: its transcripts folder to its .claude (its login),
+        # one in its transcripts out of apod's folders, a file of its work log; and a loop.
         (root / "evil/home/.claude/projects").symlink_to("..")
         tr = root / "work/home/.claude/projects"
+        (tr / "out").symlink_to("/etc")
+        (root / "worklog/s1/note.md").symlink_to("/etc/passwd")
+        (root / "work/home/loop").symlink_to("loop")
+        # ... and yours, outside apod's folder, to a pod's.
+        review = self.dir.parent / f"{self.dir.name}-review"
+        review.symlink_to(root / "evil/home/.claude/projects")
+        self.addCleanup(review.unlink)
         for how in ({}, {"cli": True}, {"old": True}):
             # Refused: the apod folder, what's in it, what holds it, and the checkout.
             for path in (root, root / "work", root / "work/home", root / "broker", root / "broker/sessions",
@@ -2215,8 +2223,17 @@ class ProfileLoaderTest(unittest.TestCase):
                          tr / "-p"):
                 self.assertIn("is refused", self.mount_error("rw", path, **how) or "")
             for path in (root / "worklog/s1/../../broker", tr / "..", tr / "-p/../../.credentials.json",
-                         root / "evil/home/.claude/projects", root / "broker/home/.claude/projects"):
+                         root / "broker/home/.claude/projects"):
                 self.assertIn("is inside apod's folder", self.mount_error("ro", path, **how) or f"allowed ro {path}")
+            # A path through a symlink in apod's folder, wherever it leads; the folders with one in them
+            # (tr, the worklog) are fine.
+            for path, link in ((root / "evil/home/.claude/projects", root / "evil/home/.claude/projects"),
+                               (review, root / "evil/home/.claude/projects"), (tr / "out", tr / "out"),
+                               (tr / "out/hostname", tr / "out"), (root / "worklog/s1/note.md", root / "worklog/s1/note.md")):
+                for mode in ("ro", "rw"):
+                    self.assertIn(f"{mode} mount {path} is refused: it goes through {str(link).replace(str(root), str(root.resolve()))}, "
+                                  f"a symlink in apod's folder", self.mount_error(mode, path, **how) or f"allowed {mode} {path}")
+            self.assertIn("too many levels of symlinks", self.mount_error("ro", root / "work/home/loop", **how) or "")
             # Your home folder: not read-write; folders in it are fine.
             self.assertIn("is your home folder", self.mount_error("rw", "~", **how) or "")
             self.assertIn("is your home folder", self.mount_error("rw", "/home/agent-test", **how) or "")
@@ -2291,6 +2308,9 @@ class ProfileLoaderTest(unittest.TestCase):
             (d / f).write_text("")
         (d / "d/profiles/evil/home/.claude/projects").symlink_to("..")  # leads to its login
         tr = d / "d/profiles/work/home/.claude/projects"
+        (tr / "out").symlink_to("/etc")
+        (d / "d/worklog/s1/note.md").symlink_to("/etc/passwd")
+        (d / "h/review").symlink_to(d / "d/profiles/evil/home/.claude/projects")
         pf = d / "c/profiles/work.toml"
 
         def err(mode, path, cli=False):
@@ -2327,9 +2347,14 @@ class ProfileLoaderTest(unittest.TestCase):
             # Not the home around the transcripts, by a path or by a symlink a pod made there; not a
             # folder that isn't a profile's.
             for path in (d / "d/worklog/s1/../../profiles", tr / "..", tr / "-p/../../.credentials.json",
-                         d / "d/profiles/evil/home/.claude/projects", d / "d/profiles/new/home/.claude/projects",
-                         d / "d/profiles/work/.claude/projects", d / "d/work/home/.claude/projects"):
+                         d / "d/profiles/new/home/.claude/projects", d / "d/profiles/work/.claude/projects",
+                         d / "d/work/home/.claude/projects"):
                 self.assertIn("is inside apod's data folder", err("ro", path, cli) or f"allowed ro {path}")
+            for path, link in ((d / "d/profiles/evil/home/.claude/projects", d / "d/profiles/evil/home/.claude/projects"),
+                               (d / "h/review", d / "d/profiles/evil/home/.claude/projects"), (tr / "out", tr / "out"),
+                               (d / "d/worklog/s1/note.md", d / "d/worklog/s1/note.md")):
+                self.assertIn(f"ro mount {path} is refused: it goes through {link}, a symlink in apod's data folder",
+                              err("ro", path, cli) or f"allowed ro {path}")
             self.assertIn("is inside apod's legacy folder", err("ro", d / "h/.agent-pod/broker/home/.claude/projects", cli)
                           or "allowed the broker's home")
         e = err("rw", d / "r")
@@ -2343,6 +2368,13 @@ class ProfileLoaderTest(unittest.TestCase):
         self.assertIn(f"(Only read-only mounts of {d}/d/worklog, {d}/s/history.jsonl, {d}/s/broker/log.jsonl and "
                       f"{d}/d/profiles/<profile>/home/.claude/projects are allowed.)", err("rw", d / "r"))
         self.assertIn(str(pf), e)
+        # A data folder that's a symlink (moved to another disk, say): what's in it is as before.
+        (d / "dlink").symlink_to(d / "d")
+        env["APOD_DATA_DIR"] = str(d / "dlink")
+        for path in (d / "dlink/profiles/work/home/.claude/projects", d / "dlink/worklog", tr):
+            self.assertIsNone(err("ro", path), path)
+        self.assertIn("is inside apod's data folder", err("ro", d / "dlink/profiles/work/home") or "")
+        self.assertIn(f"goes through {tr}/out, a symlink in apod's data folder", err("ro", d / "dlink/profiles/work/home/.claude/projects/out") or "")
 
     def test_needs_no_broker_and_no_extensions(self):
         # The old-files reading too: nothing is started, and the user's extensions aren't run.

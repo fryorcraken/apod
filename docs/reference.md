@@ -308,6 +308,7 @@ of your home folder: they hold the profiles' logins and settings and the broker'
 exceptions are read-only mounts of the work logs (or one of them), `history.jsonl`, the
 broker's `log.jsonl` and a profile's Claude transcripts (`profiles/<profile>/home/.claude/projects`
 in the data folder, or a folder in it), for a pod that reviews them (those in `~/.agent-pod` too,
-while it's there) ([SECURITY.md](../SECURITY.md#the-container)).
+while it's there). A path that goes through a symlink in apod's folders is refused, wherever it
+leads: pods write there ([SECURITY.md](../SECURITY.md#the-container)).
 The project folder, mounted read-write, can't be, contain or be inside one of apod's folders
 either: launching in `~` or `~/.config` is refused. It may be the apod checkout.

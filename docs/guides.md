@@ -843,7 +843,8 @@ the apod checkout, anything that contains them, and a read-write mount of your h
 read-only `~/.local/share/apod/worklog` (or a folder in it), `~/.local/state/apod/history.jsonl`,
 `~/.local/state/apod/broker/log.jsonl` and a profile's transcripts,
 `~/.local/share/apod/profiles/<profile>/home/.claude/projects` (or a folder in it), are fine, for
-a pod that reviews them ([work logs](#work-logs)). The project folder can't be one of
+a pod that reviews them ([work logs](#work-logs)), but not by a path through a symlink in apod's
+folders, which a pod may have made. The project folder can't be one of
 apod's folders or contain one either (apod won't launch in `~` or `~/.config`); it stays writable
 even inside a read-only entry. The first launch relabels mounted trees for SELinux (`:z`), which
 can take a while on big trees. A running pod can't gain mounts: exit and relaunch with
@@ -956,7 +957,8 @@ opencode isn't told about its log yet (only Claude gets apod's notes at startup)
 For more than the agent's account, mount a profile's Claude transcripts too, read-only:
 `~/.local/share/apod/profiles/<profile>/home/.claude/projects` (a folder per project, with a
 `<session>.jsonl` per session, the same id as the session's work log), or one project's folder
-in it. Only that folder is allowed, not the rest of the home, which holds the profile's login.
+in it. Only that folder is allowed, not the rest of the home, which holds the profile's login,
+nor a path through a symlink in it: the pod could have made `projects` a symlink to `~/.ssh`.
 
 ```sh
 apod reviewer --ro ~/.local/share/apod/worklog --ro ~/.local/share/apod/profiles/work/home/.claude/projects ~/reports

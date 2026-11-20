@@ -562,6 +562,16 @@ class NewLayoutTest(ProfileTomlTest):
                                stdin=subprocess.DEVNULL, capture_output=True, text=True)
             self.assertEqual(r.returncode, 2, opts)
             self.assertIn("is inside apod's data folder", r.stderr)
+        # Nor one its pod turned into a symlink, to somewhere else on the host.
+        evil = self.tmp / "data/profiles/evil/home/.claude"
+        evil.mkdir(parents=True)
+        (evil / "projects").symlink_to(self.m)
+        self.log.write_text("")
+        r = subprocess.run([APOD, "plain", "--ro", str(evil / "projects"), str(self.proj)], env=self.env, cwd=self.tmp,
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn(f"goes through {evil}/projects, a symlink in apod's data folder", r.stderr)
+        self.assertEqual(self.log.read_text(), "", "no pod")
         # So is a profile's own mount list.
         f = self.tmp / "config/profiles/plain.toml"
         text = f.read_text()
