@@ -44,7 +44,9 @@ do and leaves a record of what it did.
   filesystem:
   - the project folder (read-write);
   - when the project is a linked worktree (`git worktree add`), its repository's `.git`
-    (read-write), which the main checkout and the other worktrees share;
+    (read-write), which the main checkout and the other worktrees share, but for the other
+    worktrees' records in `.git/worktrees` (read-only; so is a main checkout's `.git/worktrees`
+    when some of its worktrees are outside the pod);
   - the profile's own home (`~/.local/share/apod/profiles/<profile>/home`, read-write;
     `~/.agent-pod/<profile>/home` in the legacy layout);
   - its session's work log folder (`~/.local/share/apod/worklog/<id>`, read-write;
@@ -289,9 +291,13 @@ The broker turns each request into actions and targets, and checks them before a
   host's side, fail closed) are in [EXTENSIONS.md](EXTENSIONS.md#security-rules).
 - **Two pods on one checkout** can interfere with each other. Use a worktree per pod.
 - **Other worktrees look abandoned from a pod.** Their folders aren't mounted, so git in the pod
-  lists them as prunable. apod tells the agent not to prune them and sets
-  `gc.worktreePruneExpire=never` so `git gc` doesn't, but nothing stops a `git worktree prune`,
-  which deletes their metadata on the host. `git worktree lock` on the host protects one.
+  lists them as prunable. Their records (`.git/worktrees`) are read-only in the pod, so
+  `git worktree prune` and `git worktree remove` fail on them, also on those the host adds while
+  the pod runs. The pod can write that folder in a main checkout, so apod takes it only as git
+  makes it: not a symlink, and only when it's in the pod already. Two gaps: a main checkout's pod gets this only when the repository has a worktree
+  outside the pod at launch, and a pod can still rename a branch that another worktree has
+  checked out, which leaves that worktree's HEAD on the old name until you rename it back. Refs
+  are shared: a pod can still move or delete any branch, as `git update-ref` does.
 
 ## Hardening checklist
 

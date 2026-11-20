@@ -830,9 +830,23 @@ the objects, refs, config and hooks they all share. apod mounts that `.git` read
 the same path, once the main repository's record of the worktree points back at the folder (the
 pod can rewrite its `.git` file). A `[pod]` `ro`/`rw` entry or `--ro`/`--rw` naming that `.git` sets its
 mode instead (read-only, git in the pod can't commit). The main checkout's files stay out of the
-pod. Git in the pod lists the repository's worktrees that aren't mounted as prunable: the agent
-is told to leave them alone, and the pod's git config has `gc.worktreePruneExpire=never` so
-`git gc` doesn't prune them either.
+pod.
+
+Git in the pod lists the repository's worktrees that aren't mounted as prunable, and
+`git worktree prune` or `git worktree remove` there would delete their records (`.git/worktrees/<name>`:
+their HEAD and index), which breaks those worktrees on the host. So `.git/worktrees` is mounted
+read-only, but for the records of the worktrees in the pod (the project's own, and any mounted
+read-write), and those commands fail, for worktrees the host adds while the pod runs too. A main
+checkout's pod gets the same when the repository has worktrees outside the pod at launch. A
+`[pod]` `ro`/`rw` entry or `--ro`/`--rw` naming `.git/worktrees` sets its mode instead. The agent
+is told to leave them alone, and the pod's git config has `gc.worktreePruneExpire=never`. What
+this costs in the pod:
+
+- `git worktree add` fails.
+- `git gc` doesn't expire reflogs (`gc.reflogExpire` and `gc.reflogExpireUnreachable` are
+  `never`: it would fail on the other worktrees'). `git gc` on the host still does.
+- Renaming a branch that another worktree has checked out renames it but leaves that worktree's
+  HEAD on the old name: rename it back on the host (`git branch -m NEW OLD`).
 
 ```toml
 # ~/.config/apod/profiles/work.toml

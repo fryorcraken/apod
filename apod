@@ -710,6 +710,13 @@ firstline() { sed -n '1{s/\r$//;p;q}' "$1"; }
 inpod() {  # <path>: in the project or an extra mount
   local m; for m in "$proj" "${!mmode[@]}"; do [[ $1/ == "$m"/* ]] && return 0; done; return 1
 }
+modeat() {  # <path>: rw or ro, from the deepest mount that holds it (podman mounts the deeper ones last); none, not in the pod
+  local m top='' mode=''
+  for m in "$proj" "${!mmode[@]}"; do
+    [[ $1/ == "$m"/* ]] && [ ${#m} -gt ${#top} ] && { top=$m; mode=${mmode[$m]:-rw}; }
+  done
+  echo "$mode"
+}
 linked() {  # <gitdir> <common>: is <gitdir> the project's entry in <common>/worktrees?
   local back cm
   [ "$(basename "$(dirname "$1")")" = worktrees ] && [ -f "$1/gitdir" ] && [ -d "$2/objects" ] && [ -d "$2/refs" ] || return 1
@@ -720,12 +727,12 @@ linked() {  # <gitdir> <common>: is <gitdir> the project's entry in <common>/wor
   cm=$(firstline "$1/commondir"); [[ $cm == /* ]] || cm=$1/$cm
   [ "$(realpath -m -- "$cm")" = "$2" ]
 }
-gitcommon=; wtself=; gd=
+gitcommon=; gd=
 if [ -f "$proj/.git" ]; then
   gd=$(sed -n '1{s/\r$//;s/^gitdir: *//p;q}' "$proj/.git")
   [ -z "$gd" ] || gd=$(cd "$proj" && realpath -e -- "$gd" 2>/dev/null) || gd=
   if [ -n "$gd" ] && linked "$gd" "$(dirname "$(dirname "$gd")")"; then
-    gitcommon=$(dirname "$(dirname "$gd")"); wtself=$(basename "$gd")
+    gitcommon=$(dirname "$(dirname "$gd")")
     if [[ $gitcommon/ == "$proj"/* ]]; then :  # in the project: mounted already
     elif [ -n "${mmode[$gitcommon]+x}" ]; then  # the mounts name it: their mode stands
       [ "${mmode[$gitcommon]}" = rw ] || echo "apod: $gitcommon is mounted read-only, as the mounts say: git in the pod can't commit" >&2
@@ -736,22 +743,50 @@ if [ -f "$proj/.git" ]; then
     echo "apod: $proj/.git points to $gd, which isn't mounted, and this folder isn't a worktree of a repository there; git won't work in the pod" >&2
   fi
 fi
-# The repository's other worktrees whose folders aren't in the pod: git there lists them as
-# prunable (locked ones excepted).
+# The repository's worktrees' records (worktrees/NAME: HEAD, index, gitdir), in a folder that's in
+# the pod already: the pod can write that folder, so it's taken only as git makes it, not a
+# symlink (to anywhere, which apod would mount below, and relabel).
 wtdir=; [ -n "$gitcommon" ] && wtdir=$gitcommon/worktrees
 [ -z "$wtdir" ] && [ -d "$proj/.git" ] && wtdir=$proj/.git/worktrees
 [ -z "$wtdir" ] && [ -n "$gd" ] && [ -d "$gd/worktrees" ] && wtdir=$gd/worktrees  # .git file to a repository
-wtothers=0
+if [ -n "$wtdir" ] && [ -L "$wtdir" ]; then
+  echo "apod: $wtdir is a symlink, which git doesn't make: the worktrees' records in it aren't made read-only" >&2; wtdir=
+elif [ -n "$wtdir" ] && [ -d "$wtdir" ]; then
+  wtdir=$(realpath -e -- "$wtdir" 2>/dev/null) || wtdir=  # through a symlinked .git, say
+  [ -n "$wtdir" ] && [ -n "$(modeat "$wtdir")" ] || wtdir=
+else wtdir=; fi
+# Those of worktrees whose folders aren't in the pod (wtout): git there lists them as prunable
+# (wtothers: locked ones excepted). Those of worktrees in the pod, writable there (wtrw: the
+# project's own, for one).
+wtothers=0; wtout=0; wtrw=()
 if [ -n "$wtdir" ]; then
   for d in "$wtdir"/*/; do
     d=${d%/}
-    [ -d "$d" ] && [ "$(basename "$d")" != "$wtself" ] && [ ! -e "$d/locked" ] || continue
+    [ -d "$d" ] && [ ! -L "$d" ] || continue
     if [ -f "$d/gitdir" ]; then
       back=$(firstline "$d/gitdir"); [[ $back == /* ]] || back=$d/$back
-      inpod "$(dirname "$(realpath -m -- "$back")")" && continue
+      case $(modeat "$(dirname "$(realpath -m -- "$back")")") in
+        rw) wtrw+=("$d"); continue ;;
+        ro) continue ;;
+      esac
     fi
-    wtothers=$((wtothers + 1))
+    wtout=$((wtout + 1))
+    [ -e "$d/locked" ] || wtothers=$((wtothers + 1))
   done
+fi
+# The records are read-only in the pod, those in wtrw excepted: git worktree prune deletes the
+# record of a worktree whose folder is missing, and git worktree remove (git worktree remove -f -f,
+# on a locked one) deletes it even when it can't delete the folder, which breaks that worktree on
+# the host. A linked worktree's pod gets this even with no other worktree yet, for those the host
+# adds while it runs. The cost: no git worktree add in the pod, git gc's reflog step fails on the
+# others' reflogs (so the pod's gc skips it, below), and renaming a branch that another worktree
+# has checked out leaves that worktree's HEAD on the old name (git renames the branch, then
+# can't update that HEAD).
+wtro=
+if [ -n "$wtdir" ] && { [ -n "$gitcommon" ] || [ "$wtout" -gt 0 ]; }; then
+  if [ -n "${mmode[$wtdir]+x}" ]; then  # the mounts name it: their mode stands
+    [ "${mmode[$wtdir]}" = ro ] || echo "apod: $wtdir is mounted read-write, as the mounts say: git in the pod can delete the records of the worktrees that aren't mounted" >&2
+  elif [ "$(modeat "$wtdir")" = rw ]; then wtro=$wtdir; fi  # else read-only already
 fi
 
 # Extra mounts go before the project so a project nested inside a read-only tree stays writable.
@@ -762,6 +797,11 @@ for path in "${morder[@]}"; do
   else romounts+=("$path"); mounts+=(-v "$path:$path:ro,z"); fi
 done
 mounts+=("${filemounts[@]}" -v "$proj:$proj:z")
+# After the project and the repository's .git, which may hold them.
+if [ -n "$wtro" ]; then
+  mounts+=(-v "$wtro:$wtro:ro,z")
+  for d in "${wtrw[@]}"; do mounts+=(-v "$d:$d:z"); done
+fi
 # Share global agent instructions and skills read-only.
 [ -f "$HOME/.claude/CLAUDE.md" ] && mounts+=(-v "$HOME/.claude/CLAUDE.md:/home/agent/.claude/CLAUDE.md:ro,z")
 [ -d "$HOME/.claude/skills" ] && mounts+=(-v "$HOME/.claude/skills:/home/agent/.claude/skills:ro,z")
@@ -845,8 +885,11 @@ for p in "${rwmounts[@]}"; do
   else context+=$'\n'"- $p (read-write)"; fi
 done
 for p in "${romounts[@]}"; do context+=$'\n'"- $p (read-only)"; done
-if [ "$wtothers" -gt 0 ]; then
-  context+=$'\n'"Other worktrees of this repository aren't mounted, so git worktree list shows them as prunable: they are in use on the host. Never run git worktree prune, nor git worktree remove on them."
+wtnote=; [ "$wtothers" -eq 0 ] || wtnote="Other worktrees of this repository aren't mounted, so git worktree list shows them as prunable: they are in use on the host."
+if [ -n "$wtro" ]; then
+  context+=$'\n'"${wtnote:+$wtnote }The worktrees' records ($wtro) are read-only here, but for those of the worktrees in the pod: git worktree prune, remove and add fail. Don't rename a branch that another worktree has checked out: git renames it, then can't update that worktree's HEAD."
+elif [ -n "$wtnote" ]; then
+  context+=$'\n'"$wtnote Never run git worktree prune, nor git worktree remove on them."
 fi
 if [ -n "$binfo" ]; then
   gh_note=$(jq -r .context <<< "$binfo")
@@ -915,6 +958,9 @@ gitkv+=(user.name "$gname" user.email "$gemail")
 # git gc prunes worktrees whose folder is missing, and in a pod the repository's other worktrees
 # are: never, or it deletes their metadata on the host.
 gitkv+=(gc.worktreePruneExpire never)
+# With the worktrees' records read-only, git gc's reflog expire fails on the others' reflogs: it
+# skips that step when both of these are never. The host's git gc still expires them.
+[ -z "$wtro" ] || gitkv+=(gc.reflogExpire never gc.reflogExpireUnreachable never)
 # The profile's [pod.env]: -e options, so that a value is what the file says (no env file whose
 # quotes podman might keep).
 penv=()

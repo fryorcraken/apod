@@ -212,12 +212,12 @@ class Launcher:
 
     # -- running apod ---------------------------------------------------------------------
 
-    def launch(self, profile, *args, expect=0, extra_env=None):
+    def launch(self, profile, *args, expect=0, extra_env=None, proj=None):
         """Run apod; returns (podman argv groups, stderr). The podman log is the stub's."""
         self.log.write_text("")
         (self.tmp / "uuid-count").unlink(missing_ok=True)  # the same ids in every launch
         env = dict(self.env, **(extra_env or {}))
-        r = subprocess.run([APOD, profile, *args, str(self.proj)], env=env, stdin=subprocess.DEVNULL,
+        r = subprocess.run([APOD, profile, *args, str(proj or self.proj)], env=env, stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, timeout=120, cwd=self.tmp)
         self.assertEqual(r.returncode, expect, r.stderr)
         return self.argv(), r.stderr
@@ -491,6 +491,104 @@ class ProfileTomlTest(Launcher, unittest.TestCase):
     def test_a_mount_that_is_missing_is_skipped_with_a_warning(self):
         _, err = self.launch("plain")
         self.assertIn(f"apod: skipping missing mount {self.m}/missing", err)
+
+    def worktree_repo(self, name, *worktrees):
+        """A repository under the mounts dir, with linked worktrees at these paths (relative to it)."""
+        repo = self.m / name
+        git = lambda *a: subprocess.run(["git", "-c", "commit.gpgsign=false", *map(str, a)], env=self.env,
+                                        check=True, capture_output=True)
+        git("init", "-q", "-b", "main", repo)
+        git("-C", repo, "commit", "-q", "--allow-empty", "-m", "init")
+        for i, w in enumerate(worktrees):
+            git("-C", repo, "worktree", "add", "-q", "-b", f"b{i}", repo / w)
+        return repo
+
+    def test_the_other_worktrees_records_are_read_only(self):
+        """A repository with linked worktrees: its .git/worktrees is read-only in the pod (the
+        records of the worktrees in the pod excepted), so git there can't delete the records of
+        those that aren't mounted, and the pod's git gc skips the reflog step that would fail on them."""
+        M = "@TMP@/mounts"
+        reflog_keys = lambda argv: {a.split("=", 1)[1] for a in argv if a.startswith("-e GIT_CONFIG_KEY_")} & \
+            {"gc.reflogExpire", "gc.reflogExpireUnreachable"}
+        notes = lambda argv: [a for a in argv if "git worktree" in a]
+        unshared = "Other worktrees of this repository aren't mounted, so git worktree list shows them as prunable: they are in use on the host."
+        ro_note = lambda recs: (f"The worktrees' records ({recs}) are read-only here, but for those of the worktrees in the pod: "
+                                "git worktree prune, remove and add fail. Don't rename a branch that another worktree has "
+                                "checked out: git renames it, then can't update that worktree's HEAD.")
+        mounts = lambda argv, part: [a for a in argv if part in a and ":" in a and " " not in a and not a.startswith("-")]
+
+        repo = self.worktree_repo("wt1", "../wt1-mine", "../wt1-other")
+        recs = f"{M}/wt1/.git/worktrees"
+        with self.subTest("a linked worktree"):
+            argv, _ = self.launch("plain", proj=self.m / "wt1-mine")
+            order = [argv.index(f"{p}:{p}:{o}") for p, o in ((f"{M}/wt1/.git", "z"), (f"{M}/wt1-mine", "z"),
+                                                             (recs, "ro,z"), (f"{recs}/wt1-mine", "z"))]
+            self.assertEqual(order, sorted(order), "parents first")
+            self.assertEqual(mounts(argv, recs), [f"{recs}:{recs}:ro,z", f"{recs}/wt1-mine:{recs}/wt1-mine:z"])
+            self.assertEqual(reflog_keys(argv), {"gc.reflogExpire", "gc.reflogExpireUnreachable"})
+            self.assertEqual(notes(argv), [f"{unshared} {ro_note(recs)}"])
+        with self.subTest("another worktree mounted read-write: its record too"):
+            argv, _ = self.launch("plain", "--rw", str(self.m / "wt1-other"), proj=self.m / "wt1-mine")
+            self.assertEqual(mounts(argv, recs), [f"{recs}:{recs}:ro,z", f"{recs}/wt1-mine:{recs}/wt1-mine:z",
+                                                  f"{recs}/wt1-other:{recs}/wt1-other:z"])
+            self.assertEqual(notes(argv), [ro_note(recs)])
+        with self.subTest("the repository's .git mounted read-only: nothing to add"):
+            argv, _ = self.launch("plain", "--ro", str(repo / ".git"), proj=self.m / "wt1-mine")
+            self.assertEqual(mounts(argv, recs), [])
+            self.assertEqual(reflog_keys(argv), set())
+            self.assertEqual(notes(argv), [f"{unshared} Never run git worktree prune, nor git worktree remove on them."])
+        with self.subTest("the mounts name .git/worktrees: their mode stands"):
+            argv, err = self.launch("plain", "--rw", str(repo / ".git/worktrees"), proj=self.m / "wt1-mine")
+            self.assertEqual(mounts(argv, recs), [f"{recs}:{recs}:z"])
+            self.assertEqual(reflog_keys(argv), set())
+            self.assertIn(f"apod: {repo}/.git/worktrees is mounted read-write, as the mounts say", err)
+
+        repo = self.worktree_repo("wt2", ".claude/worktrees/inside", "../wt2-out")
+        recs = f"{M}/wt2/.git/worktrees"
+        with self.subTest("the main checkout, with a worktree inside it"):
+            argv, _ = self.launch("plain", proj=repo)
+            self.assertEqual(mounts(argv, recs), [f"{recs}:{recs}:ro,z", f"{recs}/inside:{recs}/inside:z"])
+            self.assertEqual(len(reflog_keys(argv)), 2)
+            self.assertEqual(notes(argv), [f"{unshared} {ro_note(recs)}"])
+        with self.subTest("the main checkout's .git mounted read-only: nothing to add"):
+            argv, _ = self.launch("plain", "--ro", str(repo / ".git"), proj=repo)
+            self.assertEqual(mounts(argv, recs), [])
+            self.assertEqual(reflog_keys(argv), set())
+
+        # The pod can write these folders: a symlink in them mustn't get a host folder mounted.
+        elsewhere = self.m / "elsewhere"
+        (elsewhere / "a").mkdir(parents=True)
+        (elsewhere / "b").mkdir()
+        repo = self.worktree_repo("wt3", "../wt3-out")
+        shutil.rmtree(repo / ".git/worktrees")
+        (repo / ".git/worktrees").symlink_to(elsewhere)
+        with self.subTest("a main checkout's .git/worktrees, a symlink"):
+            argv, err = self.launch("plain", proj=repo)
+            self.assertEqual(mounts(argv, "elsewhere") + mounts(argv, "/.git/worktrees"), [])
+            self.assertEqual(reflog_keys(argv), set())
+            self.assertIn(f"apod: {repo}/.git/worktrees is a symlink, which git doesn't make", err)
+        other = self.worktree_repo("wt4", "../wt4-out")
+        proj = self.m / "wt4-proj"
+        proj.mkdir()
+        (proj / ".git").symlink_to(other / ".git")
+        with self.subTest("a .git, a symlink to a repository outside the pod"):
+            argv, _ = self.launch("plain", proj=proj)
+            self.assertEqual(mounts(argv, f"{M}/wt4/"), [])
+            self.assertEqual(reflog_keys(argv), set())
+        proj = self.m / "wt5-proj"
+        proj.mkdir()
+        (proj / ".git").write_text(f"gitdir: {other}/.git\n")
+        with self.subTest("a .git file to a repository outside the pod"):
+            argv, err = self.launch("plain", proj=proj)
+            self.assertIn("git won't work in the pod", err)
+            self.assertEqual(mounts(argv, f"{M}/wt4/"), [])
+            self.assertEqual(reflog_keys(argv), set())
+
+        with self.subTest("no worktrees: as before"):
+            argv, _ = self.launch("plain")
+            self.assertEqual(mounts(argv, "/.git/worktrees"), [])
+            self.assertEqual(reflog_keys(argv), set())
+            self.assertEqual(notes(argv), [])
 
     def test_the_old_files_are_ignored_beside_a_profile_toml(self):
         self.toml_profile("both", 'broker = false\n[git]\nname = "New"\nemail = "new@example.org"\n')
