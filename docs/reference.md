@@ -277,8 +277,9 @@ The broker turns each request into actions (what it does) and targets (what it t
   (`gh api graphql` only) by operation and top-level field (`graphql mutation addComment`), with
   `repository`, `organization`/`user` arguments and node ids (looked up on GitHub) as targets; a
   query or mutation that can't be scoped that way waits for approval. `gh search` targets its
-  `--repo` and `--owner` values, in scope also with `gh-search:KIND` (it narrows a search across
-  GitHub), and an owner also with `gh:OWNER/*`; without either, `gh-search:KIND`
+  `--repo` and `--owner` values and its query's `repo:`, `org:` and `user:` terms, in scope also
+  with `gh-search:KIND` (it narrows a search across GitHub), and an owner also with `gh:OWNER/*`;
+  without any, or with `OR`, `NOT` or parentheses in the query, `gh-search:KIND`
   (`gh-search:prs`). Never allowed: `gh auth`,
   `config`, `extension`, `alias`, `ssh-key`, `gpg-key`, `codespace`, `browse`, `repo deploy-key
   add`, and GraphQL subscriptions; `repo set-default`, `run download`, `release download` and

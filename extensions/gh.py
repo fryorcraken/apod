@@ -322,6 +322,50 @@ def url_targets(values):
     return out
 
 
+# A gh search's flags that aren't put in its query (output, paging), and the query's terms that
+# limit it to repositories or owners. GitHub takes any of those terms (and --repo and --owner).
+SEARCH_OUTPUT_FLAGS = {"json", "jq", "template", "web", "limit", "order", "sort"}
+SEARCH_WITHIN = {"repo", "org", "user", "owner"}
+GH_NAME = re.compile(r"[a-z0-9_.-]+")
+
+
+def search_targets(kind, flags, pos, login):
+    """What a gh search of KIND reaches: ("gh-search-in", "KIND R") for each repository or owner
+    it's limited to, by --repo and --owner or by repo:, org: and user: terms in its query (GitHub
+    takes any of them, so each must be in scope); else ("gh-search", KIND), across GitHub. Also
+    across GitHub: a query that could reach past them (OR or NOT, in any letter case, or
+    parentheses), and a repository or owner that isn't a plain name. An excluded term (-repo:R)
+    limits nothing. --owner @me (and user:@me) is the account's login."""
+    within, across = [], False
+
+    def add(v, repo):
+        nonlocal across
+        v = login if v == "@me" else v
+        parts = v.split("/")
+        if len(parts) == (2 if repo else 1) and all(GH_NAME.fullmatch(x) for x in parts):
+            within.append(("gh-search-in", f"{kind} {v}"))
+        else:
+            across = True
+    for r in optall(flags, "repo"):
+        add(r.strip().lower().removesuffix(".git"), True)
+    for o in optall(flags, "owner"):
+        add(o.strip().lower(), False)
+    text = pos + [v for n, v in flags if v and n not in SEARCH_OUTPUT_FLAGS | {"repo", "owner"}]
+    for w in " ".join(text).replace('"', "").lower().split():  # repo:"R" is repo:R
+        if w in ("or", "not") or "(" in w or ")" in w:
+            across = True
+            continue
+        q, colon, v = w.partition(":")
+        if not colon or q in {f"-{t}" for t in SEARCH_WITHIN}:
+            continue
+        if q in SEARCH_WITHIN:
+            for x in v.split(","):
+                add(x, q == "repo")
+        elif q.endswith(tuple(SEARCH_WITHIN)):  # a form of those terms we don't know: not limited
+            across = True
+    return [("gh-search", kind)] if across or not within else within
+
+
 def write_file(work, files, key, n):
     """Write a file the shim sent (keyed by the path as the agent gave it) into the request's
     work dir; returns its path there."""
@@ -420,13 +464,7 @@ def classify_gh(sess, argv, ctx, files, stdin, work):
                 raise BrokerError("no repository: pass OWNER/REPO or -R OWNER/REPO")
             req.targets.append(("gh", r))
     elif group == "search":
-        # Within repositories or owners: in scope when they are, or when a gh-search: entry allows
-        # that kind of search across GitHub, which this narrows (see gh-search-in).
-        rs, os_ = optall(flags, "repo"), optall(flags, "owner")
-        req.targets += [("gh-search-in", f"{sub} {norm_repo(r)}") for r in rs]
-        req.targets += [("gh-search-in", f"{sub} {o.lower()}") for o in os_]
-        if not rs and not os_:  # across GitHub: in scope only with a gh-search: entry
-            req.targets.append(("gh-search", sub))
+        req.targets += search_targets(sub, flags, pos, login)
     elif group == "project":
         owner = opt(flags, "owner")
         owner = (login if owner in (None, "@me") else owner).lower()
@@ -1025,8 +1063,9 @@ class GhProvider(Provider):
             f"pr create --fill (pass --title and --body) are unavailable; gh repo clone and gh pr checkout "
             f"run locally through git. Lists across an owner (gh repo list X) need X itself in scope, and so "
             f"do searches with --owner X unless all of X's repositories are (X/*). Searches across GitHub "
-            f"(no --repo or --owner) need a gh-search: entry, which also allows its kind of search with any "
-            f"--repo or --owner; without one, narrow them with --repo OWNER/REPO."
+            f"(without --repo, --owner or repo:, org: or user: terms, or with OR, NOT or parentheses) need a "
+            f"gh-search: entry, which also allows its kind of search with any --repo or --owner; without "
+            f"one, narrow them with --repo OWNER/REPO and leave out OR and NOT."
             + (f" In scope: searches across GitHub for {', '.join(sess.entries('gh-search'))}."
                if sess.entries("gh-search") else ""))
         return True
@@ -1039,15 +1078,21 @@ def _gh_owner_entries(sess):
     return [p.lower() for p in sess.entries("gh") if "/" not in p]
 
 
+def _search_in(v):
+    """A gh-search-in target's value "KIND R" (or "KIND O") -> (KIND, R)."""
+    kind, _, t = v.partition(" ")
+    return kind, t
+
+
 def _gh_search_in(sess, v):
-    """A gh search with --repo R or --owner O (value "KIND R" or "KIND O"): in scope with a
+    """A gh search limited to repository R or owner O (see search_targets): in scope with a
     gh-search:KIND entry, since it narrows a search across GitHub; else when R is, or, for O,
     when O itself is (gh:O) or every repository of O is (gh:O/*), as it finds only those."""
-    kind, _, t = v.partition(" ")
+    kind, t = _search_in(v)
     if sess.in_scope(("gh-search", kind)) or sess.in_scope(("gh", t)):
         return True
-    return "/" not in t and any(fnmatch.fnmatchcase(t, p.lower().rpartition("/")[0])
-                                for p in sess.entries("gh") if p.lower().rpartition("/")[2] == "*")
+    owners = [o for o, _, r in (p.rpartition("/") for p in sess.entries("gh")) if r == "*"]
+    return "/" not in t and any(fnmatch.fnmatchcase(t, o) for o in owners)
 
 
 # gh:OWNER/REPO is a repository (patterns too: gh:OWNER/*); gh:OWNER is the owner itself
@@ -1068,8 +1113,8 @@ scope_kind("gh-projects-of", provider="gh", entry=False,
                p.lower().split("/")[0] == v for p in sess.entries("gh-project")),
            grant=lambda v: ("gh-project", f"{v}/*"), label=lambda v: f"gh-project:{v}/*")
 scope_kind("gh-search-in", provider="gh", entry=False, match=_gh_search_in,
-           grant=lambda v: ("gh", v.partition(" ")[2]),
-           label=lambda v: f"gh:{v.partition(' ')[2]} (or gh-search:{v.partition(' ')[0]})")
+           grant=lambda v: ("gh", _search_in(v)[1]),
+           label=lambda v: "gh:{1} (or gh-search:{0})".format(*_search_in(v)))
 scope_kind("gh-fork-into", provider="gh", entry=False,
            match=lambda sess, v: v == gh_login_of(sess).lower() or v in _gh_owner_entries(sess),
            grant=lambda v: ("gh", v), label=lambda v: f"gh:{v} (fork into)")

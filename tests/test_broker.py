@@ -620,6 +620,26 @@ class BrokerTest(unittest.TestCase):
         sess = self.register("reader", ["gh:acme"])  # the owner itself, as before
         self.assertEqual(self.ran("search", "commits", "--owner", "acme", sess=sess)["argv"][:2], ["search", "commits"])
 
+    def test_search_query_terms(self):
+        # GitHub takes the query's repo:, org: and user: terms as well as --repo and --owner: each
+        # must be in scope. OR, NOT and parentheses could reach past them: across GitHub.
+        sess = self.register("reader", ["gh:acme/*", "gh:agentbot/*"])
+        ok = lambda *a: self.assertEqual(self.ran("search", *a, sess=sess)["argv"][0], "search")
+        ok("issues", "repo:acme/widget", "crash")              # limited by the query alone
+        ok("code", 'org:"acme"', "token")
+        ok("issues", "--owner", "acme", "--", "-repo:other/x")  # an excluded term limits nothing
+        ok("prs", "--repo", "acme/widget", "--jq", "map(.title)")  # output flags aren't the query
+        ok("repos", "--owner", "@me")                         # the account's login (agentbot)
+        ok("issues", "user:@me", "bug")
+        r = self.gh("search", "code", "org:secretcorp", "password", "--owner", "acme", sess=sess, expect=1)
+        self.assertIn("gh:secretcorp (or gh-search:code)", r.stderr)
+        self.assertNotIn("gh:acme", r.stderr)
+        r = self.gh("search", "issues", "bug", "OR", "crash", "--owner", "acme", sess=sess, expect=1)
+        self.assertIn("gh-search:issues (gh search issues across GitHub)", r.stderr)
+        sess = self.register("reader", ["gh-search:issues"])  # which a gh-search: entry allows
+        self.assertEqual(self.ran("search", "issues", "bug", "or", "crash", "--owner", "acme", sess=sess)["argv"][0],
+                         "search")
+
     def test_agent_sees_permissions_and_session_name(self):
         sess = self.register("pm", ["gh:acme/widget", "gh-project:acme/11"])
         self.assertIn("project item-edit", sess["context"])
