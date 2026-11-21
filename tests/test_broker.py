@@ -734,15 +734,44 @@ class BrokerTest(unittest.TestCase):
         self.write_profile("keyprof", f'[ssh]\nkey = "{key}"\nenabled = false\n')
         self.assertNotIn("keyprof [ssh]", self.admin("keys").stdout)
 
-    def test_terminal_notifications_drop_control_characters(self):
+    def tui(self):
+        """The TUI's module, imported here (its core reads the test's folders)."""
         sys.path.insert(0, str(HERE / "broker"))
         os.environ.pop("APOD_ROOT", None)
         for k, v in self.layout_env.items():
             os.environ.setdefault(k, v)
         import tui
+        return tui
+
+    def test_terminal_notifications_drop_control_characters(self):
+        tui = self.tui()
         seq = tui.notify_seq("osc777", "a;b", "evil\x1b]0;pwned\x07 x")
         self.assertEqual(seq, "\x1b]777;notify;a,b;evil ]0,pwned  x\x1b\\")
         self.assertEqual(tui.notify_seq("bell", "t", "b"), "")
+
+    def test_terminal_guess_inside_a_multiplexer(self):
+        """Inside herdr, tmux or screen the TUI rings the bell, which they pass on, rather than send
+        a sequence they keep, even with the outer terminal's variables still there; so the broker
+        keeps its notify-send. APOD_BROKER_NOTIFY still decides."""
+        from unittest import mock
+        tui = self.tui()
+        cases = [({"TERM_PROGRAM": "ghostty", "TERM": "xterm-ghostty"}, "osc9"),
+                 ({"TERM": "xterm-kitty", "KITTY_WINDOW_ID": "1"}, "osc99"),
+                 ({"TERM": "xterm-256color", "VTE_VERSION": "7600"}, "osc777"),
+                 ({"TERM": "xterm-256color"}, "bell"),
+                 # herdr 0.9.2 and later: its own TERM_PROGRAM; VTE_VERSION from a VTE terminal stays.
+                 ({"TERM_PROGRAM": "herdr", "TERM": "xterm-256color", "HERDR_ENV": "1", "HERDR_PANE_ID": "w1:p2",
+                   "VTE_VERSION": "7600"}, "bell"),
+                 # An older herdr: the outer terminal's TERM_PROGRAM.
+                 ({"TERM_PROGRAM": "ghostty", "TERM": "xterm-ghostty", "HERDR_PANE_ID": "w1:p2"}, "bell"),
+                 ({"TERM_PROGRAM": "tmux", "TERM": "tmux-256color", "TMUX": "/tmp/tmux-1000/default,1,0",
+                   "KITTY_WINDOW_ID": "1"}, "bell"),
+                 ({"TERM": "screen-256color", "STY": "1.pts-0", "VTE_VERSION": "7600"}, "bell"),
+                 ({"TERM_PROGRAM": "herdr", "HERDR_ENV": "1", "APOD_BROKER_NOTIFY": "osc9"}, "osc9")]
+        for env, want in cases:
+            with self.subTest(env=env), mock.patch.dict(os.environ, env, clear=True):
+                self.assertEqual(tui.notify_style(), want)
+                self.assertEqual(tui.desktop_notifies(tui.notify_style()), want != "bell")
 
     def test_gh_help_in_either_layout(self):
         # The broker learns gh's flags from its --help, and gh 2.104 changed how it lists booleans. In

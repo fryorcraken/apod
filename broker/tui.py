@@ -9,11 +9,19 @@ TUI_VIEWS = ["requests", "sessions", "grants"]
 
 def notify_style():
     """How to ask the terminal for a desktop notification: APOD_BROKER_NOTIFY (osc9, osc99,
-    osc777, bell, none), else from the terminal's environment; the bell is the fallback."""
+    osc777, bell, none), else from the terminal's environment; the bell inside a multiplexer
+    (herdr, tmux, screen, zellij) and as the fallback."""
     v = os.environ.get("APOD_BROKER_NOTIFY", "").strip().lower()
     if v:
         return v
     tp, term = os.environ.get("TERM_PROGRAM", "").lower(), os.environ.get("TERM", "")
+    # A multiplexer keeps notification sequences to itself (herdr reads OSC 9 as a progress
+    # report), but passes the bell on. The outer terminal's variables can still be there (an older
+    # herdr keeps TERM_PROGRAM, tmux keeps KITTY_WINDOW_ID and VTE_VERSION), so the guess below
+    # would be wrong, and the broker would leave out notify-send for a notification nobody sees.
+    if (tp in ("herdr", "tmux") or term.startswith(("tmux", "screen"))
+            or any(os.environ.get(k) for k in ("HERDR_ENV", "HERDR_PANE_ID", "TMUX", "STY", "ZELLIJ"))):
+        return "bell"
     if os.environ.get("KITTY_WINDOW_ID") or "kitty" in term:
         return "osc99"
     if tp in ("ghostty", "iterm.app", "wezterm") or "ghostty" in term:

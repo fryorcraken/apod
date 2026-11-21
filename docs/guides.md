@@ -673,9 +673,11 @@ every request with its decision.
   Terminal).
 - On a new waiting request it jumps to it, rings the bell and asks the terminal for a desktop
   notification: `OSC 9` for Ghostty, iTerm2 and WezTerm, `OSC 99` for kitty, `OSC 777` for foot,
-  rxvt and VTE terminals, else just the bell. `APOD_BROKER_NOTIFY` (`osc9`, `osc99`, `osc777`,
-  `bell`, `none`) overrides the guess, e.g. inside a multiplexer. Clicking the notification takes
-  you to the TUI's tab or split, in terminals that do that (Ghostty does).
+  rxvt and VTE terminals, else just the bell. Inside a multiplexer (herdr, tmux, screen, zellij)
+  it rings only the bell: they pass the bell on, but keep notification sequences to themselves
+  (herdr reads `OSC 9` as a progress report). `APOD_BROKER_NOTIFY` (`osc9`, `osc99`, `osc777`,
+  `bell`, `none`) overrides the guess. Clicking the notification takes you to the TUI's tab or
+  split, in terminals that do that (Ghostty does).
 - The broker calls `notify-send` itself when it's installed, except while a TUI that sends
   desktop notifications is open (`osc9`, `osc99` or `osc777`; not `bell` or `none`): then you get
   the TUI's notification only. A click on the broker's own notification doesn't take you anywhere.
