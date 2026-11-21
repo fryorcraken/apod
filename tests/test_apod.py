@@ -140,7 +140,7 @@ class Launcher:
                        APOD_BROKER_ASK_TIMEOUT="3", PATH=f"{cls.bin}:{os.environ['PATH']}")
         cls.P = paths.Layout(cls.env)
         for k in list(cls.env):
-            if k in ("GH_REPO", "SSH_AUTH_SOCK", "HERDR_PANE_ID", "HC_SCOPE", "APOD_IMAGE") or k.startswith(("GIT_AUTHOR_", "GIT_COMMITTER_", "GIT_CONFIG")):
+            if k in ("GH_REPO", "SSH_AUTH_SOCK", "HERDR_PANE_ID", "HERDR_SOCKET_PATH", "HC_SCOPE", "HC_TERMINAL_ID", "APOD_IMAGE") or k.startswith(("GIT_AUTHOR_", "GIT_COMMITTER_", "GIT_CONFIG")):
                 cls.env.pop(k)
         cls.addClassCleanup(lambda: subprocess.run([sys.executable, HERE / "apod-broker", "stop"], env=cls.env,
                                                    capture_output=True))
@@ -215,12 +215,12 @@ class Launcher:
 
     # -- running apod ---------------------------------------------------------------------
 
-    def launch(self, profile, *args, expect=0, extra_env=None, proj=None):
+    def launch(self, profile, *args, expect=0, extra_env=None, proj=None, stdin=subprocess.DEVNULL):
         """Run apod; returns (podman argv groups, stderr). The podman log is the stub's."""
         self.log.write_text("")
         (self.tmp / "uuid-count").unlink(missing_ok=True)  # the same ids in every launch
         env = dict(self.env, **(extra_env or {}))
-        r = subprocess.run([APOD, profile, *args, str(proj or self.proj)], env=env, stdin=subprocess.DEVNULL,
+        r = subprocess.run([APOD, profile, *args, str(proj or self.proj)], env=env, stdin=stdin,
                            capture_output=True, text=True, timeout=120, cwd=self.tmp)
         self.assertEqual(r.returncode, expect, r.stderr)
         return self.argv(), r.stderr
@@ -460,6 +460,30 @@ class ProfileTomlTest(Launcher, unittest.TestCase):
         self.assertIsNone(pane("-a", "bash"))
         self.assertIsNone(pane(APOD_HERDR="0"))
         self.assertIsNone(pane(HERDR_SOCKET_PATH=""))
+
+    def test_a_herdr_app_terminal_is_passed_to_the_broker(self):
+        """Launched from a Herdr app terminal (HC_TERMINAL_ID), the broker gets the terminal's
+        device, to write its status as blocked while a request waits: for claude, from a terminal;
+        not for opencode, nor with APOD_HERDR=0."""
+        import pty
+        master, slave = pty.openpty()
+        self.addCleanup(os.close, master)
+        self.addCleanup(os.close, slave)
+        snap = self.tmp / "sessions.snap"
+        app = {"HC_TERMINAL_ID": "t8w", "STUB_SESSIONS": str(self.P.sessions_state)}
+
+        def status(*args, stdin=slave, **env):
+            snap.unlink(missing_ok=True)
+            self.launch("brk", *args, extra_env=dict(app, **env), stdin=stdin)
+            cfg = json.loads(snap.read_text())["cfg"]
+            self.assertNotIn("_herdr", cfg)  # not a herdr pane
+            return cfg.get("_status_tty")
+
+        self.assertEqual(status(), {"tty": os.ttyname(slave), "app": "claude-code"})
+        self.assertIsNone(status("-a", "opencode"))
+        self.assertIsNone(status(stdin=subprocess.DEVNULL))
+        self.assertIsNone(status(APOD_HERDR="0"))
+        self.assertIsNone(status(HC_TERMINAL_ID=""))
 
     def test_env_values_are_passed_as_written(self):
         self.toml_profile("quotes", """\

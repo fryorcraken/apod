@@ -925,6 +925,53 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertIn("timed out", err)
 
+    def test_herdr_app_terminal_blocked_while_waiting(self):
+        """A pod launched from a Herdr app terminal: the broker writes the terminal's status (OSC
+        7501, as Claude Code does) as blocked while a request waits, and as working once it's
+        decided or times out. Only a /dev/pts device, and only for an agent that writes its own."""
+        import pty
+        import select
+        master, slave = pty.openpty()
+        self.addCleanup(os.close, master)
+        self.addCleanup(os.close, slave)
+        sess = self.register("dev", ["gh:acme/widget"], extra=["--status-tty", os.ttyname(slave),
+                                                              "--status-agent", "claude"])
+        env = dict(self.env, APOD_BROKER_SOCK=str(Path(sess["dir"]) / "broker.sock"))
+
+        def merge(n):
+            return subprocess.Popen([sys.executable, SHIM, "pr", "merge", n], cwd=self.work, env=env,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        def written(until, timeout=10):
+            buf, end = b"", time.time() + timeout
+            while until not in buf and time.time() < end:
+                if select.select([master], [], [], 0.1)[0]:
+                    buf += os.read(master, 65536)
+            return buf
+
+        blocked = rb"\x1b\]7501;state=blocked:app=claude-code:kind=permission:msg=([A-Za-z0-9+/=]+)\x1b\\"
+        working = b"\x1b]7501;state=working:app=claude-code\x1b\\"
+        # Denied: blocked, with the request as the message; then working.
+        p = merge("31")
+        m = re.search(blocked, written(b"\x1b\\"))
+        self.assertIsNotNone(m)
+        self.assertIn("apod broker: gh pr merge 31", base64.b64decode(m.group(1)).decode())
+        eid = next(l.split()[0] for l in self.admin("pending").stdout.splitlines() if "pr merge 31" in l)
+        self.admin("deny", eid)
+        p.communicate(timeout=10)
+        self.assertEqual(written(working), working)
+        # Nobody answers (APOD_BROKER_ASK_TIMEOUT is 4): working once it times out.
+        p = merge("32")
+        self.assertRegex(written(b"\x1b\\"), blocked)
+        p.communicate(timeout=15)
+        self.assertEqual(written(working), working)
+        # What apod passes is checked: a pts device only, an agent that writes its own status.
+        sys.path.insert(0, str(HERE / "broker"))
+        import herdr
+        for tty, agent in (("/tmp/x", "claude"), ("/dev/pts/3/../../tmp/x", "claude"), ("/dev/pts/3", "bash"),
+                           ("/dev/pts/3", "opencode"), ("", "claude")):
+            self.assertIsNone(herdr.tty_target(tty, agent), (tty, agent))
+
     def test_api_rest(self):
         self.ran("api", "repos/{owner}/{repo}/pulls")
         self.ran("api", "/repos/acme/widget/issues/1/comments", "-f", "body=x")

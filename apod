@@ -836,6 +836,13 @@ if [ -n "$usebroker" ]; then
      { [ "$agent" = claude ] || [ "$agent" = opencode ]; }; then
     regargs+=(--herdr-pane "$HERDR_PANE_ID" --herdr-socket "$HERDR_SOCKET_PATH" --herdr-agent "$agent")
   fi
+  # In a Herdr app terminal (herdr-core): the broker writes the terminal's status (OSC 7501) as
+  # blocked while a request waits, so it needs the terminal's device. Only for claude, which writes
+  # its own status, so the app shows it as before once the request is decided.
+  if [ "${APOD_HERDR:-1}" != 0 ] && [ -n "${HC_TERMINAL_ID:-}" ] && [ "$agent" = claude ] &&
+     ttydev=$(tty 2>/dev/null); then
+    regargs+=(--status-tty "$ttydev" --status-agent "$agent")
+  fi
   for s in "${scopes[@]}"; do regargs+=(--scope "$s"); done
   while read -r _ url; do regargs+=(--remote "$url"); done < <(git -C "$proj" config --get-regexp '^remote\..*\.(url|pushurl)$' 2>/dev/null || true)
   bsid=${regargs[1]}

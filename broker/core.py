@@ -1094,6 +1094,10 @@ def register(r):
     hz = herdr.target(r.get("herdr_pane"), r.get("herdr_socket"), r.get("herdr_agent"))
     if hz:
         sess.cfg["_herdr"] = hz
+    # Launched from a Herdr app terminal: the broker writes that terminal's status while they wait.
+    st = herdr.tty_target(r.get("status_tty"), r.get("status_agent"))
+    if st:
+        sess.cfg["_status_tty"] = st
     # The profile's additions to its role: allow = [...], deny = [...], as in roles.toml.
     for k in ("allow", "deny"):
         sess.extra[k] = [renamed_action(a) for a in cfg.get(k, [])]

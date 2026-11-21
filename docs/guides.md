@@ -1115,6 +1115,14 @@ in its panes:
   the active tab, if you turned popups on (`ui.toast.delivery`, `off` by default). Only for
   `claude` and `opencode` pods. It's best effort: if herdr isn't answering, requests wait as before.
   `APOD_HERDR=0` turns it off.
+- **The same in the Herdr app** (herdr-core: `HC_TERMINAL_ID` set). There a terminal's status is
+  what its program writes in its output (OSC 7501, the Program Status Protocol), which Claude Code
+  does, and the app has no call to set it from outside. So apod gives the broker the terminal's
+  device (`tty`), and while a request of the pod waits, the broker writes the status there itself:
+  `blocked` (`kind=permission`, message "apod broker: <the request>"), so the app plays its sound
+  and shows its popup, then `working` once the last one is allowed, denied or times out (Claude's
+  tool call goes on; its next report replaces it). Only for `claude` pods. It writes nothing else
+  to the terminal, and only to a `/dev/pts` device of yours. `APOD_HERDR=0` turns it off.
 - **Recovery after a herdr restart or crash.** herdr restores container panes as plain shells in
   the right folder. Run `apod resume` there: apod recorded the tab each session was launched from
   (`HERDR_PANE_ID`, or `HC_SCOPE`, which survives a herdr server restart), so it goes straight back
