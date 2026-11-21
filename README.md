@@ -247,7 +247,8 @@ doesn't protect against, a hardening checklist, and how to report a vulnerabilit
 - Pods can still damage what's in scope, send what they can read over the network, and write
   files in that folder (`.git/hooks`, `.claude/settings.json`) that run when you use it on the
   host. Give pods their own worktrees, one per pod. A linked worktree shares its repository's
-  `.git` (hooks, config) with the main checkout: use a clone to keep the main checkout out of reach.
+  `.git` (hooks, config) with the main checkout: use a clone to keep the main checkout out of reach
+  ([a clone for worktree flows](docs/guides.md#a-clone-for-worktree-flows)).
 
 ## Contributing
 

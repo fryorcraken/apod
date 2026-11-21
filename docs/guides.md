@@ -18,6 +18,7 @@ variable.
 - [Migrating to profile.toml](#migrating-to-profiletoml)
 - [Migrating to the new layout](#migrating-to-the-new-layout)
 - [Mounts, network and images](#mounts-network-and-images)
+- [A clone for worktree flows](#a-clone-for-worktree-flows)
 - [SELinux](#selinux)
 - [claude.ai connectors and MCP servers](#claudeai-connectors-and-mcp-servers)
 - [Work logs](#work-logs)
@@ -842,7 +843,8 @@ checkout's pod gets the same when the repository has worktrees outside the pod a
 is told to leave them alone, and the pod's git config has `gc.worktreePruneExpire=never`. What
 this costs in the pod:
 
-- `git worktree add` fails.
+- `git worktree add` fails. For flows that add worktrees, launch the pod in
+  [a clone of its own](#a-clone-for-worktree-flows).
 - `git gc` doesn't expire reflogs (`gc.reflogExpire` and `gc.reflogExpireUnreachable` are
   `never`: it would fail on the other worktrees'). `git gc` on the host still does.
 - Renaming a branch that another worktree has checked out renames it but leaves that worktree's
@@ -958,6 +960,53 @@ rw = ["~/src/logos-co/ecosystem", "~/src/logos-co/rfp"]
 in scope; `--role` still wins. Who acts (the git identity, the GitHub account, the keys), the
 profile's own `allow` and `deny`, and its connectors stay the profile's. `apod presets` lists
 them. The rules are in the [reference](reference.md#presets).
+
+## A clone for worktree flows
+
+Some flows add worktrees of their own: a runner that gives each piece of work a
+`git worktree add`, or Claude Code subagents with `isolation: "worktree"` (under
+`.claude/worktrees`). In a pod on a linked worktree, or on a main checkout with worktrees
+outside the pod, `git worktree add` fails ([Mounts](#mounts-network-and-images)). Give such a
+flow a clone of its own: a folder that only pods use, with every worktree inside it. All the
+worktrees are then in the pod, so `git worktree add`, `remove` and `prune` work, and your
+checkout's `.git` (its hooks and config) stays out of reach.
+
+```sh
+git clone https://github.com/acme/widget ~/src/pods/widget   # on the host, before any pod uses it
+apod work ~/src/pods/widget                                   # its remote puts gh:acme/widget in scope
+```
+
+Or let the first pod clone it, through the broker. Launch in an empty folder, with the repository
+in scope (the folder has no remote yet to put it there), and have the agent run
+`git clone https://github.com/acme/widget .`:
+
+```sh
+mkdir -p ~/src/pods/widget
+apod work --scope gh:acme/widget ~/src/pods/widget
+```
+
+Keep the clone in a host folder, not in the pod's `/tmp`: that goes when the pod ends, with any
+work that wasn't pushed. Then:
+
+- **Launch pods at the clone's root,** not in one of its worktrees: that's a pod on a linked
+  worktree again, and `git worktree add` fails in it.
+- **Work leaves by push.** The broker checks each push against the role and scope. To review
+  a pod's work, fetch the branch it pushed into your own checkout, from the remote
+  (`git fetch origin BRANCH`), not from the pods' folder.
+- **The folder is the pods'.** They write its hooks, its config and its `.claude/settings.json`,
+  so don't run git, or any other tool, in it on the host. Reading or deleting its files is fine.
+  A pod can add remotes, which join later pods' scope: read `.git/config` before launching a
+  more powerful profile there (`cat ~/src/pods/widget/.git/config`).
+- **Pods in the same clone share its `.git`,** as worktrees do. Each works in its own worktrees,
+  and all of them are in every pod. For pods that mustn't touch each other's work, give each a
+  clone.
+- **A big repository:** `git clone --filter=blob:none` fetches the files' contents as git needs
+  them, through the broker too. Avoid a shallow clone (`--depth`): rebases and merges need the
+  history.
+- **A worktree added outside the clone** (in `/tmp`, say) leaves its record behind when the pod
+  ends. Later launches take it for a worktree in use on the host, and `.git/worktrees` is then
+  read-only in the pod. Delete that record on the host:
+  `rm -r ~/src/pods/widget/.git/worktrees/NAME`.
 
 ## SELinux
 

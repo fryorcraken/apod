@@ -294,10 +294,13 @@ The broker turns each request into actions and targets, and checks them before a
   lists them as prunable. Their records (`.git/worktrees`) are read-only in the pod, so
   `git worktree prune` and `git worktree remove` fail on them, also on those the host adds while
   the pod runs. The pod can write that folder in a main checkout, so apod takes it only as git
-  makes it: not a symlink, and only when it's in the pod already. Two gaps: a main checkout's pod gets this only when the repository has a worktree
-  outside the pod at launch, and a pod can still rename a branch that another worktree has
-  checked out, which leaves that worktree's HEAD on the old name until you rename it back. Refs
-  are shared: a pod can still move or delete any branch, as `git update-ref` does.
+  makes it: not a symlink, and only when it's in the pod already. Two gaps: a main checkout's
+  pod gets this only when the repository has a worktree outside the pod at launch, and a pod can
+  still rename a branch that another worktree has checked out, which leaves that worktree's HEAD
+  on the old name until you rename it back. Refs are shared: a pod can still move or delete any
+  branch, as `git update-ref` does. For flows that add worktrees, use
+  [a clone of their own](docs/guides.md#a-clone-for-worktree-flows), with every worktree in the
+  pod.
 
 ## Hardening checklist
 

@@ -555,6 +555,14 @@ class ProfileTomlTest(Launcher, unittest.TestCase):
             self.assertEqual(mounts(argv, recs), [])
             self.assertEqual(reflog_keys(argv), set())
 
+        # A clone for worktree flows: every worktree is in the pod, so git worktree add works.
+        repo = self.worktree_repo("wt6", ".claude/worktrees/a", ".claude/worktrees/b")
+        with self.subTest("the main checkout, its worktrees all inside it: nothing read-only"):
+            argv, _ = self.launch("plain", proj=repo)
+            self.assertEqual(mounts(argv, "/.git/worktrees"), [])
+            self.assertEqual(reflog_keys(argv), set())
+            self.assertEqual(notes(argv), [])
+
         # The pod can write these folders: a symlink in them mustn't get a host folder mounted.
         elsewhere = self.m / "elsewhere"
         (elsewhere / "a").mkdir(parents=True)
