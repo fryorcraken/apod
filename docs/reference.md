@@ -189,7 +189,7 @@ role = "pm"                                         # as --role pm
 scope = ["gh:logos-co/ecosystem", "gh:logos-co/rfp"]   # as --scope, for each
 
 [pod]
-image = "logos-toolchain"
+image = "rust"
 ro = ["~/src/logos-co"]
 rw = ["~/src/logos-co/ecosystem", "~/src/logos-co/rfp"]
 ```

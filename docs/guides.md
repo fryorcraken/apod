@@ -878,26 +878,32 @@ included.
 
 **Images.** `Containerfile` builds the base `apod` image (Fedora, Claude Code, opencode, gh, git,
 Node, Python). A profile's `[pod] image`, a preset's (below), `-i IMAGE` or
-`APOD_IMAGE` picks another. Two examples
-build on it:
+`APOD_IMAGE` picks another. To add a project's toolchain, build on it:
 
-- `Containerfile.logos-toolchain`: Rust 1.98.1 and RISC Zero (cargo-risczero/r0vm 3.0.5), for
-  [logos-execution-zone](https://github.com/logos-blockchain/logos-execution-zone).
-- `Containerfile.dialectica`: logos-toolchain plus Qt 6.8.3, Node 24, yq, Nix 2.35.2 and
-  logos-scaffold 0.3.1. Pair it with a `[pod] volumes` entry for a persistent `/nix`.
+```dockerfile
+# ~/.config/apod/images/Containerfile.rust
+FROM localhost/apod
+USER root
+RUN dnf install -y gcc gcc-c++ clang cmake make pkgconf-pkg-config openssl-devel && dnf clean all
+ENV RUSTUP_HOME=/opt/rustup PATH=/opt/cargo/bin:$PATH
+RUN mkdir -p /opt/rustup /opt/cargo && chown agent:agent /opt/rustup /opt/cargo
+USER agent
+RUN curl -fsSL https://sh.rustup.rs | CARGO_HOME=/opt/cargo sh -s -- -y --no-modify-path
+ENV CARGO_HOME=/home/agent/.cargo
+```
 
 ```sh
-podman build -t logos-toolchain -f ~/src/rad/apod/Containerfile.logos-toolchain ~/src/rad/apod
+podman build -t rust -f ~/.config/apod/images/Containerfile.rust ~/.config/apod/images
 ```
 
 ```toml
 # ~/.config/apod/profiles/work.toml
 [pod]
-image = "logos-toolchain"
+image = "rust"
 ```
 
-Tools live under `/opt` so the mounted home can't hide them. Rebuild derived images after
-rebuilding `apod`.
+Put tools under `/opt`, not the home folder, so the mounted home can't hide them. Rebuild
+derived images after rebuilding `apod`.
 
 **Presets.** The image, mounts, network, volumes and environment belong to a kind of job more
 than to an identity: the same toolchain and source trees serve your own profile and a bot's. Rather
@@ -906,14 +912,14 @@ copied), put them in a preset, `presets/NAME.toml` in the config folder, and pic
 
 ```toml
 # ~/.config/apod/presets/logos.toml
-description = "Logos toolchain; the Logos repositories, read-only"
+description = "Rust toolchain; the Logos repositories, read-only"
 [pod]
-image = "logos-toolchain"
+image = "rust"
 ro = ["~/src/logos-co", "~/src/logos-blockchain", "~/src/logos-messaging"]
 ```
 
 ```sh
-apod work -p logos ~/src/logos-co/some-repo     # your profile, with the Logos toolchain and trees
+apod work -p logos ~/src/logos-co/some-repo     # your profile, with the Rust toolchain and the Logos trees
 apod bot -p logos ~/src/logos-co/some-repo      # the bot's identity, role and scope, the same pod settings
 apod work ~/src/rad/apod                        # neither: the Logos trees aren't mounted
 ```
