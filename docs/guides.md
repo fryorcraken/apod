@@ -1109,7 +1109,9 @@ in its panes:
   `blocked` (source `apod:broker`, message "apod broker: <the request>") for as long as a request
   of the pod waits, and releases the pane when the last one is allowed, denied or times out, so
   herdr goes back to reading the screen. herdr's blocked rollups, notifications and `agent wait`
-  then see it. It's best effort: if herdr isn't answering, requests wait as before.
+  then see it: a sound when the pane is in a background workspace, and a popup when it isn't in
+  the active tab, if you turned popups on (`ui.toast.delivery`, `off` by default). Only for
+  `claude` and `opencode` pods. It's best effort: if herdr isn't answering, requests wait as before.
   `APOD_HERDR=0` turns it off.
 - **Recovery after a herdr restart or crash.** herdr restores container panes as plain shells in
   the right folder. Run `apod resume` there: apod recorded the tab each session was launched from

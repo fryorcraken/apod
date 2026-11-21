@@ -55,7 +55,10 @@ STUB_PODMAN = textwrap.dedent("""\
           exists) [[ " $STUB_SECRETS " == *" $3 "* ]]; exit ;;
           ls) for s in $STUB_SECRETS; do echo "$s"; done; exit 0 ;;
         esac ;;
-      run) { printf 'podman'; printf '\\n%s' "$@"; printf '\\n--end--\\n'; } >> "$STUB_LOG"; exit 0 ;;
+      run) { printf 'podman'; printf '\\n%s' "$@"; printf '\\n--end--\\n'; } >> "$STUB_LOG"
+           # STUB_SESSIONS: the broker's saved sessions while the pod runs, to $STUB_DIR/sessions.snap.
+           [ -z "${STUB_SESSIONS:-}" ] || cat "$STUB_SESSIONS"/*.json > "$STUB_DIR/sessions.snap"
+           exit 0 ;;
       ps) [ -z "${STUB_PS:-}" ] || echo "$STUB_PS"; exit 0 ;;
       inspect) [ -z "${STUB_INSPECT:-}" ] || echo "$STUB_INSPECT"; exit 0 ;;
     esac
@@ -438,6 +441,25 @@ class ProfileTomlTest(Launcher, unittest.TestCase):
         self.assertNotIn("old profile files", err)
         _, err = self.launch("brk")
         self.assertNotIn("old profile files", err)
+
+    def test_a_herdr_pane_is_passed_to_the_broker(self):
+        """Launched from a herdr pane, the broker gets the pane, to show it as blocked while a
+        request waits for approval: for claude and opencode, the agents herdr knows; not for bash,
+        nor with APOD_HERDR=0."""
+        snap = self.tmp / "sessions.snap"
+        herdr = {"HERDR_PANE_ID": "w1:p2", "HERDR_SOCKET_PATH": "/run/herdr.sock",
+                 "STUB_SESSIONS": str(self.P.sessions_state)}
+
+        def pane(*args, **env):
+            snap.unlink(missing_ok=True)
+            self.launch("brk", *args, extra_env=dict(herdr, **env))
+            return json.loads(snap.read_text())["cfg"].get("_herdr")
+
+        self.assertEqual(pane(), {"pane": "w1:p2", "socket": "/run/herdr.sock", "agent": "claude"})
+        self.assertEqual(pane("-a", "opencode")["agent"], "opencode")
+        self.assertIsNone(pane("-a", "bash"))
+        self.assertIsNone(pane(APOD_HERDR="0"))
+        self.assertIsNone(pane(HERDR_SOCKET_PATH=""))
 
     def test_env_values_are_passed_as_written(self):
         self.toml_profile("quotes", """\
