@@ -764,6 +764,9 @@ class BrokerTest(unittest.TestCase):
                    "VTE_VERSION": "7600"}, "bell"),
                  # An older herdr: the outer terminal's TERM_PROGRAM.
                  ({"TERM_PROGRAM": "ghostty", "TERM": "xterm-ghostty", "HERDR_PANE_ID": "w1:p2"}, "bell"),
+                 # The Herdr app (herdr-core): TERM_PROGRAM=ghostty in its terminals.
+                 ({"TERM_PROGRAM": "ghostty", "TERM": "xterm-256color", "HC_TERMINAL_ID": "t8w",
+                   "HC_SCOPE": "22661351-4308bf8e2cb47efa9763c645bb4f08cb"}, "bell"),
                  ({"TERM_PROGRAM": "tmux", "TERM": "tmux-256color", "TMUX": "/tmp/tmux-1000/default,1,0",
                    "KITTY_WINDOW_ID": "1"}, "bell"),
                  ({"TERM": "screen-256color", "STY": "1.pts-0", "VTE_VERSION": "7600"}, "bell"),
