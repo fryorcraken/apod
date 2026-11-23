@@ -136,11 +136,22 @@ key = "~/.ssh/id_apod_broker_sign"
 **Keys** (ssh, signing, and Radicle's) live in the broker's own ssh-agent, never in the pod. At
 launch, apod loads the ones it doesn't hold yet, of the extensions on for the pod and only when
 the role allows something that uses them, with `ssh-add`, which asks for their passphrases
-(an empty line skips a key: the pod starts, and the requests that need it fail); they expire after `APOD_SSH_TTL` (default `4h`). After a broker restart, or before launching,
+(an empty line skips a key: the pod starts, and the requests that need it fail); they expire after the key TTL (default `4h`; see below). After a broker restart, or before launching,
 `apod broker keys` lists the keys named in the profiles' `profile.toml` tables (not those of
 extensions turned off with `enabled = false`) and those running pods use, and loads the missing
 ones. A Radicle key is listed only once a pod uses it, unless a `[rad]` table names its home.
 One key can serve many hosts: the destination is checked per login.
+
+**How long keys stay unlocked.** Set `ttl` in the `[keys]` table of `~/.config/apod/config.toml`: seconds,
+or a time like `30m`, `4h`, `1d` or `1h30m` (what `ssh-add -t` takes). It applies to the broker's agent
+(at launch and with `apod broker keys`) and to the per-run agents of `[ssh-agent]` keys. `APOD_SSH_TTL`,
+when set, overrides it for one run. Without either it's `4h`.
+
+```toml
+# ~/.config/apod/config.toml
+[keys]
+ttl = "8h"
+```
 
 ## GitHub
 
@@ -280,7 +291,7 @@ it's off, and the pod is told why.
 **The key.** When it's on and the role may push (`dev`, `maintainer`), the launch asks for the
 identity's key passphrase (the one from `rad auth`), unless the broker's agent already holds
 it. Roles that only fetch aren't asked: fetching doesn't use the key. An empty line skips it:
-the pod starts, and Radicle pushes fail. A loaded key stays for `APOD_SSH_TTL` (default `4h`).
+the pod starts, and Radicle pushes fail. A loaded key stays for the key TTL (default `4h`; `[keys] ttl` in `config.toml`).
 
 **What the role allows:**
 
@@ -485,7 +496,7 @@ tunnel (`ssh:connect port`). Once logged in, the agent can do anything that acco
 
 **Without the broker's ssh extension** (no broker, or no `[ssh]` key): a profile's `[ssh-agent]` `key` names a passphrase-protected private key kept
 outside the profile's home. apod starts an ssh-agent on the host for the run, asks for the
-passphrase, and passes only the agent socket into the pod; the key expires after `APOD_SSH_TTL`
+passphrase, and passes only the agent socket into the pod; the key expires after the key TTL (`[keys] ttl` in `config.toml`, default `4h`)
 and the agent is killed when the pod exits. `confirm = true` confirms every use.
 Host aliases go in the profile's `home/.ssh/config`. The pod can log in anywhere the key works.
 

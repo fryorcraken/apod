@@ -1531,8 +1531,12 @@ def add_keys(keys, agent, ttl=None):
     """Load keys into the broker's agent; ssh-add asks for passphrases on this terminal. Returns
     how many loaded."""
     n = 0
+    try:
+        ttl = ttl or PATHS.key_ttl()
+    except paths.PathError as e:
+        sys.exit(f"apod broker: {e}")
     for k in keys:
-        cmd = ["ssh-add", "-q", "-t", ttl or os.environ.get("APOD_SSH_TTL", "4h")] + (["-c"] if k.get("confirm") else []) + [k["path"]]
+        cmd = ["ssh-add", "-q", "-t", ttl] + (["-c"] if k.get("confirm") else []) + [k["path"]]
         if subprocess.call(cmd, env=dict(os.environ, SSH_AUTH_SOCK=agent)):
             print(f"apod broker: couldn't load {k['path']}", file=sys.stderr)
         else:
@@ -1783,7 +1787,7 @@ def main(argv, script):
             todo = [k for k in r["keys"] if not k["loaded"] and not k.get("error")]
             n = add_keys(todo, r["agent"])
             print("apod broker: every key is already loaded, nothing to do" if not todo else
-                  f"apod broker: loaded {n} of {len(todo)} key(s), for {os.environ.get('APOD_SSH_TTL', '4h')}",
+                  f"apod broker: loaded {n} of {len(todo)} key(s), for {PATHS.key_ttl()}",
                   file=sys.stderr)
         elif cmd in ("allow", "deny"):
             if not args:

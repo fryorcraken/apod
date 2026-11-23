@@ -1255,6 +1255,38 @@ class MigratedLayoutTest(Launcher, unittest.TestCase):
             self.assertIn("nothing to migrate", r.stderr)
 
 
+class KeyTtlTest(unittest.TestCase):
+    """How long keys stay in an ssh-agent: $APOD_SSH_TTL, else [keys] ttl in config.toml, else 4h."""
+
+    def layout(self, toml=None, **env):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        (d / "config").mkdir()
+        if toml is not None:
+            (d / "config" / "config.toml").write_text(toml)
+        return paths.Layout({"APOD_CONFIG_DIR": str(d / "config"), "APOD_DATA_DIR": str(d / "data"),
+                             "APOD_STATE_DIR": str(d / "state"), "HOME": str(d), **env}, force_new=True)
+
+    def test_default(self):
+        self.assertEqual(self.layout().key_ttl(), "4h")
+        self.assertEqual(self.layout("[keys]\n").key_ttl(), "4h")
+
+    def test_config_toml(self):
+        self.assertEqual(self.layout('[keys]\nttl = "1h30m"\n').key_ttl(), "1h30m")
+        self.assertEqual(self.layout("[keys]\nttl = 600\n").key_ttl(), "600")
+        self.assertEqual(self.layout('[keys]\nttl = "8h"\n').as_json()["key_ttl"], "8h")
+
+    def test_env_wins(self):
+        self.assertEqual(self.layout('[keys]\nttl = "8h"\n', APOD_SSH_TTL="30m").key_ttl(), "30m")
+
+    def test_bad_values(self):
+        for bad in ('"forever"', '"4 hours"', "true", '""', "-1"):
+            with self.assertRaises(paths.PathError, msg=bad):
+                self.layout(f"[keys]\nttl = {bad}\n").key_ttl()
+        with self.assertRaises(paths.PathError):
+            self.layout(None, APOD_SSH_TTL="soon").key_ttl()
+
+
 class MigrateLayoutChecksTest(unittest.TestCase):
     """apod migrate --layout: when it refuses, what it asks, and a second run after a first that
     didn't finish."""

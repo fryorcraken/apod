@@ -28,10 +28,12 @@ import json
 import os
 import re
 import stat
+import tomllib
 import sys
 from pathlib import Path
 
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+TTL = re.compile(r"(\d+[smhdwSMHDW]?)+")  # ssh-add -t: seconds, or 30m, 4h, 1h30m...
 COMMANDS = ("new", "migrate", "resume", "history", "ps", "profiles", "presets", "token", "google-auth", "selinux",
             "broker", "gh")
 LEGACY_FOLDERS = ("broker", "broker-extensions", "worklog")  # folders in ~/.agent-pod that aren't profiles
@@ -105,6 +107,7 @@ class Layout:
 
     def __init__(self, env=None, force_new=False):
         env = os.environ if env is None else env
+        self.env = env
         self.config = _dir(env, "APOD_CONFIG_DIR", "XDG_CONFIG_HOME", ".config")
         self.data = _dir(env, "APOD_DATA_DIR", "XDG_DATA_HOME", ".local/share")
         self.state = _dir(env, "APOD_STATE_DIR", "XDG_STATE_HOME", ".local/state")
@@ -225,6 +228,23 @@ class Layout:
             raise PathError(f"preset {name}: presets are in the new layout only (apod migrate --layout)")
         return self.presets / f"{name}.toml"
 
+    def key_ttl(self):
+        """How long a key stays in an ssh-agent (ssh-add -t): $APOD_SSH_TTL, else `ttl` in the
+        [keys] table of config.toml, else 4h. Raises PathError for a value ssh-add wouldn't take."""
+        ttl, where = self.env.get("APOD_SSH_TTL"), "$APOD_SSH_TTL"
+        if not ttl:
+            try:
+                data = tomllib.loads(self.config_file.read_text()) if self.config_file.is_file() else {}
+            except (OSError, tomllib.TOMLDecodeError) as e:
+                raise PathError(f"{self.config_file}: {e}")
+            keys = data.get("keys", {})
+            ttl, where = keys.get("ttl", "4h") if isinstance(keys, dict) else "4h", f"{self.config_file}: [keys] ttl"
+        if isinstance(ttl, int) and not isinstance(ttl, bool):
+            ttl = str(ttl)  # seconds
+        if not isinstance(ttl, str) or not TTL.fullmatch(ttl):
+            raise PathError(f"{where} is {ttl!r}: use seconds or a time like 30m, 4h, 1d or 1h30m (ssh-add -t)")
+        return ttl
+
     def as_json(self, profile=None, pid=None):
         def s(v):
             return {k: s(x) for k, x in v.items()} if isinstance(v, dict) else str(v) if isinstance(v, Path) else v
@@ -233,6 +253,7 @@ class Layout:
             "profiles", "presets", "worklog", "history", "broker", "selinux", "log", "grants", "sessions_state",
             "sessions_run", "admin_sock", "agent_sock")}
         out["legacy_root"] = self.legacy_root
+        out["key_ttl"] = self.key_ttl()
         out["all_profiles"] = {n: self.profile(n) for n in self.profile_names()}
         out["all_presets"] = {n: self.preset_file(n) for n in self.preset_names()}
         if profile is not None:
