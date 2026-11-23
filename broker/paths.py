@@ -33,7 +33,18 @@ import sys
 from pathlib import Path
 
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-TTL = re.compile(r"(\d+[smhdwSMHDW]?)+")  # ssh-add -t: seconds, or 30m, 4h, 1h30m...
+# ssh-add -t: seconds, or 30m, 4h, 1h30m...; its largest is INT_MAX seconds
+TTL = re.compile(r"(?:[0-9]+[smhdwSMHDW])*[0-9]*", re.ASCII)
+TTL_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+MAX_TTL = 2**31 - 1
+
+
+def ttl_seconds(ttl):
+    """A time as ssh-add -t reads it, in seconds; 0 for one it wouldn't take."""
+    if not ttl or not TTL.fullmatch(ttl):
+        return 0
+    return sum(int(n) * TTL_UNITS[u.lower()] for n, u in re.findall(r"([0-9]+)([smhdwSMHDW])", ttl)) + \
+        int(re.search(r"[0-9]*$", ttl).group() or 0)
 COMMANDS = ("new", "migrate", "resume", "history", "ps", "profiles", "presets", "token", "google-auth", "selinux",
             "broker", "gh")
 LEGACY_FOLDERS = ("broker", "broker-extensions", "worklog")  # folders in ~/.agent-pod that aren't profiles
@@ -230,20 +241,23 @@ class Layout:
 
     def key_ttl(self):
         """How long a key stays in an ssh-agent (ssh-add -t): $APOD_SSH_TTL, else `ttl` in the
-        [keys] table of config.toml, else 4h. Raises PathError for a value ssh-add wouldn't take."""
+        [keys] table of config.toml, else 4h. A bare number is seconds ("600s" is returned).
+        Raises PathError for a value ssh-add wouldn't take."""
         ttl, where = self.env.get("APOD_SSH_TTL"), "$APOD_SSH_TTL"
         if not ttl:
             try:
                 data = tomllib.loads(self.config_file.read_text()) if self.config_file.is_file() else {}
-            except (OSError, tomllib.TOMLDecodeError) as e:
+            except (OSError, ValueError) as e:  # ValueError: TOMLDecodeError, UnicodeDecodeError
                 raise PathError(f"{self.config_file}: {e}")
             keys = data.get("keys", {})
             ttl, where = keys.get("ttl", "4h") if isinstance(keys, dict) else "4h", f"{self.config_file}: [keys] ttl"
         if isinstance(ttl, int) and not isinstance(ttl, bool):
             ttl = str(ttl)  # seconds
-        if not isinstance(ttl, str) or not TTL.fullmatch(ttl):
-            raise PathError(f"{where} is {ttl!r}: use seconds or a time like 30m, 4h, 1d or 1h30m (ssh-add -t)")
-        return ttl
+        secs = ttl_seconds(ttl) if isinstance(ttl, str) else 0
+        if not 0 < secs <= MAX_TTL:
+            raise PathError(f"{where} is {ttl!r}: use seconds or a time like 30m, 4h, 1d or 1h30m, "
+                            f"from 1 second to {MAX_TTL} seconds (ssh-add -t; 0 would never expire)")
+        return ttl + "s" if ttl.isdigit() else ttl
 
     def as_json(self, profile=None, pid=None):
         def s(v):
@@ -253,7 +267,6 @@ class Layout:
             "profiles", "presets", "worklog", "history", "broker", "selinux", "log", "grants", "sessions_state",
             "sessions_run", "admin_sock", "agent_sock")}
         out["legacy_root"] = self.legacy_root
-        out["key_ttl"] = self.key_ttl()
         out["all_profiles"] = {n: self.profile(n) for n in self.profile_names()}
         out["all_presets"] = {n: self.preset_file(n) for n in self.preset_names()}
         if profile is not None:
@@ -266,13 +279,13 @@ def layout(env=None):
 
 
 USAGE = ("usage: apod-broker paths [--json] [--profile NAME [--pid PID]]\n"
-         "       apod-broker paths --check-name NAME | --ensure-runtime")
+         "       apod-broker paths --check-name NAME | --ensure-runtime | --key-ttl")
 
 
 def main(argv):
     """apod-broker paths: where apod's files are. --json for apod; --check-name NAME says why NAME
     can't be a profile's (exit 2); --ensure-runtime makes the runtime folder (exit 2 if it isn't
-    private)."""
+    private); --key-ttl prints how long keys stay in an agent (exit 2 if the setting is invalid)."""
     js, profile, pid, it = False, None, None, iter(argv)
     try:
         for a in it:
@@ -287,6 +300,9 @@ def main(argv):
                 if why:
                     print(f"apod: {why}", file=sys.stderr)
                     return 2
+                return 0
+            elif a == "--key-ttl":
+                print(layout().key_ttl())
                 return 0
             elif a == "--ensure-runtime":
                 layout().ensure_runtime()

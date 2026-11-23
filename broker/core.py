@@ -141,7 +141,7 @@ class Provider:
 
 
 # roles.toml keys, core's targets, and the tables of a profile.toml that aren't an extension's
-RESERVED_NAMES = {"allow", "deny", "extends", "description", "unscoped", *profiles.OWN_TABLES}
+RESERVED_NAMES = {"allow", "deny", "extends", "description", "unscoped", "keys", *profiles.OWN_TABLES}
 
 
 def provider(p):
@@ -1069,6 +1069,8 @@ def load_config(spec, warnings=None, prof=None):
                             f"or at launch); it holds only settings shared by every profile")
     renamed_tables(glob, GLOBAL_CONFIG, warnings)
     cfg = renamed_tables(dict(prof["tables"]), profile_file(prof), warnings)
+    if "keys" in cfg and warnings is not None:
+        warnings.append(f"{profile_file(prof)}: [keys] is ignored there: the key lifetime is set in {GLOBAL_CONFIG}")
     for k in ("role", "scope", "allow", "deny"):
         if prof[k]:
             cfg[k] = prof[k]
@@ -1527,14 +1529,10 @@ def ensure(script):
     sys.exit(f"apod-broker: didn't start; see {PATHS.daemon_log}")
 
 
-def add_keys(keys, agent, ttl=None):
-    """Load keys into the broker's agent; ssh-add asks for passphrases on this terminal. Returns
-    how many loaded."""
+def add_keys(keys, agent, ttl):
+    """Load keys into the broker's agent for ttl (ssh-add -t); ssh-add asks for passphrases on
+    this terminal. Returns how many loaded."""
     n = 0
-    try:
-        ttl = ttl or PATHS.key_ttl()
-    except paths.PathError as e:
-        sys.exit(f"apod broker: {e}")
     for k in keys:
         cmd = ["ssh-add", "-q", "-t", ttl] + (["-c"] if k.get("confirm") else []) + [k["path"]]
         if subprocess.call(cmd, env=dict(os.environ, SSH_AUTH_SOCK=agent)):
@@ -1785,10 +1783,15 @@ def main(argv, script):
                       + (f"\n           {k['error']}" if k.get("error") else ""))
             sys.stdout.flush()
             todo = [k for k in r["keys"] if not k["loaded"] and not k.get("error")]
-            n = add_keys(todo, r["agent"])
-            print("apod broker: every key is already loaded, nothing to do" if not todo else
-                  f"apod broker: loaded {n} of {len(todo)} key(s), for {PATHS.key_ttl()}",
-                  file=sys.stderr)
+            if not todo:
+                print("apod broker: every key is already loaded, nothing to do", file=sys.stderr)
+                return 0
+            try:
+                ttl = PATHS.key_ttl()
+            except paths.PathError as e:
+                sys.exit(f"apod broker: {e}")
+            n = add_keys(todo, r["agent"], ttl)
+            print(f"apod broker: loaded {n} of {len(todo)} key(s), for {ttl}", file=sys.stderr)
         elif cmd in ("allow", "deny"):
             if not args:
                 sys.exit(f"usage: apod broker {cmd} ID" + (" [--session|--role]" if cmd == "allow" else ""))

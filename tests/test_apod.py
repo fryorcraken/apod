@@ -1273,14 +1273,42 @@ class KeyTtlTest(unittest.TestCase):
 
     def test_config_toml(self):
         self.assertEqual(self.layout('[keys]\nttl = "1h30m"\n').key_ttl(), "1h30m")
-        self.assertEqual(self.layout("[keys]\nttl = 600\n").key_ttl(), "600")
-        self.assertEqual(self.layout('[keys]\nttl = "8h"\n').as_json()["key_ttl"], "8h")
+        self.assertEqual(self.layout("[keys]\nttl = 600\n").key_ttl(), "600s")
+        self.assertEqual(self.layout('[keys]\nttl = "2147483647"\n').key_ttl(), "2147483647s")
+
+    def test_a_bad_value_is_only_a_problem_when_asked_for(self):
+        lay = self.layout('[keys]\nttl = "soon"\n')
+        lay.as_json()  # the layout is still good for everything else
+        with self.assertRaises(paths.PathError):
+            lay.key_ttl()
+        r = subprocess.run([sys.executable, str(HERE / "apod-broker"), "paths", "--key-ttl"],
+                           env=lay.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("[keys] ttl is 'soon'", r.stderr)
+
+    def test_a_long_bad_value_is_refused_at_once(self):
+        import time
+        t = time.time()
+        with self.assertRaises(paths.PathError):
+            self.layout(None, APOD_SSH_TTL="1" * 40 + "x").key_ttl()
+        self.assertLess(time.time() - t, 1)
+
+    def test_a_config_that_isnt_utf8(self):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        (d / "config").mkdir()
+        (d / "config" / "config.toml").write_bytes(b"# caf\xe9\n")
+        lay = paths.Layout({"APOD_CONFIG_DIR": str(d / "config"), "APOD_DATA_DIR": str(d / "data"),
+                            "APOD_STATE_DIR": str(d / "state"), "HOME": str(d)}, force_new=True)
+        with self.assertRaises(paths.PathError):
+            lay.key_ttl()
 
     def test_env_wins(self):
         self.assertEqual(self.layout('[keys]\nttl = "8h"\n', APOD_SSH_TTL="30m").key_ttl(), "30m")
 
     def test_bad_values(self):
-        for bad in ('"forever"', '"4 hours"', "true", '""', "-1"):
+        for bad in ('"forever"', '"4 hours"', "true", '""', "-1", "0", '"0h"', '"0s"', "2147483648", '"99999999999999999999"',
+                    '"600000w"', '"\uff14h"'):
             with self.assertRaises(paths.PathError, msg=bad):
                 self.layout(f"[keys]\nttl = {bad}\n").key_ttl()
         with self.assertRaises(paths.PathError):

@@ -917,13 +917,17 @@ if [ -n "$usebroker" ]; then
   cb=; cdim=; cy=; cr=
   if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then cb=$'\e[1m'; cdim=$'\e[2m'; cy=$'\e[1;33m'; cr=$'\e[0m'; fi
   nkeys=$(jq '.need_keys | length' <<< "$binfo"); ki=0
-  [ "$nkeys" -eq 0 ] || echo "${cb}apod:${cr} the broker needs $nkeys key(s) unlocked; each stays unlocked for $(P .key_ttl)." >&2
+  keyttl=
+  if [ "$nkeys" -gt 0 ]; then
+    keyttl=$(python3 "$apoddir/apod-broker" paths --key-ttl) || exit 2
+    echo "${cb}apod:${cr} the broker needs $nkeys key(s) unlocked; each stays unlocked for $keyttl." >&2
+  fi
   while IFS=$'\t' read -r kpath kconfirm kpurpose; do
     [ -n "$kpath" ] || continue
     ki=$((ki + 1))
     printf '\n%s\n%s\n' "${cb}[$ki/$nkeys]${cr} ${cy}${kpurpose:-a key}${cr}  ${cdim}${kpath/#$HOME/\~}${cr}" \
       "${cdim}Its passphrase, or an empty line to skip (those requests will fail).${cr}" >&2
-    addopts=(-q -t "$(P .key_ttl)"); [ "$kconfirm" = true ] && addopts+=(-c)
+    addopts=(-q -t "$keyttl"); [ "$kconfirm" = true ] && addopts+=(-c)
     if [ "$kconfirm" = true ] && [ -z "${SSH_ASKPASS:-}" ] && [ ! -x /usr/libexec/openssh/ssh-askpass ]; then
       echo "apod: $kpath has confirm = true, which needs ssh-askpass to ask you on each use: sudo dnf install openssh-askpass" >&2
     fi
@@ -1112,13 +1116,14 @@ if [ -z "$sshkey" ]; then "${run[@]}" "${cmdline[@]}"; exit; fi
 # with the module, the agent runs at level s0 so that the pod may connect to it. runcon starts sh,
 # which execs ssh-agent: the policy refuses runcon's own exec of ssh-agent (Permission denied),
 # and this way the agent is what the broker's is, unconfined_t at s0, which the module lets pods reach.
+keyttl=$(python3 "$apoddir/apod-broker" paths --key-ttl) || exit 2
 python3 "$apoddir/apod-broker" paths --ensure-runtime || exit 2
 adir=$(P .profile.ssh_agent_dir); mkdir -p "$adir"; chmod 700 "$adir"
 sock=$(P .profile.ssh_agent_sock)
 agentcmd=(ssh-agent); [ -n "$seltype" ] && agentcmd=(runcon -l s0 sh -c 'exec ssh-agent "$@"' ssh-agent)
 eval "$("${agentcmd[@]}" -a "$sock")" >/dev/null
 agentpid=$SSH_AGENT_PID
-addopts=(-t "$(P .key_ttl)"); [ "$(pget .ssh_agent.confirm)" = true ] && addopts+=(-c)
+addopts=(-t "$keyttl"); [ "$(pget .ssh_agent.confirm)" = true ] && addopts+=(-c)
 SSH_AUTH_SOCK=$sock ssh-add -q "${addopts[@]}" "$sshkey"
 amount=$(P .profile.ssh_agent_mount); amount+=:$amount; [ -n "$seltype" ] && amount+=:z
 "${run[@]}" -v "$amount" -e SSH_AUTH_SOCK="$sock" "${sockopts[@]}" "${cmdline[@]}"
