@@ -15,37 +15,41 @@ Every command, file, setting and variable. For how to set things up, see the
 ## Commands
 
 ```
-apod <profile> [options] [dir] [-- agent args]   run an agent in a pod, in dir (default: the current folder)
-apod new [profile]                               create a profile, step by step (writes profiles/NAME.toml)
-apod migrate [profile | --all] [--yes]           legacy layout: old profile files to one profile.toml (the old files move to .old/)
-apod migrate --layout [profile] [--yes]          the legacy layout (~/.agent-pod) to the new one: all of it, or one profile
-apod resume [--list|--latest|--claude] [dir]     resume a stopped Claude session started in dir
-apod history                                     folders and profiles launched, most recent first
-apod ps                                          running pods: profile, session, status, folder
-apod profiles                                    profiles: broker role, GitHub token, Google login
-apod presets                                     presets: what each sets, and its description
-apod token <profile> [--rm]                      set, replace or remove a profile's GitHub token
-apod google-auth <profile>                       sign a profile in to Google for google-docs-mcp
-apod selinux [install|remove|status]             SELinux labelling for broker and ssh-agent pods
-apod broker ...                                  the broker (apod gh ... is the same)
+apod <profile> [options] [dir] [-- agent args]           run an agent in a pod, in dir (default: the current folder)
+apod new [profile]                                       create a profile, step by step (writes profiles/NAME.toml)
+apod migrate [profile | --all] [--yes]                   legacy layout: old profile files to one profile.toml (the old files move to .old/)
+apod migrate --layout [profile] [--yes]                  the legacy layout (~/.agent-pod) to the new one: all of it, or one profile
+apod resume [--list|--latest|--claude] [options] [dir]   resume a stopped Claude session started in dir, options added to its own
+apod history                                             folders and profiles launched, most recent first
+apod ps                                                  running pods: profile, session, status, folder
+apod profiles                                            profiles: broker role, GitHub token, Google login
+apod presets                                             presets: what each sets, and its description
+apod token <profile> [--rm]                              set, replace or remove a profile's GitHub token
+apod google-auth <profile>                               sign a profile in to Google for google-docs-mcp
+apod selinux [install|remove|status]                     SELinux labelling for broker and ssh-agent pods
+apod broker ...                                          the broker (apod gh ... is the same)
 ```
 
 Options for `apod <profile>`:
 
-| Option                          |                                                                                                                                                                                                      |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `-a claude\|opencode\|bash`     | The agent (default `claude`); `bash` is a shell in the pod.                                                                                                                                          |
-| `-p`, `--preset NAME`           | A [preset](#presets) for this run: its pod settings over the profile's `[pod]`, its role and scope as `--role` and `--scope`. Comma-separated, repeatable, applied in order.                         |
-| `-i`, `--image IMAGE`           | The image, over the presets', the profile's `[pod] image` and `APOD_IMAGE` (default `apod`).                                                                                                         |
-| `-c`, `--connectors LIST`       | claude.ai connector groups for this run, comma-separated, repeatable; `none` turns them off. Replaces the profile's `[pod] connectors`. Claude only: ignored, with a warning, for opencode and bash. |
-| `--ro PATH` (`-m`), `--rw PATH` | Mount a file or folder for this run, read-only or read-write. Refused when it would expose apod's own files (see [Where apod keeps its files](#where-apod-keeps-its-files)).                         |
-| `--role ROLE`                   | The broker role for this run, over the presets' and `profile.toml`'s `role`.                                                                                                                         |
-| `--scope KIND:VALUE`            | Add to the broker scope for this run; repeatable.                                                                                                                                                    |
-| `--gh-user ACCOUNT`             | The host `gh` account the broker acts as for this run, over `[gh] user`.                                                                                                                             |
-| `--no-broker`                   | No broker for this run, even for a profile that uses it.                                                                                                                                             |
-| `-- ARGS`                       | Anything after `--` goes to the agent (`-- --continue`).                                                                                                                                             |
+| Option                          |                                                                                                                                                                                                                      |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-a claude\|opencode\|bash`     | The agent (default `claude`); `bash` is a shell in the pod.                                                                                                                                                          |
+| `-p`, `--preset NAME`           | A [preset](#presets) for this run: its pod settings over the profile's `[pod]`, its role and scope as `--role` and `--scope`. Comma-separated, repeatable, applied in order.                                         |
+| `-i`, `--image IMAGE`           | The image, over the presets', the profile's `[pod] image` and `APOD_IMAGE` (default `apod`).                                                                                                                         |
+| `-c`, `--connectors LIST`       | claude.ai connector groups for this run, comma-separated, repeatable; `none` turns off the groups before it. Replaces the profile's `[pod] connectors`. Claude only: ignored, with a warning, for opencode and bash. |
+| `--ro PATH` (`-m`), `--rw PATH` | Mount a file or folder for this run, read-only or read-write. Refused when it would expose apod's own files (see [Where apod keeps its files](#where-apod-keeps-its-files)).                                         |
+| `--role ROLE`                   | The broker role for this run, over the presets' and `profile.toml`'s `role`.                                                                                                                                         |
+| `--scope KIND:VALUE`            | Add to the broker scope for this run; repeatable.                                                                                                                                                                    |
+| `--gh-user ACCOUNT`             | The host `gh` account the broker acts as for this run, over `[gh] user`.                                                                                                                                             |
+| `--no-broker`                   | No broker for this run, even for a profile that uses it.                                                                                                                                                             |
+| `-- ARGS`                       | Anything after `--` goes to the agent (`-- --continue`).                                                                                                                                                             |
 
 `--role`, `--scope` and `--gh-user`, and a preset with a role or a scope, use the broker even for a profile with `broker = false`.
+
+`apod resume` takes all of these but `-a`, after the ones the session was launched with: `--scope`, `--ro`/`--rw`,
+`-p` and `-c` add to the session's (`-c` to its profile's connectors too), `--role`, `-i` and `--gh-user` replace them,
+and `--no-broker` and the broker options drop each other ([guide](guides.md#history-resume-and-herdr)).
 
 `apod broker` subcommands:
 

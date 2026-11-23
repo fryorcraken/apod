@@ -13,7 +13,7 @@ set -euo pipefail
 
 usage() {
   echo "usage: apod <profile> [-a claude|opencode|bash] [-p PRESET]... [-i IMAGE] [-c CONNECTORS] [--ro PATH]... [--rw PATH]... [--role R] [--scope S]... [--gh-user ACCOUNT] [--no-broker] [project-dir] [-- agent args...]" >&2
-  echo "       apod new [profile] | migrate [profile|--all] | migrate --layout [profile] | resume [--list|--latest|--claude] [dir] | history | ps | profiles | presets | token <profile> [--rm] | google-auth <profile>" >&2
+  echo "       apod new [profile] | migrate [profile|--all] | migrate --layout [profile] | resume [--list|--latest|--claude] [launch options] [dir] | history | ps | profiles | presets | token <profile> [--rm] | google-auth <profile>" >&2
   echo "       apod broker [ui]|log [-f] [-n N]|pending|allow ID [--session|--role]|deny ID|sessions|roles|grants|scopes|keys|restart|stop" >&2
   echo "       apod selinux [install|remove|status]" >&2
   exit 2
@@ -163,12 +163,69 @@ case ${1:-} in
     # Resume a stopped Claude session started in a folder (one launched by apod, with a saved
     # conversation), with the same profile and options. In a herdr pane that launched one of them,
     # resume that one; otherwise list them and ask. --list always asks, --latest takes the newest,
-    # --claude opens Claude's own picker for the latest launch's profile.
-    shift; mode=ask; dir=
-    for a in "$@"; do
-      case $a in --list) mode=list ;; --latest) mode=latest ;; --claude) mode=claude ;;
-        -*) echo "usage: apod resume [--list|--latest|--claude] [dir]" >&2; exit 2 ;; *) dir=$a ;; esac
+    # --claude opens Claude's own picker for the latest launch's profile. Launch options (all but
+    # -a: it's Claude's session) go after the recorded ones (see merge). The relaunch records them,
+    # so the next resume keeps them.
+    shift; mode=ask; dir=; more=()
+    rusage() { echo "usage: apod resume [--list|--latest|--claude] [launch options] [dir]" >&2; exit 2; }
+    while [ $# -gt 0 ]; do
+      case $1 in
+        --list) mode=list ;; --latest) mode=latest ;; --claude) mode=claude ;;
+        -p|--preset|-i|--image|-c|--connectors|-m|--ro|--rw|--role|--persona|--gh-user|--scope)
+          [ $# -ge 2 ] || rusage; more+=("$1" "$2"); shift ;;
+        --no-broker) more+=("$1") ;;
+        -a) echo "apod: resume relaunches a Claude session: -a doesn't apply" >&2; exit 2 ;;
+        -*) rusage ;;
+        *) [ -z "$dir" ] || rusage; dir=$1 ;;
+      esac
+      shift
     done
+    # The relaunch's options, in ropts: the recorded ones (opts), then the given ones (more), as if typed
+    # after them: --scope, --ro, --rw, -p and -c add, --role, -i and --gh-user replace. Recorded ones
+    # that a given one makes pointless are left out, so that the history doesn't grow with each
+    # resume: the same --scope, a mount of the same path (the given mode wins), the --role, -i or
+    # --gh-user replaced. --no-broker given leaves out the recorded --role, --scope and --gh-user,
+    # and one of those given leaves out a recorded --no-broker. -c adds to the session's
+    # connectors: if it was launched without -c, to the profile's [pod] connectors, which a -c
+    # alone would replace.
+    merge() {
+      local i o v nobroker='' broker='' conn='' hadc=''
+      local -A rgiven=() rscope=() rpath=()
+      for ((i = 0; i < ${#more[@]}; i++)); do
+        o=${more[i]}
+        if [ "$o" = --no-broker ]; then nobroker=1; continue; fi
+        v=${more[++i]}
+        case $o in
+          --role|--persona) rgiven[--role]=1; broker=1 ;;
+          --gh-user) rgiven[--gh-user]=1; broker=1 ;;
+          --scope) rscope[$v]=1; broker=1 ;;
+          -i|--image) rgiven[-i]=1 ;;
+          -m|--ro|--rw) rpath[$(realpath -m "$v")]=1 ;;
+          -c|--connectors) conn=1 ;;
+        esac
+      done
+      ropts=("${opts[0]}")
+      for ((i = 1; i < ${#opts[@]}; i++)); do
+        o=${opts[i]}
+        if [ "$o" = --no-broker ]; then [ -n "$broker" ] || ropts+=("$o"); continue; fi
+        v=${opts[++i]}
+        case $o in
+          --role|--persona) [ -z "$nobroker${rgiven[--role]:-}" ] || continue ;;
+          --gh-user) [ -z "$nobroker${rgiven[--gh-user]:-}" ] || continue ;;
+          --scope) [ -z "$nobroker${rscope[$v]:-}" ] || continue ;;
+          -i|--image) [ -z "${rgiven[-i]:-}" ] || continue ;;
+          -m|--ro|--rw) [ -z "${rpath[$v]:-}" ] || continue ;;
+          -c|--connectors) hadc=1 ;;
+        esac
+        ropts+=("$o" "$v")
+      done
+      if [ -n "$conn" ] && [ -z "$hadc" ]; then
+        v=$(python3 "$apoddir/apod-broker" profile --profile "${opts[0]}" --quiet < /dev/null 2>/dev/null \
+          | jq -r '.pod.connectors | join(",")') || v=
+        [ -z "$v" ] || ropts+=(-c "$v")
+      fi
+      ropts+=("${more[@]}")
+    }
     here_pane=$(pane_id)
     dir=$(realpath "${dir:-$PWD}")
     load_paths; hist=$(P .history)
@@ -178,7 +235,7 @@ case ${1:-} in
     while IFS=$'\t' read -r p h; do homes[$p]=$h; done < <(P '.all_profiles | to_entries[] | [.key, .value.home] | @tsv')
     while IFS= read -r line; do
       mapfile -t opts < <(jq -r '.opts[]' <<< "$line")
-      if [ "$mode" = claude ]; then exec "$0" "${opts[@]}" "$dir" -- --resume; fi
+      if [ "$mode" = claude ]; then merge; exec "$0" "${ropts[@]}" "$dir" -- --resume; fi
       sid=$(jq -r '.session // empty' <<< "$line")
       [ -n "$sid" ] && [ -z "${seen[$sid]+x}" ] || continue
       seen[$sid]=1
@@ -186,11 +243,12 @@ case ${1:-} in
       home=; [ -z "${opts[0]:-}" ] || home=${homes[${opts[0]}]:-}
       tr=; [ -z "$home" ] || tr=$(compgen -G "$home/.claude/projects/*/$sid.jsonl" | head -n1 || true)
       [ -n "$tr" ] || continue
-      # Label: the /rename title if any, else the first prompt.
-      title=$(jq -r 'select(.type == "custom-title") | .customTitle' "$tr" 2>/dev/null | tail -n1)
+      # Label: the /rename title if any, else the first prompt. (|| true: none, a line jq can't
+      # read, or grep -m1 done before the rest is written fails the pipeline, which would end apod.)
+      title=$(jq -r 'select(.type == "custom-title") | .customTitle' "$tr" 2>/dev/null | tail -n1) || true
       [ -n "$title" ] || title=$(head -n 400 "$tr" | jq -r 'select(.type == "user" and (.isMeta | not))
         | .message.content | if type == "string" then . else (map(select(.type == "text").text) | join(" ")) end' 2>/dev/null \
-        | grep -v '^<' | grep -m1 . | tr '\n' ' ')
+        | grep -v '^<' | grep -m1 .) || true
       sids+=("$sid"); lines+=("$line"); panes+=("$(jq -r '.pane // empty' <<< "$line")")
       labels+=("$(date -r "$tr" '+%m-%d %H:%M')  ${opts[0]}  ${title:0:70}")
     done < <(jq -c --arg d "$dir" 'select(.project == $d and .agent == "claude")' "$hist" | tac)
@@ -209,8 +267,9 @@ case ${1:-} in
       [[ $n =~ ^[1-9][0-9]*$ ]] && [ "$n" -le ${#sids[@]} ] || { echo "apod: no such choice" >&2; exit 2; }
     fi
     mapfile -t opts < <(jq -r '.opts[]' <<< "${lines[$((n - 1))]}")
-    echo "apod: resuming ${labels[$((n - 1))]}" >&2
-    exec "$0" "${opts[@]}" "$dir" -- --resume "${sids[$((n - 1))]}" ;;
+    shown=; [ ${#more[@]} -eq 0 ] || printf -v shown ' %q' "${more[@]}"
+    echo "apod: resuming ${labels[$((n - 1))]}${shown:+, adding$shown}" >&2
+    merge; exec "$0" "${ropts[@]}" "$dir" -- --resume "${sids[$((n - 1))]}" ;;
   new)
     # A wizard for a new profile: the GitHub account, git identity, signing, ssh, Radicle,
     # notifications, role, scope, mounts and image. It shows the profile.toml it would write, and
@@ -608,12 +667,14 @@ case $agent in
 esac
 
 # claude.ai connectors come with the Claude account, not the pod: off unless enabled with -c or
-# the profile's [pod] connectors. -c replaces the profile's groups for the run; "-c none" turns
-# them all off.
+# the profile's [pod] connectors. -c replaces the profile's groups for the run; "none" turns off
+# the groups before it: "-c none" all of them, and "-c gdoc -c none -c todoist" leaves todoist
+# (apod resume adds a -c to the session's).
 if [ ${#connectors[@]} -eq 0 ]; then
   while IFS= read -r -d '' c; do connectors+=("$c"); done < <(plist '.pod.connectors[] | "\(.)\u0000"')
 fi
-[ "${connectors[*]}" = none ] && connectors=()
+cs=(); for c in "${connectors[@]}"; do if [ "$c" = none ]; then cs=(); else cs+=("$c"); fi; done
+connectors=("${cs[@]}")
 ccloud=(); clocal=()  # claude.ai connector groups / local MCP servers
 filemounts=()         # single files mounted over paths inside the extra mounts
 for c in "${connectors[@]}"; do

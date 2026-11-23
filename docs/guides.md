@@ -878,7 +878,7 @@ folders, which a pod may have made. The project folder can't be one of
 apod's folders or contain one either (apod won't launch in `~` or `~/.config`); it stays writable
 even inside a read-only entry. The first launch relabels mounted trees for SELinux (`:z`), which
 can take a while on big trees. A running pod can't gain mounts: exit and relaunch with
-`-- --continue`, or `apod resume`.
+`-- --continue`, or `apod resume --rw PATH` ([resume](#history-resume-and-herdr)).
 
 **Environment.** `[pod.env]` sets variables in the pod, with their values in the profile's file.
 For a secret (an API key), list its name in `[pod] env_from` instead, and keep the value in your
@@ -1046,8 +1046,8 @@ running these pods with labelling off.
 
 claude.ai connectors (Notion, Google Docs, …) come with the Claude account and act as you, so apod
 turns them off unless enabled for the run with `-c` (comma-separated, repeatable) or the profile's
-`[pod] connectors`; `-c none` turns them off. This, and the local MCP servers below, apply to
-Claude only: opencode and bash ignore `-c`, with a warning.
+`[pod] connectors`; `none` turns off the groups before it (`-c none`: all of them). This, and the
+local MCP servers below, apply to Claude only: opencode and bash ignore `-c`, with a warning.
 
 Groups: `notion`, `gdoc` (Docs, Drive, Sheets), `todoist`, `canva`, `lovable`, `utsjitsu`,
 `claudedocs`. Other known connectors are denied, and a PreToolUse hook blocks any claude.ai
@@ -1104,6 +1104,24 @@ relaunches with the same profile and options. If the current tab launched one of
 that one; otherwise it lists them and asks. The tab id is the first set variable among
 `$APOD_PANE_ENV` (default `HERDR_PANE_ID HC_SCOPE`). `--list` always asks, `--latest` takes the
 newest, and `--claude` opens Claude's own picker.
+
+To carry on with more than the session was launched with, give launch options to `apod resume`
+(all but `-a`). They go after the recorded ones, as if typed after them: `--scope`, `--ro`,
+`--rw` and `-p` add to the session's, a `--rw` over a recorded `--ro` of the same path makes it
+read-write, and `--role`, `-i` and `--gh-user` replace the session's. `-c` adds to the session's
+connectors (the profile's `[pod] connectors` included), and `-c none` turns them off. A
+`--role`, `--scope` or `--gh-user` turns on the broker of a session launched with
+`--no-broker`, and `--no-broker` drops the session's `--role`, `--scope` and `--gh-user`:
+
+```sh
+apod resume --scope gh:acme/gadget --rw ~/src/acme/gadget   # one more repository, and its checkout
+apod resume --role dev                                      # a wider role than the launch's
+```
+
+The relaunch is recorded with its options, so the next `apod resume` keeps them; giving the same
+ones again doesn't repeat them. To go back to fewer, launch the session yourself, with its
+folder: `apod <profile> [options] <dir> -- --resume <session id>` (the id is the `session` of its
+launches in `history.jsonl`).
 
 [herdr](https://herdr.dev) is a terminal multiplexer for coding agents, and apod is built to run
 in its panes:

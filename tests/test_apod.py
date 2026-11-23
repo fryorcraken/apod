@@ -265,6 +265,12 @@ class Launcher:
             return
         self.assertEqual("\n".join(argv) + "\n", f.read_text(), f"podman arguments of {name} changed")
 
+    def broker_note(self):
+        """The broker's role and scope lines in the agent's note."""
+        raw = self.log.read_text()
+        return (re.search(r"apod broker: role ([^\s,.]+)", raw).group(1),
+                re.search(r"Scope \(the repositories[^)]*\): (.*)\.\n", raw).group(1).split(", "))
+
     def test_profiles_listing(self):
         """apod profiles: the same answer whichever way a profile is written."""
         if "plain" not in self.P.profile_names():
@@ -929,12 +935,6 @@ class PresetTest(Launcher, unittest.TestCase):
         self.assertIn("toolsimage", argv)
         self.assertTrue(any(a.endswith(":/run/apod-broker") for a in argv), argv)
 
-    def broker_note(self):
-        """The broker's role and scope lines in the agent's note."""
-        raw = self.log.read_text()
-        return (re.search(r"apod broker: role ([^\s,.]+)", raw).group(1),
-                re.search(r"Scope \(the repositories[^)]*\): (.*)\.\n", raw).group(1).split(", "))
-
     def test_a_presets_role_and_scope(self):
         """As --role and --scope: the role over the profile's, the scope added to the launch's."""
         self.launch("bot", "-p", "job")
@@ -1022,6 +1022,147 @@ class PresetTest(Launcher, unittest.TestCase):
         self.assertEqual(lines[2].split(None, 1)[1], "image secondimage, 2 variables")
         self.assertEqual(lines[3].split(None, 1)[1], "image toolsimage, network host, 2 mounts, 1 volume, 3 variables  "
                                                      "(the tools)")
+
+
+class ResumeTest(Launcher, unittest.TestCase):
+    """apod resume: a stopped Claude session launched in the folder, relaunched with the options it
+    was launched with, and the ones given after resume over them."""
+    LAYOUT = "xdg"
+    SID = "00000000-0000-4000-8000-000000000001"  # the first uuidgen of a launch
+
+    @classmethod
+    def make_profiles(cls):
+        cls.toml_profile("bot", '[gh]\nuser = "agentbot"\n[git]\nname = "Bot"\nemail = "bot@example.org"\n')
+        cls.toml_profile("conn", 'broker = false\n[pod]\nconnectors = ["todoist"]\n')
+
+    def setUp(self):
+        self.P.history.unlink(missing_ok=True)
+
+    def resume(self, *args, expect=0, extra_env=None):
+        """Run apod resume; returns (podman argv, stderr). A new session: no terminal to ask in."""
+        self.log.write_text("")
+        r = subprocess.run([APOD, "resume", *args], env=dict(self.env, **(extra_env or {})), cwd=self.tmp,
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120,
+                           start_new_session=True)
+        self.assertEqual(r.returncode, expect, r.stderr)
+        return self.argv(), r.stderr
+
+    def launched(self, *args, profile="bot", pane=None, prompts=("fix the widget",)):
+        """A launch in the project, then its conversation as Claude saves it."""
+        self.launch(profile, *args, extra_env={"HERDR_PANE_ID": pane} if pane else None)
+        t = Path(self.P.profile(profile)["home"]) / ".claude/projects/-proj" / f"{self.SID}.jsonl"
+        t.parent.mkdir(parents=True, exist_ok=True)
+        t.write_text("".join(json.dumps({"type": "user", "message": {"content": p}}) + "\n" for p in prompts))
+
+    def last_opts(self):
+        last = json.loads(self.P.history.read_text().splitlines()[-1])
+        self.assertEqual(last["session"], self.SID)
+        return last["opts"]
+
+    def has_broker(self, argv):
+        return any(a.endswith(":/run/apod-broker") for a in argv)
+
+    def test_the_options_it_was_launched_with(self):
+        self.launched("--ro", str(self.m / "ro1"))
+        argv, err = self.resume("--latest", str(self.proj))
+        self.assertEqual(argv[argv.index("--resume") + 1], self.SID)
+        self.assertIn("@TMP@/mounts/ro1:@TMP@/mounts/ro1:ro", argv)  # (no :z: a broker pod)
+        self.assertIn("fix the widget\n", err)
+        self.assertEqual(self.last_opts(), ["bot", "--ro", str(self.m / "ro1")])
+
+    def test_more_options(self):
+        """After the recorded ones: --scope adds, --rw over a recorded --ro makes it read-write,
+        --role replaces. The relaunch records them, and the next resume keeps them."""
+        ro1, rw = str(self.m / "ro1"), str(self.m / "cli-rw")
+        self.launched("--ro", ro1, "--scope", "gh:acme/gadget", pane="p1")
+        self.assertEqual(self.broker_note()[0], "reader")
+        # In the tab that launched it: no question, with the options before or after the folder.
+        for opts in (["--scope", "gh:acme/other", "--rw", ro1, "--rw", rw, "--role", "dev", str(self.proj)],
+                     [str(self.proj), "--scope", "gh:acme/other", "--rw", ro1, "--rw", rw, "--role", "dev"]):
+            with self.subTest(opts=opts):
+                argv, err = self.resume(*opts, extra_env={"HERDR_PANE_ID": "p1"})
+                self.assertIn("this tab (HERDR_PANE_ID:p1) launched it", err)
+                self.assertIn(f"fix the widget, adding --scope gh:acme/other --rw {ro1} --rw {rw} --role dev\n", err)
+                self.assertEqual(argv[argv.index("--resume") + 1], self.SID)
+                self.assertIn("@TMP@/mounts/ro1:@TMP@/mounts/ro1", argv)
+                self.assertNotIn("@TMP@/mounts/ro1:@TMP@/mounts/ro1:ro", argv)
+                self.assertIn("@TMP@/mounts/cli-rw:@TMP@/mounts/cli-rw", argv)
+                role, scope = self.broker_note()
+                self.assertEqual(role, "dev")
+                for s in ("gh:acme/gadget", "gh:acme/other", "gh:acme/widget"):
+                    self.assertIn(s, scope)
+                # The recorded --ro of ro1 is left out: the given --rw decides.
+                self.assertEqual(self.last_opts(), ["bot", "--scope", "gh:acme/gadget", "--scope", "gh:acme/other",
+                                                    "--rw", ro1, "--rw", rw, "--role", "dev"])
+                # Back to the first launch alone, for the next subtest.
+                self.P.history.write_text(self.P.history.read_text().splitlines(keepends=True)[0])
+        # The same options again don't make the history grow; the next resume keeps them.
+        want = ["bot", "--ro", ro1, "--scope", "gh:acme/gadget", "--role", "dev", "--scope", "gh:acme/other"]
+        for _ in range(2):
+            self.resume("--latest", "--role", "dev", "--scope", "gh:acme/other", str(self.proj))
+            self.assertEqual(self.last_opts(), want)
+        argv, err = self.resume("--latest", str(self.proj))
+        self.assertNotIn("adding", err)
+        self.assertEqual(self.broker_note(), ("dev", ["gh:acme/gadget", "gh:acme/other", "gh:acme/widget"]))
+        self.assertEqual(self.last_opts(), want)
+
+    def test_the_broker_on_or_off(self):
+        """--role, --scope or --gh-user given: a recorded --no-broker is left out. --no-broker
+        given: the recorded --role, --scope and --gh-user are."""
+        self.launched("--no-broker")
+        self.assertFalse(self.has_broker(self.argv()))
+        argv, _ = self.resume("--latest", "--role", "dev", "--scope", "gh:acme/other", str(self.proj))
+        self.assertTrue(self.has_broker(argv))
+        self.assertEqual(self.broker_note()[0], "dev")
+        self.assertEqual(self.last_opts(), ["bot", "--role", "dev", "--scope", "gh:acme/other"])
+        argv, _ = self.resume("--latest", "--no-broker", str(self.proj))
+        self.assertFalse(self.has_broker(argv))
+        self.assertEqual(self.last_opts(), ["bot", "--no-broker"])
+
+    def test_connectors(self):
+        """-c adds to the session's connectors: the profile's when it was launched without -c;
+        none turns them off, and a group after none turns that one on."""
+        def enabled():
+            m = re.search(r"claude\.ai connectors enabled for this run: ([^.]*)\.", self.log.read_text())
+            return m.group(1).split() if m else []
+        self.launched(profile="conn")
+        self.assertEqual(enabled(), ["todoist"])
+        for opts, want, recorded in ((["-c", "notion"], ["todoist", "notion"], ["-c", "todoist", "-c", "notion"]),
+                                     (["-c", "none"], [], ["-c", "todoist", "-c", "notion", "-c", "none"]),
+                                     (["-c", "gdoc"], ["gdoc"], ["-c", "todoist", "-c", "notion", "-c", "none",
+                                                                 "-c", "gdoc"])):
+            with self.subTest(opts=opts):
+                self.resume("--latest", *opts, str(self.proj))
+                self.assertEqual(enabled(), want)
+                self.assertEqual(self.last_opts(), ["conn", *recorded])
+        # The same at launch: none turns off the groups before it.
+        self.launch("conn", "-c", "gdoc,none", "-c", "notion")
+        self.assertEqual(enabled(), ["notion"])
+        self.launch("conn", "-c", "gdoc", "-c", "none")
+        self.assertEqual(enabled(), [])
+
+    def test_a_session_without_a_prompt_to_show(self):
+        """One that began with a slash command: no label, but it resumes. A path with a space is
+        shown quoted."""
+        self.launched(prompts=("<command-name>/model</command-name>", "<local-command-stdout>x</local-command-stdout>"))
+        spaced = self.m / "a b"
+        spaced.mkdir(exist_ok=True)
+        argv, err = self.resume("--latest", "--rw", str(spaced), str(self.proj))
+        self.assertEqual(argv[argv.index("--resume") + 1], self.SID)
+        self.assertIn("  bot  , adding --rw " + str(spaced).replace(" ", "\\ ") + "\n", err)
+
+    def test_refused(self):
+        self.launched()
+        for args, msg in ((["-a", "bash"], "apod: resume relaunches a Claude session: -a doesn't apply"),
+                          (["--scope"], "usage: apod resume"), (["--nope"], "usage: apod resume"),
+                          ([str(self.proj), str(self.proj)], "usage: apod resume")):
+            with self.subTest(args=args):
+                argv, err = self.resume("--latest", *args, expect=2)
+                self.assertIn(msg, err)
+                self.assertEqual(argv, [], "no pod")
+        # What the launch refuses, it refuses.
+        _, err = self.resume("--latest", "--rw", str(self.m / "missing"), str(self.proj), expect=2)
+        self.assertIn(f"apod: no such path: {self.m}/missing", err)
 
 
 class MigratedLayoutTest(Launcher, unittest.TestCase):

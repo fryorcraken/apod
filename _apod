@@ -49,6 +49,22 @@ _apod_connectors() {
   _values -s , 'connector' $groups
 }
 
+# The launch options (apod resume takes them too, but -a), also listed with the folders on a bare
+# <TAB> after the profile (the folder is optional, and _arguments alone offers options only once
+# the word starts with -).
+launchopts=(
+  '-a[agent to run]:agent:(claude opencode bash)'
+  '*'{-p,--preset}'[a preset: image, mounts, network, volumes, env, role, scope]:presets:_apod_presets'
+  '(-i --image)'{-i,--image}'[container image for this run]:image:_apod_images'
+  '*'{-c,--connectors}'[enable claude.ai connectors for this run]:connectors:_apod_connectors'
+  '*'{-m,--ro}'[mount a file or folder read-only]:path:_files'
+  '*--rw[mount a file or folder read-write]:path:_files'
+  '--role[use the broker with this role (default: from profile.toml, else reader)]:role:_apod_roles'
+  '--no-broker[no broker for this run, even for a profile that uses it]'
+  '--gh-user[use the broker, acting on GitHub as this host gh account]:account:'
+  '*--scope[use the broker, adding to its scope (gh:OWNER/REPO, gh:OWNER/*, gh:OWNER, gh-project:OWNER/N, rad:RID, ssh:USER@HOST or ssh:HOST, git-local:PATH)]:scope:'
+)
+
 case ${words[2]} in
   token)    _arguments '1: :(token)' '2:profile:_apod_profiles' '3:option:(--rm)'; return ;;
   google-auth) _arguments '1: :(google-auth)' '2:profile:_apod_profiles'; return ;;
@@ -58,7 +74,8 @@ case ${words[2]} in
               '4:option:(--yes)'; return ;;
   resume)   _arguments '1: :(resume)' '(--latest --claude)--list[always list and ask]' \
               '(--list --claude)--latest[resume the newest without asking]' \
-              '(--list --latest)--claude[use Claude'"'"'s own session picker]' '2:folder:_directories'; return ;;
+              '(--list --latest)--claude[use Claude'"'"'s own session picker]' '2:folder:_directories' \
+              ${launchopts:#-a\[*}; return ;;
   profiles|presets|history|ps) return ;;
   selinux)  _arguments '1: :(selinux)' '2:action:(install remove status)'; return ;;
   broker|gh)
@@ -82,21 +99,6 @@ case ${words[2]} in
     fi
     return ;;
 esac
-
-# The launch options, also listed with the folders on a bare <TAB> after the profile (the folder is
-# optional, and _arguments alone offers options only once the word starts with -).
-launchopts=(
-  '-a[agent to run]:agent:(claude opencode bash)'
-  '*'{-p,--preset}'[a preset: image, mounts, network, volumes, env, role, scope]:presets:_apod_presets'
-  '(-i --image)'{-i,--image}'[container image for this run]:image:_apod_images'
-  '*'{-c,--connectors}'[enable claude.ai connectors for this run]:connectors:_apod_connectors'
-  '*'{-m,--ro}'[mount a file or folder read-only]:path:_files'
-  '*--rw[mount a file or folder read-write]:path:_files'
-  '--role[use the broker with this role (default: from profile.toml, else reader)]:role:_apod_roles'
-  '--no-broker[no broker for this run, even for a profile that uses it]'
-  '--gh-user[use the broker, acting on GitHub as this host gh account]:account:'
-  '*--scope[use the broker, adding to its scope (gh:OWNER/REPO, gh:OWNER/*, gh:OWNER, gh-project:OWNER/N, rad:RID, ssh:USER@HOST or ssh:HOST, git-local:PATH)]:scope:'
-)
 
 _apod_dir() {
   _directories
