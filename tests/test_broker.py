@@ -52,7 +52,7 @@ LAYOUT_VARS = ("APOD_ROOT", "APOD_CONFIG_DIR", "APOD_DATA_DIR", "APOD_STATE_DIR"
 def host_env(**more):
     """os.environ without what says where apod's folders are (and the pod's own git setup)."""
     env = {k: v for k, v in os.environ.items() if k not in LAYOUT_VARS and k not in ("GH_REPO", "SSH_AUTH_SOCK")
-           and not k.startswith(("GIT_AUTHOR_", "GIT_COMMITTER_", "GIT_CONFIG"))}
+           and not k.startswith(("GIT_AUTHOR_", "GIT_COMMITTER_", "GIT_CONFIG", "HERDR_", "HC_"))}
     return dict(env, **more)
 SHIM = HERE / "broker/pod-shim"
 RID = "z3gqcJUoA1n9HaHKufZs5FCSGazv5"
@@ -971,6 +971,77 @@ class BrokerTest(unittest.TestCase):
         for tty, agent in (("/tmp/x", "claude"), ("/dev/pts/3/../../tmp/x", "claude"), ("/dev/pts/3", "bash"),
                            ("/dev/pts/3", "opencode"), ("", "claude")):
             self.assertIsNone(herdr.tty_target(tty, agent), (tty, agent))
+
+    def test_tui_in_a_herdr_app_terminal_needs_you(self):
+        """apod broker ui in a Herdr app terminal says "needs you" in its own terminal (OSC 7501,
+        app=apod-broker) while a request waits, where you approve; the agent's terminal is left
+        alone then. Once the TUI quits, it clears its status and the agent's terminal is marked again."""
+        import fcntl
+        import pty
+        import select
+        import struct
+        import termios
+        agent_m, agent_s = pty.openpty()
+        self.addCleanup(os.close, agent_m)
+        self.addCleanup(os.close, agent_s)
+        sess = self.register("dev", ["gh:acme/widget"], extra=["--status-tty", os.ttyname(agent_s),
+                                                              "--status-agent", "claude"])
+        env = dict(self.env, APOD_BROKER_SOCK=str(Path(sess["dir"]) / "broker.sock"))
+
+        def merge(n):
+            return subprocess.Popen([sys.executable, SHIM, "pr", "merge", n], cwd=self.work, env=env,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        def reader(fd):
+            out = [b""]
+
+            def until(marker, timeout=8):
+                end = time.time() + timeout
+                while marker not in out[0] and time.time() < end:
+                    if select.select([fd], [], [], 0.1)[0]:
+                        try:
+                            out[0] += os.read(fd, 65536)
+                        except OSError:
+                            break
+                return marker in out[0]
+            return out, until
+
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 120, 0, 0))
+        ui = subprocess.Popen([sys.executable, BROKER, "ui"], stdin=slave, stdout=slave, stderr=slave,
+                              env=dict(self.env, TERM="xterm-256color", HC_TERMINAL_ID="t8w"), start_new_session=True)
+        os.close(slave)
+        self.addCleanup(lambda: ui.poll() is None and ui.kill())
+        tui, tui_until = reader(master)
+        agent, agent_until = reader(agent_m)
+        idle = b"\x1b]7501;state=idle:app=apod-broker\x1b\\"
+        self.assertTrue(tui_until(idle), tui[0][-500:])  # nothing waits yet
+        time.sleep(1.5)  # it has polled: the broker knows it's open
+        p = merge("41")
+        m = None
+        if tui_until(b"state=blocked:app=apod-broker"):
+            tui_until(b"\x1b\\", timeout=2)
+            m = re.search(rb"\x1b\]7501;state=blocked:app=apod-broker:kind=permission:msg=([A-Za-z0-9+/=]+)\x1b\\", tui[0])
+        self.assertIsNotNone(m, tui[0][-800:])
+        self.assertIn("pr merge 41", base64.b64decode(m.group(1)).decode())
+        eid = next(l.split()[0] for l in self.admin("pending").stdout.splitlines() if "pr merge 41" in l)
+        tui[0] = b""
+        self.admin("deny", eid)
+        p.communicate(timeout=10)
+        self.assertTrue(tui_until(idle), tui[0][-500:])
+        self.assertFalse(agent_until(b"7501", timeout=0.5), agent[0])  # the agent's terminal: nothing
+        # The TUI quits: it clears its status, and the agent's terminal is marked again at once.
+        tui[0] = b""
+        os.write(master, b"q")
+        ui.wait(timeout=5)
+        self.assertTrue(tui_until(b"\x1b]7501;state=clear\x1b\\", timeout=2), tui[0][-300:])
+        os.close(master)
+        p = merge("42")
+        self.assertTrue(agent_until(b"state=blocked:app=claude-code"), agent[0])
+        eid = next(l.split()[0] for l in self.admin("pending").stdout.splitlines() if "pr merge 42" in l)
+        self.admin("deny", eid)
+        p.communicate(timeout=10)
+        self.assertTrue(agent_until(b"state=working:app=claude-code"), agent[0])
 
     def test_api_rest(self):
         self.ran("api", "repos/{owner}/{repo}/pulls")

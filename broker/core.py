@@ -79,7 +79,9 @@ LOCK = threading.RLock()
 SESSIONS = {}   # id -> Session
 SERVERS = {}    # id -> [servers]
 PENDING = {}    # event id -> Pending
-TUI = {"seen": 0.0}  # when such a TUI last polled (time.monotonic()); 0 once it quit
+# When a TUI that sends desktop notifications ("seen"), or that shows "needs you" in its own
+# Herdr app terminal ("status"), last polled (time.monotonic()); 0 once it quit.
+TUI = {"seen": 0.0, "status": 0.0}
 EVENTS = collections.deque(maxlen=500)
 COUNTER = itertools.count(1)
 PROVIDERS = {}  # name -> provider
@@ -719,7 +721,9 @@ def authorize(sess, req, ev, waiting=None, ask=True):
         waiting(ev)
     desktop_notify(ev)
     try:
-        herdr.blocked(sess, ev)  # the agent's herdr pane shows "needs you" while this waits
+        # The agent's herdr pane shows "needs you" while this waits, and its Herdr app terminal
+        # unless an open TUI shows it in its own (where you approve).
+        herdr.blocked(sess, ev, terminal=time.monotonic() - TUI["status"] >= TUI_FRESH)
         got = p.done.wait(ASK_TIMEOUT)
     finally:
         herdr.unblocked(sess, ev)
@@ -1316,6 +1320,8 @@ def admin_call(path, body):
     if path == "/state":
         if "tui_notifies" in body:  # apod broker ui: True while it runs, False as it quits
             TUI["seen"] = time.monotonic() if body["tui_notifies"] is True else 0.0
+        if "tui_status" in body:  # apod broker ui in a Herdr app terminal: the same for "needs you"
+            TUI["status"] = time.monotonic() if body["tui_status"] is True else 0.0
         return state()
     if path == "/keys":
         return {"keys": key_report(), "need_keys": needed_keys(), "agent": str(AGENT)}

@@ -2,6 +2,7 @@
 import os
 import re
 
+import herdr
 from core import BrokerError, client, fmt_scope, fmt_target, fmt_time, now
 
 TUI_VIEWS = ["requests", "sessions", "grants"]
@@ -54,15 +55,49 @@ def desktop_notifies(style):
     return style in ("osc9", "osc99", "osc777")
 
 
+def shows_status():
+    """Whether the TUI's terminal shows its program's status (OSC 7501): the Herdr app's do. Then
+    the TUI says "needs you" there while a request waits, and the broker leaves out the agent's
+    terminal. APOD_HERDR=0 turns it off."""
+    return os.environ.get("APOD_HERDR", "1") != "0" and bool(os.environ.get("HC_TERMINAL_ID"))
+
+
+STATUS_APP = {"app": "apod-broker"}
+
+
+def status_seq(pending):
+    """The TUI's own status: blocked while requests wait (the newest as the message), else idle."""
+    if not pending:
+        return herdr.status_report(STATUS_APP, "idle")
+    e = max(pending, key=lambda e: e["ts"])
+    more = f" (+{len(pending) - 1} more)" if len(pending) > 1 else ""
+    msg = herdr._text(f"{e.get('name') or e['profile']} asks: {e['request']}{more}")[:200]
+    return herdr.status_report(STATUS_APP, "blocked", kind="permission", msg=msg)
+
+
+def write_terminal(seq):
+    try:
+        os.write(1, seq)
+    except OSError:
+        pass
+
+
 def main():
     import curses
     try:
         curses.wrapper(run)
     finally:
-        # Quitting hands desktop notifications back to the broker at once, not after TUI_FRESH.
+        # Quitting hands desktop notifications and "needs you" back to the broker at once, not
+        # after TUI_FRESH, and clears the TUI's status in its terminal.
+        body = {}
         if desktop_notifies(notify_style()):
+            body["tui_notifies"] = False
+        if shows_status():
+            body["tui_status"] = False
+            write_terminal(b"\x1b]7501;state=clear\x1b\\")
+        if body:
             try:
-                client("/state", {"tui_notifies": False}, timeout=5)
+                client("/state", body, timeout=5)
             except (OSError, BrokerError, ValueError):
                 pass
 
@@ -223,6 +258,10 @@ def run(scr):
     view, sel, top, msg, msg_t, seen, st, err = "requests", None, 0, "", 0, None, None, None
     notify = None if notify_style() == "none" else notify_style()
     poll = {"tui_notifies": True} if desktop_notifies(notify) else {}
+    status = shows_status()
+    if status:
+        poll["tui_status"] = True
+    shown = None  # the status last written to the terminal
     press = curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED
     wheel_up = getattr(curses, "BUTTON4_PRESSED", 0)
     wheel_down = getattr(curses, "BUTTON5_PRESSED", 0)
@@ -249,6 +288,11 @@ def run(scr):
             if view == "requests":
                 sel = ("ev", min(pend_ids - seen))
         seen = pend_ids
+        if status and st:
+            seq = status_seq(st["pending"])
+            if seq != shown:
+                write_terminal(seq)
+                shown = seq
         rows = tui_rows(view, st)
         keys = [r[0] for r in rows if r[0] is not None]
         if sel not in keys:

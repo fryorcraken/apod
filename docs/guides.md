@@ -683,6 +683,11 @@ every request with its decision.
   the TUI's notification only. A click on the broker's own notification doesn't take you anywhere.
   If no notification shows while the TUI is open, the terminal ignored the sequence it guessed:
   set `APOD_BROKER_NOTIFY`.
+- In a Herdr app terminal (`HC_TERMINAL_ID` set), the TUI also shows that terminal as "needs
+  you" (its OSC 7501 status, `app=apod-broker`) while any request waits, with the newest as the
+  message, and as idle otherwise; the app's alert takes you to the TUI. While it's open, the
+  broker doesn't mark the agent's terminal (see [History, resume and herdr](#history-resume-and-herdr)).
+  `APOD_HERDR=0` turns it off.
 
 Requests and sessions show the agent session's name when it has one (Claude Code's `/rename`),
 else the profile. Approve by the actions and targets listed, not by the one-line summary, which
@@ -1121,8 +1126,10 @@ in its panes:
   device (`tty`), and while a request of the pod waits, the broker writes the status there itself:
   `blocked` (`kind=permission`, message "apod broker: <the request>"), so the app plays its sound
   and shows its popup, then `working` once the last one is allowed, denied or times out (Claude's
-  tool call goes on; its next report replaces it). Only for `claude` pods. It writes nothing else
-  to the terminal, and only to a `/dev/pts` device of yours. `APOD_HERDR=0` turns it off.
+  tool call goes on; its next report replaces it). Only for `claude` pods, and only while no
+  `apod broker ui` is open in a Herdr app terminal: that one says "needs you" in its own terminal
+  instead, where you approve. It writes nothing else to the terminal, and only to a `/dev/pts`
+  device of yours. `APOD_HERDR=0` turns it off.
 - **Recovery after a herdr restart or crash.** herdr restores container panes as plain shells in
   the right folder. Run `apod resume` there: apod recorded the tab each session was launched from
   (`HERDR_PANE_ID`, or `HC_SCOPE`, which survives a herdr server restart), so it goes straight back

@@ -55,7 +55,7 @@ def tty_target(tty, agent):
     return {"tty": tty, "app": APPS[agent]}
 
 
-def _status(t, state, kind=None, msg=None):
+def status_report(t, state, kind=None, msg=None):
     """An OSC 7501 report of the terminal's status, as Claude Code writes its own. The message is
     base64, so the request's text puts no control characters in your terminal."""
     fields = [f"state={state}", f"app={t['app']}"] + ([f"kind={kind}"] if kind else [])
@@ -147,14 +147,17 @@ def _text(s):
     return "".join(c if c.isprintable() else " " for c in s)
 
 
-def blocked(sess, ev):
-    """A request of this session starts waiting for approval."""
+def blocked(sess, ev, terminal=True):
+    """A request of this session starts waiting for approval. terminal=False: not in its Herdr app
+    terminal (an open apod broker ui shows "needs you" in its own)."""
     msg = _text(f"apod broker: {ev['request']}")[:200]
     for t in _targets(sess):
+        if "tty" in t and not terminal:
+            continue
         with _lock:
             _waiting.setdefault(_key(t), set()).add(ev["id"])
             if "tty" in t:
-                _send(t, "status", seq=_status(t, "blocked", kind="permission", msg=msg))
+                _send(t, "status", seq=status_report(t, "blocked", kind="permission", msg=msg))
             else:
                 _send(t, "pane.report_agent", state="blocked", message=msg)
 
@@ -167,12 +170,14 @@ def unblocked(sess, ev):
         key = _key(t)
         with _lock:
             ids = _waiting.get(key, set())
+            if ev["id"] not in ids:  # not shown there (the TUI showed it)
+                continue
             ids.discard(ev["id"])
             if ids:
                 continue
             _waiting.pop(key, None)
             if "tty" in t:
-                _send(t, "status", seq=_status(t, "working"))
+                _send(t, "status", seq=status_report(t, "working"))
             else:
                 _send(t, "pane.release_agent")
 
