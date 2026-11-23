@@ -63,12 +63,14 @@ def shows_status():
 
 
 STATUS_APP = {"app": "apod-broker"}
+STATUS_CLEAR = b"\x1b]7501;state=clear\x1b\\"
 
 
 def status_seq(pending):
-    """The TUI's own status: blocked while requests wait (the newest as the message), else idle."""
+    """The TUI's own status: blocked while requests wait (the newest as the message), else none.
+    Not idle: the app takes blocked to idle, unseen, as done, and would alert for it."""
     if not pending:
-        return herdr.status_report(STATUS_APP, "idle")
+        return STATUS_CLEAR
     e = max(pending, key=lambda e: e["ts"])
     more = f" (+{len(pending) - 1} more)" if len(pending) > 1 else ""
     msg = herdr._text(f"{e.get('name') or e['profile']} asks: {e['request']}{more}")[:200]
@@ -94,7 +96,7 @@ def main():
             body["tui_notifies"] = False
         if shows_status():
             body["tui_status"] = False
-            write_terminal(b"\x1b]7501;state=clear\x1b\\")
+            write_terminal(STATUS_CLEAR)
         if body:
             try:
                 client("/state", body, timeout=5)

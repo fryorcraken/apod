@@ -1014,8 +1014,8 @@ class BrokerTest(unittest.TestCase):
         self.addCleanup(lambda: ui.poll() is None and ui.kill())
         tui, tui_until = reader(master)
         agent, agent_until = reader(agent_m)
-        idle = b"\x1b]7501;state=idle:app=apod-broker\x1b\\"
-        self.assertTrue(tui_until(idle), tui[0][-500:])  # nothing waits yet
+        clear = b"\x1b]7501;state=clear\x1b\\"  # nothing waits: no status (idle would be "done" after blocked)
+        self.assertTrue(tui_until(clear), tui[0][-500:])
         time.sleep(1.5)  # it has polled: the broker knows it's open
         p = merge("41")
         m = None
@@ -1028,7 +1028,7 @@ class BrokerTest(unittest.TestCase):
         tui[0] = b""
         self.admin("deny", eid)
         p.communicate(timeout=10)
-        self.assertTrue(tui_until(idle), tui[0][-500:])
+        self.assertTrue(tui_until(clear), tui[0][-500:])
         self.assertFalse(agent_until(b"7501", timeout=0.5), agent[0])  # the agent's terminal: nothing
         # The TUI quits: it clears its status, and the agent's terminal is marked again at once.
         tui[0] = b""

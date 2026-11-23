@@ -685,9 +685,10 @@ every request with its decision.
   set `APOD_BROKER_NOTIFY`.
 - In a Herdr app terminal (`HC_TERMINAL_ID` set), the TUI also shows that terminal as "needs
   you" (its OSC 7501 status, `app=apod-broker`) while any request waits, with the newest as the
-  message, and as idle otherwise; the app's alert takes you to the TUI. While it's open, the
-  broker doesn't mark the agent's terminal (see [History, resume and herdr](#history-resume-and-herdr)).
-  `APOD_HERDR=0` turns it off.
+  message, and with no status otherwise (not idle, which the app would take for done); the
+  app's alert takes you to the TUI. While it's open, the broker doesn't mark the agent's
+  terminal (see [History, resume and herdr](#history-resume-and-herdr)). `APOD_HERDR=0` turns it
+  off.
 
 Requests and sessions show the agent session's name when it has one (Claude Code's `/rename`),
 else the profile. Approve by the actions and targets listed, not by the one-line summary, which
