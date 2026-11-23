@@ -838,9 +838,10 @@ if [ -n "$usebroker" ]; then
   fi
   # In a Herdr app terminal (herdr-core): the broker writes the terminal's status (OSC 7501) as
   # blocked while a request waits, so it needs the terminal's device. Only for claude, which writes
-  # its own status, so the app shows it as before once the request is decided.
+  # its own status, so the app shows it as before once the request is decided. Not in a multiplexer
+  # run inside one (HC_TERMINAL_ID is still set there), which keeps the sequence to itself.
   if [ "${APOD_HERDR:-1}" != 0 ] && [ -n "${HC_TERMINAL_ID:-}" ] && [ "$agent" = claude ] &&
-     ttydev=$(tty 2>/dev/null); then
+     [ -z "${TMUX:-}${STY:-}${ZELLIJ:-}${HERDR_PANE_ID:-}" ] && ttydev=$(tty 2>/dev/null); then
     regargs+=(--status-tty "$ttydev" --status-agent "$agent")
   fi
   for s in "${scopes[@]}"; do regargs+=(--scope "$s"); done

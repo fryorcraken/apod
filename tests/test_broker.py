@@ -775,6 +775,14 @@ class BrokerTest(unittest.TestCase):
             with self.subTest(env=env), mock.patch.dict(os.environ, env, clear=True):
                 self.assertEqual(tui.notify_style(), want)
                 self.assertEqual(tui.desktop_notifies(tui.notify_style()), want != "bell")
+        # "Needs you" in the TUI's own terminal: a Herdr app terminal, not a multiplexer inside one.
+        app = {"TERM_PROGRAM": "ghostty", "TERM": "xterm-256color", "HC_TERMINAL_ID": "t8w"}
+        for env, want in ((app, True), ({}, False), (dict(app, APOD_HERDR="0"), False),
+                          (dict(app, TMUX="/tmp/tmux-1000/default,1,0", TERM_PROGRAM="tmux"), False),
+                          (dict(app, HERDR_PANE_ID="w1:p2", TERM_PROGRAM="herdr"), False),
+                          (dict(app, ZELLIJ="0"), False)):
+            with self.subTest(env=env), mock.patch.dict(os.environ, env, clear=True):
+                self.assertEqual(tui.shows_status(), want)
 
     def test_gh_help_in_either_layout(self):
         # The broker learns gh's flags from its --help, and gh 2.104 changed how it lists booleans. In
@@ -1030,13 +1038,16 @@ class BrokerTest(unittest.TestCase):
         p.communicate(timeout=10)
         self.assertTrue(tui_until(clear), tui[0][-500:])
         self.assertFalse(agent_until(b"7501", timeout=0.5), agent[0])  # the agent's terminal: nothing
-        # The TUI quits: it clears its status, and the agent's terminal is marked again at once.
+        # The TUI quits while a request waits: it clears its status, and the agent's terminal shows
+        # that request at once.
+        p = merge("42")
+        self.assertTrue(tui_until(b"state=blocked:app=apod-broker"), tui[0][-300:])
+        self.assertFalse(agent_until(b"7501", timeout=0.5), agent[0])
         tui[0] = b""
         os.write(master, b"q")
         ui.wait(timeout=5)
         self.assertTrue(tui_until(b"\x1b]7501;state=clear\x1b\\", timeout=2), tui[0][-300:])
         os.close(master)
-        p = merge("42")
         self.assertTrue(agent_until(b"state=blocked:app=claude-code"), agent[0])
         eid = next(l.split()[0] for l in self.admin("pending").stdout.splitlines() if "pr merge 42" in l)
         self.admin("deny", eid)

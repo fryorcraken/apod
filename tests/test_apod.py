@@ -484,6 +484,7 @@ class ProfileTomlTest(Launcher, unittest.TestCase):
         self.assertIsNone(status(stdin=subprocess.DEVNULL))
         self.assertIsNone(status(APOD_HERDR="0"))
         self.assertIsNone(status(HC_TERMINAL_ID=""))
+        self.assertIsNone(status(TMUX="/tmp/tmux-1000/default,1,0"))  # tmux inside the app keeps the sequence
 
     def test_env_values_are_passed_as_written(self):
         self.toml_profile("quotes", """\

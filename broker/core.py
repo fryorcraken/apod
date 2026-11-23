@@ -1321,7 +1321,15 @@ def admin_call(path, body):
         if "tui_notifies" in body:  # apod broker ui: True while it runs, False as it quits
             TUI["seen"] = time.monotonic() if body["tui_notifies"] is True else 0.0
         if "tui_status" in body:  # apod broker ui in a Herdr app terminal: the same for "needs you"
-            TUI["status"] = time.monotonic() if body["tui_status"] is True else 0.0
+            if body["tui_status"] is True:
+                TUI["status"] = time.monotonic()
+            elif TUI["status"]:
+                # It quit: the requests still waiting show in their agents' terminals from now on.
+                TUI["status"] = 0.0
+                with LOCK:
+                    pend = [p.ev for p in PENDING.values()]
+                for ev in pend:
+                    herdr.blocked(SESSIONS.get(ev["session"]), ev, pane=False)
         return state()
     if path == "/keys":
         return {"keys": key_report(), "need_keys": needed_keys(), "agent": str(AGENT)}

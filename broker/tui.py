@@ -56,10 +56,14 @@ def desktop_notifies(style):
 
 
 def shows_status():
-    """Whether the TUI's terminal shows its program's status (OSC 7501): the Herdr app's do. Then
-    the TUI says "needs you" there while a request waits, and the broker leaves out the agent's
+    """Whether the TUI's terminal shows its program's status (OSC 7501): the Herdr app's do, not a
+    multiplexer run inside one (it keeps the sequence; HC_TERMINAL_ID is still set there). Then the
+    TUI says "needs you" there while a request waits, and the broker leaves out the agent's
     terminal. APOD_HERDR=0 turns it off."""
-    return os.environ.get("APOD_HERDR", "1") != "0" and bool(os.environ.get("HC_TERMINAL_ID"))
+    tp, term = os.environ.get("TERM_PROGRAM", "").lower(), os.environ.get("TERM", "")
+    nested = (tp in ("herdr", "tmux") or term.startswith(("tmux", "screen"))
+              or any(os.environ.get(k) for k in ("HERDR_PANE_ID", "TMUX", "STY", "ZELLIJ")))
+    return os.environ.get("APOD_HERDR", "1") != "0" and bool(os.environ.get("HC_TERMINAL_ID")) and not nested
 
 
 STATUS_APP = {"app": "apod-broker"}
@@ -290,8 +294,9 @@ def run(scr):
             if view == "requests":
                 sel = ("ev", min(pend_ids - seen))
         seen = pend_ids
-        if status and st:
-            seq = status_seq(st["pending"])
+        if status:
+            # The broker gone: its requests are too, so no "needs you" for what was waiting.
+            seq = status_seq(st["pending"] if st and not err else [])
             if seq != shown:
                 write_terminal(seq)
                 shown = seq

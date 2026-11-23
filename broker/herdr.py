@@ -15,8 +15,13 @@ program writes in its output, OSC 7501 (the Program Status Protocol), and the ap
 turns blocked. Claude Code writes its own (app=claude-code); while a request waits, the tool call
 it runs keeps it "working". So for a pod launched from such a terminal, apod gives the broker the
 terminal's device, and the broker writes the status there itself: blocked while a request waits,
-then working again, as Claude's was (its next report replaces it either way).
+then working again, as Claude's was (its next report replaces it either way). It writes into
+the stream podman draws Claude's screen with, so a report landing inside one of Claude's own
+sequences can garble the screen until the next redraw: a rare, passing glitch. An apod broker ui
+open in a Herdr app terminal says "needs you" in its own terminal instead, and then the agent's
+is left alone.
 """
+import select
 import base64
 import json
 import os
@@ -39,6 +44,8 @@ _waiting = {}  # (socket, pane), or ("tty", device) -> ids of the requests waiti
 _warned = set()
 _queue = queue.Queue()  # calls to herdr, in order: a worker sends them, so a slow herdr never holds up a request
 _worker = []
+_tty_queue = queue.Queue()  # reports to terminals: their own worker, never behind a slow herdr call
+_tty_worker = []
 
 
 def target(pane, sock, agent):
@@ -65,14 +72,25 @@ def status_report(t, state, kind=None, msg=None):
 
 
 def _write(t, seq):
-    """Write a report to the terminal: one short write, never waiting for the terminal."""
+    """Write a report to the terminal, all of it (half a sequence would swallow the screen's output
+    until it ends), waiting at most TIMEOUT for a terminal that's slow to read."""
     key = (t["tty"], "status")
+    deadline = time.monotonic() + TIMEOUT
     try:
         fd = os.open(t["tty"], os.O_WRONLY | os.O_NOCTTY | os.O_NONBLOCK)
         try:
             if not os.isatty(fd) or os.fstat(fd).st_uid != os.getuid():
                 raise OSError("not a terminal of yours")
-            os.write(fd, seq)
+            while seq:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise TimeoutError("the terminal isn't reading")
+                if not select.select([], [fd], [], left)[1]:
+                    continue
+                try:
+                    seq = seq[os.write(fd, seq):]
+                except BlockingIOError:
+                    pass
         finally:
             os.close(fd)
         _warned.discard(key)
@@ -117,15 +135,21 @@ def _call(t, method, **params):
 
 def _send(t, method, **params):
     """Queue a call (the caller holds _lock, so the calls go out in the order the states changed)."""
+    if method == "status":
+        if not _tty_worker:
+            _tty_worker.append(threading.Thread(target=_drain, args=(_tty_queue,), daemon=True, name="herdr-tty"))
+            _tty_worker[0].start()
+        _tty_queue.put((t, method, params))
+        return
     if not _worker:
-        _worker.append(threading.Thread(target=_drain, daemon=True, name="herdr"))
+        _worker.append(threading.Thread(target=_drain, args=(_queue,), daemon=True, name="herdr"))
         _worker[0].start()
     _queue.put((t, method, params))
 
 
-def _drain():
+def _drain(q):
     while True:
-        t, method, params = _queue.get()
+        t, method, params = q.get()
         if method == "status":
             _write(t, params["seq"])
         else:
@@ -147,12 +171,13 @@ def _text(s):
     return "".join(c if c.isprintable() else " " for c in s)
 
 
-def blocked(sess, ev, terminal=True):
+def blocked(sess, ev, terminal=True, pane=True):
     """A request of this session starts waiting for approval. terminal=False: not in its Herdr app
-    terminal (an open apod broker ui shows "needs you" in its own)."""
+    terminal (an open apod broker ui shows "needs you" in its own); pane=False: only there (the
+    TUI quit while the request waits)."""
     msg = _text(f"apod broker: {ev['request']}")[:200]
     for t in _targets(sess):
-        if "tty" in t and not terminal:
+        if not (terminal if "tty" in t else pane):
             continue
         with _lock:
             _waiting.setdefault(_key(t), set()).add(ev["id"])
