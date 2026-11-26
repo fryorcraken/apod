@@ -131,7 +131,7 @@ class Launcher:
         # Things to mount: not under tmp/, which may be inside the checkout, a mount the guard refuses.
         cls.m = Path(tempfile.mkdtemp(prefix="apod-mounts-"))
         cls.addClassCleanup(lambda: None if os.environ.get("KEEP") else shutil.rmtree(cls.m, ignore_errors=True))
-        for d in ("ro1", "rw1", "cli-ro", "cli-rw"):
+        for d in ("ro1", "rw1", "cli-ro", "cli-rw", "more", "shared"):
             (cls.m / d).mkdir(parents=True)
         subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", cls.tmp / "key"], check=True)
         cls.env = dict({k: v for k, v in os.environ.items() if k not in LAYOUT_VARS}, **cls.layout_env,
@@ -916,19 +916,64 @@ class PresetTest(Launcher, unittest.TestCase):
         self.assertNotIn("toolsimage", argv)
         self.assertIn("@TMP@/mounts/ro1:@TMP@/mounts/ro1:ro,z", argv)
 
-    def test_presets_apply_in_order(self):
-        for opts in (["-p", "tools,second"], ["-p", "tools", "--preset", "second"]):
+    def test_presets_are_merged(self):
+        """Presets that set different things add up, in any order; the same thing set the same way
+        by two is no collision."""
+        f = self.preset("more", f'[pod]\nrw = ["{self.m}/more"]\nro = ["{self.m}/cli-ro"]\nvolumes = {{ "apod-more" = "/more" }}\n'
+                                 '[pod.env]\nC = "4"\nB = "2"\n')
+        self.addCleanup(f.unlink)
+        self.preset("tools2", '[pod]\nnetwork = "host"\n')
+        self.addCleanup(self.P.preset_file("tools2").unlink)
+        for opts in (["-p", "tools,more,tools2"], ["-p", "tools", "--preset", "more", "-p", "tools2"],
+                     ["-p", "tools2,more,tools"]):
             with self.subTest(opts=opts):
-                argv, _ = self.launch("who", *opts, extra_env={"OVER": "host"})
-                self.assertIn("secondimage", argv)
-                self.assertIn("-e B=3", argv)
-                self.assertIn("-e OVER", argv)  # second passes it by name, over tools' value
-                self.assertNotIn("-e OVER=tools", argv)
-                self.assertIn("apod-tools-nix:/nix", argv)  # what second doesn't set stays
-                self.assertIn("apod.preset=tools,second", argv)
-                self.assertIn('profile "who", presets tools,second.', self.log.read_text())
-        argv, _ = self.launch("who", "-p", "second,tools")
-        self.assertIn("toolsimage", argv)
+                argv, _ = self.launch("who", *opts)
+                self.assertIn("toolsimage", argv)
+                self.assertIn("-e B=2", argv)
+                self.assertIn("-e C=4", argv)
+                self.assertIn("@TMP@/mounts/more:@TMP@/mounts/more:z", argv)
+                self.assertIn("@TMP@/mounts/cli-ro:@TMP@/mounts/cli-ro:ro,z", argv)
+                self.assertIn("apod-tools-nix:/nix", argv)
+                self.assertIn("apod-more:/more", argv)
+
+    def test_the_same_setting_twice_is_no_collision(self):
+        """Presets that both mount a path read-only, or set a variable to the same value, merge."""
+        for n in ("sharea", "shareb"):
+            f = self.preset(n, f'[pod]\nro = ["{self.m}/shared"]\n[pod.env]\nPLUGINS = "{self.m}/shared"\n')
+            self.addCleanup(f.unlink)
+        argv, _ = self.launch("who", "-p", "sharea,shareb")
+        self.assertEqual(sum(a == "@TMP@/mounts/shared:@TMP@/mounts/shared:ro,z" for a in argv), 1, argv)
+        self.assertIn("-e PLUGINS=@TMP@/mounts/shared", argv)
+
+    def test_presets_that_collide_are_an_error(self):
+        """Two presets that set the same thing differently: an error naming both, no pod."""
+        f = self.preset("rw-cli", f'[pod]\nrw = ["{self.m}/cli-ro"]\n')
+        self.addCleanup(f.unlink)
+        f = self.preset("host-over", 'role = "reader"\n[pod]\nenv_from = ["B"]\n')
+        self.addCleanup(f.unlink)
+        f = self.preset("net", '[pod]\nnetwork = "none"\n')
+        self.addCleanup(f.unlink)
+        f = self.preset("nixname", '[pod]\nvolumes = { "apod-tools-nix" = "/elsewhere" }\n')
+        self.addCleanup(f.unlink)
+        f = self.preset("both", f'[pod]\nro = ["{self.m}/more"]\nrw = ["{self.m}/more"]\n')
+        self.addCleanup(f.unlink)
+        f = self.preset("nix2", '[pod]\nvolumes = { "apod-other" = "/nix" }\n')
+        self.addCleanup(f.unlink)
+        for presets, msg in (
+                ("tools,second", "presets tools and second collide on image: 'toolsimage' and 'secondimage'"),
+                ("second,tools", "presets second and tools collide on image: 'secondimage' and 'toolsimage'"),
+                ("tools,rw-cli", "presets tools and rw-cli collide on the mount of @TMP@/mounts/cli-ro: ro and rw"),
+                ("tools,host-over", "collide on the variable B: the value '2' and its host value"),
+                ("job,host-over", "presets job and host-over collide on role: 'pm' and 'reader'"),
+                ("tools,net", "presets tools and net collide on network: 'host' and 'none'"),
+                ("tools,nixname", "presets tools and nixname collide on the volume apod-tools-nix: at /nix and at /elsewhere"),
+                ("both", "preset both: @TMP@/mounts/more is both ro and rw"),
+                ("tools,nix2", "presets tools and nix2 collide on the volume at /nix: named apod-tools-nix and named apod-other")):
+            with self.subTest(presets=presets):
+                err = self.refused("who", "-p", presets).replace(str(self.m), "@TMP@/mounts")
+                self.assertIn(msg, err.replace(str(self.tmp), "@TMP@"))
+        # A preset over the profile's own settings is no collision, and neither is a preset twice.
+        self.launch("who", "-p", "tools,tools")
 
     def test_a_broker_profile_with_a_preset(self):
         argv, _ = self.launch("bot", "-p", "tools", "-a", "bash")
@@ -950,13 +995,14 @@ class PresetTest(Launcher, unittest.TestCase):
         self.assertEqual(role, "dev")
         self.assertIn("gh:acme/gadget", scope)
         self.assertIn("gh:acme/other", scope)
-        # The last preset's role.
-        f = self.preset("reader", 'role = "reader"\n')
+        # The same role in two presets is no collision; different ones are (the next test).
+        f = self.preset("pm2", 'role = "pm"\nscope = ["gh:acme/other"]\n')
         self.addCleanup(f.unlink)
-        self.launch("bot", "-p", "job,reader")
-        self.assertEqual(self.broker_note()[0], "reader")
-        self.launch("bot", "-p", "reader,job")
-        self.assertEqual(self.broker_note()[0], "pm")
+        self.launch("bot", "-p", "job,pm2")
+        role, scope = self.broker_note()
+        self.assertEqual(role, "pm")
+        self.assertIn("gh:acme/gadget", scope)
+        self.assertIn("gh:acme/other", scope)
 
     def test_a_presets_role_turns_the_broker_on(self):
         """who has broker = false: a preset's role or scope turns the broker on, as --role does,

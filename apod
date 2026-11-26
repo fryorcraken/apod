@@ -555,7 +555,7 @@ role=      # broker role for this run (--role), else a preset's, else the profil
 nobroker=  # --no-broker: no broker for this run, even with a broker.toml
 ghuser=    # --gh-user: the host gh account the broker acts as for this run, over [gh] user
 scopes=()     # extra broker scope for this run (--scope)
-presets=()    # presets for this run (-p), applied in order over the profile's [pod], role and scope
+presets=()    # presets for this run (-p), merged (a collision is an error) over the profile's [pod], role and scope
 recopts=("$profile")  # profile and options of this launch, for the history and apod resume
 while [ $# -gt 0 ]; do
   case $1 in
@@ -599,7 +599,7 @@ for e in "${presets[@]}"; do ldargs+=(--preset "$e"); done
 pjson=$(python3 "$apoddir/apod-broker" profile "${ldargs[@]}") || exit 2
 pget() { jq -r "$@" <<< "$pjson"; }
 plist() { jq -j "$1" <<< "$pjson"; }
-# Image: -i, else the last preset's that sets one, else the profile's [pod] image, else $APOD_IMAGE,
+# Image: -i, else the preset's that sets one (two that differ collide), else the profile's [pod] image, else $APOD_IMAGE,
 # else apod. The loader has applied the presets: .pod is the profile's with theirs over it.
 [ -n "$image" ] || image=$(pget '.pod.image // empty')
 image=${image:-${APOD_IMAGE:-apod}}
@@ -615,8 +615,8 @@ done < <(pget '.pod.volumes | to_entries[] | [.key, .value] | @tsv')
 
 # Broker: when the profile uses it (broker = true, the default of a profile.toml; an old profile
 # with a broker.toml), or --role, --scope or --gh-user is given, or a preset sets a role or a
-# scope; --no-broker turns it off. The role comes from --role, else the last preset's that sets
-# one, else the profile's, else reader. The presets' scope adds to the profile's, as --scope does:
+# scope; --no-broker turns it off. The role comes from --role, else the preset's that sets
+# one (two that differ collide, so there is one), else the profile's, else reader. The presets' scope adds to the profile's, as --scope does:
 # the broker reads the profile's file, not the presets, so theirs go to it as --role and --scope.
 usebroker=
 [ "$role" = none ] && { role=; nobroker=1; }  # the old way to say --no-broker

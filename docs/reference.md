@@ -32,18 +32,18 @@ apod broker ...                                          the broker (apod gh ...
 
 Options for `apod <profile>`:
 
-| Option                          |                                                                                                                                                                                                                      |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `-a claude\|opencode\|bash`     | The agent (default `claude`); `bash` is a shell in the pod.                                                                                                                                                          |
-| `-p`, `--preset NAME`           | A [preset](#presets) for this run: its pod settings over the profile's `[pod]`, its role and scope as `--role` and `--scope`. Comma-separated, repeatable, applied in order.                                         |
-| `-i`, `--image IMAGE`           | The image, over the presets', the profile's `[pod] image` and `APOD_IMAGE` (default `apod`).                                                                                                                         |
-| `-c`, `--connectors LIST`       | claude.ai connector groups for this run, comma-separated, repeatable; `none` turns off the groups before it. Replaces the profile's `[pod] connectors`. Claude only: ignored, with a warning, for opencode and bash. |
-| `--ro PATH` (`-m`), `--rw PATH` | Mount a file or folder for this run, read-only or read-write. Refused when it would expose apod's own files (see [Where apod keeps its files](#where-apod-keeps-its-files)).                                         |
-| `--role ROLE`                   | The broker role for this run, over the presets' and `profile.toml`'s `role`.                                                                                                                                         |
-| `--scope KIND:VALUE`            | Add to the broker scope for this run; repeatable.                                                                                                                                                                    |
-| `--gh-user ACCOUNT`             | The host `gh` account the broker acts as for this run, over `[gh] user`.                                                                                                                                             |
-| `--no-broker`                   | No broker for this run, even for a profile that uses it.                                                                                                                                                             |
-| `-- ARGS`                       | Anything after `--` goes to the agent (`-- --continue`).                                                                                                                                                             |
+| Option                          |                                                                                                                                                                                                                           |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-a claude\|opencode\|bash`     | The agent (default `claude`); `bash` is a shell in the pod.                                                                                                                                                               |
+| `-p`, `--preset NAME`           | A [preset](#presets) for this run: its pod settings over the profile's `[pod]`, its role and scope as `--role` and `--scope`. Comma-separated, repeatable, merged (two that set the same thing differently are an error). |
+| `-i`, `--image IMAGE`           | The image, over the presets', the profile's `[pod] image` and `APOD_IMAGE` (default `apod`).                                                                                                                              |
+| `-c`, `--connectors LIST`       | claude.ai connector groups for this run, comma-separated, repeatable; `none` turns off the groups before it. Replaces the profile's `[pod] connectors`. Claude only: ignored, with a warning, for opencode and bash.      |
+| `--ro PATH` (`-m`), `--rw PATH` | Mount a file or folder for this run, read-only or read-write. Refused when it would expose apod's own files (see [Where apod keeps its files](#where-apod-keeps-its-files)).                                              |
+| `--role ROLE`                   | The broker role for this run, over the presets' and `profile.toml`'s `role`.                                                                                                                                              |
+| `--scope KIND:VALUE`            | Add to the broker scope for this run; repeatable.                                                                                                                                                                         |
+| `--gh-user ACCOUNT`             | The host `gh` account the broker acts as for this run, over `[gh] user`.                                                                                                                                                  |
+| `--no-broker`                   | No broker for this run, even for a profile that uses it.                                                                                                                                                                  |
+| `-- ARGS`                       | Anything after `--` goes to the agent (`-- --continue`).                                                                                                                                                                  |
 
 `--role`, `--scope` and `--gh-user`, and a preset with a role or a scope, use the broker even for a profile with `broker = false`.
 
@@ -207,16 +207,20 @@ extensions' tables are the profile's, and so are `connectors`, which act as the 
 Claude and Google logins (the profile's `[pod] connectors`, or `-c`). A preset's name is letters,
 digits, `.`, `_` and `-`.
 
-The presets apply in order, over the profile, and the command line over them:
+The presets are merged, over the profile, and the command line over them. What several presets
+set is added together, whatever the order; two that set the same thing *differently* collide, and
+that is an error naming both (`presets logos and rust collide on image: 'a' and 'b'`), not one
+winning. The same setting twice (the same read-only mount, the same variable and value) is no
+collision. A preset over the profile's own settings is no collision either: that is what it's for.
 
-| Key                     |                                                                                                                                                                                  |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `role`                  | The last one set wins, over the profile's; `--role` over all of them.                                                                                                            |
-| `scope`                 | Added to the profile's, the project's remotes and `--scope`.                                                                                                                     |
-| `image`, `network`      | The last one set wins; `-i` over all of them.                                                                                                                                    |
-| `ro`, `rw`              | Added to the profile's. A path given twice is mounted once, with the last mode: a preset's over the profile's, `--ro`/`--rw` over both. The mount guard names the preset's file. |
-| `volumes`               | Added; a volume at the same path in the pod as an earlier one replaces it.                                                                                                       |
-| `[pod.env]`, `env_from` | Added; a name set again, as a value or in `env_from`, replaces the earlier one.                                                                                                  |
+| Key                     | Merged                                                                                                                                                                                                  |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `role`                  | Over the profile's; two presets with different roles collide. `--role` over all of them.                                                                                                                |
+| `scope`                 | Added to each other's, the profile's, the project's remotes and `--scope`; never a collision.                                                                                                           |
+| `image`, `network`      | Over the profile's; two presets with different ones collide. `-i` over all of them.                                                                                                                     |
+| `ro`, `rw`              | Added to the profile's. A path in two presets with different modes collides; in the profile and a preset, the preset's mode wins, and `--ro`/`--rw` over both. The mount guard names the preset's file. |
+| `volumes`               | Added; a name at two paths, or a path under two names, in different presets collides. A preset's volume replaces the profile's at the same path.                                                        |
+| `[pod.env]`, `env_from` | Added; a variable with two values, or a value in one and `env_from` in another, collides. A preset's replaces the profile's.                                                                            |
 
 A preset's role and scope are what `--role` and `--scope` would give: apod passes them to the
 broker as those (the broker reads the profile's file, never the presets), so a preset that sets
@@ -225,7 +229,7 @@ it is an error. The broker's note to the agent, and `gh auth status`, say the ro
 ended up with. apod passes the broker the pod's network, as it does without presets, so a
 preset's `network = "host"` turns off gh-api as a profile's would. The pod's home is the
 profile's, so a profile's pods share its agent login and history whatever their presets, and the
-history records `-p`, so `apod resume` relaunches with the same ones. `apod presets` lists them
+history records `-p`, so `apod resume` relaunches with the same ones (a `-p` given to `apod resume` adds to them, so one that collides with a recorded preset is an error: launch afresh instead). `apod presets` lists them
 with what each sets (an invalid one says why); `apod ps` shows them beside the profile
 (`work -p logos`). The legacy layout has no presets: `apod migrate --layout` first.
 

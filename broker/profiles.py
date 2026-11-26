@@ -463,11 +463,37 @@ def load_preset(name, lay=None):
             "scope": list(data.get("scope", [])), "pod": pod_from_toml(pod, f)}
 
 
+def check_collisions(pre, seen):
+    """Presets are merged: what each one sets is added to the others'. Two that set the same thing
+    differently collide, and that is an error, not one winning: the same image, role, mount mode,
+    volume or variable value twice is no collision. `seen` is what the earlier presets set, as
+    {what: (preset, value)}, and is updated with `pre`'s. (A preset over the profile's own
+    settings is no collision: that is what a preset is for.) Raises ProfileError."""
+    q = pre["pod"]
+    modes = {}
+    for mode, path in q["mounts"]:
+        if modes.setdefault(real(path), mode) != mode:
+            raise ProfileError(f"preset {pre['name']}: {path} is both ro and rw")
+    sets = {k: repr(v) for k, v in (("role", pre["role"]), ("image", q["image"]), ("network", q["network"])) if v}
+    sets.update({f"the mount of {real(path)}": mode for mode, path in q["mounts"]})
+    sets.update({f"the volume {vname}": f"at {vpath}" for vname, vpath in q["volumes"].items()})
+    sets.update({f"the volume at {vpath}": f"named {vname}" for vname, vpath in q["volumes"].items()})
+    sets.update({f"the variable {k}": f"the value {v!r}" for k, v in q["env"].items()})
+    sets.update({f"the variable {k}": "its host value" for k in q["env_from"]})
+    for what, v in sets.items():
+        if what in seen and seen[what][1] != v:
+            raise ProfileError(f"presets {seen[what][0]} and {pre['name']} collide on {what}: {seen[what][1]} and {v} "
+                               f"(presets add to each other and don't override each other: change one, or leave one out)")
+    for what, v in sets.items():
+        seen.setdefault(what, (pre["name"], v))
+
+
 def apply_preset(pod, pre):
     """Preset `pre`'s pod settings over `pod` (a profile's, or with earlier presets applied), in
     place: its image and network replace the ones set before; its mounts come after theirs (apod
     mounts a path once, with the last mode it's given); a volume replaces any volume at the same
-    path in the pod; its environment replaces the same names, [pod.env] and env_from alike."""
+    path in the pod; its environment replaces the same names, [pod.env] and env_from alike. (The
+    presets' own settings don't collide: check_collisions; what is replaced is the profile's.)"""
     q = pre["pod"]
     for k in ("image", "network"):
         if q[k]:
@@ -513,8 +539,9 @@ def locate(spec):
 
 def load(spec, project=None, guard=True, presets=()):
     """The profile `spec` (a name, or a path: see locate), checked, with the `presets` (names)
-    applied over it, in order: their pod settings over its pod (apply_preset), the last role one
-    sets over its role, their scope after its scope. Raises ProfileError. A mount of the launch's
+    merged (check_collisions: two that set the same thing differently are an error) and applied over
+    it, in order: their pod settings over its pod (apply_preset), their role over its role, their
+    scope after its scope. Raises ProfileError. A mount of the launch's
     `project` isn't checked: the project is mounted anyway. The broker (guard=False, no presets)
     doesn't mount anything: apod checks the mounts when it launches, and passes the presets' role
     and scope to the broker as --role and --scope."""
@@ -546,8 +573,10 @@ def load(spec, project=None, guard=True, presets=()):
         if not (project and real(path) == real(project)):
             check_mount(mode, path, where)
     p["presets"] = []
+    seen = {}
     for n in presets:
         pre = load_preset(n)
+        check_collisions(pre, seen)
         for mode, path in pre["pod"]["mounts"] if guard else []:
             if not (project and real(path) == real(project)):
                 check_mount(mode, path, pre["file"])

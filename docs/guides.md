@@ -960,8 +960,10 @@ apod work ~/src/rad/apod                        # neither: the Logos trees aren'
 ```
 
 A preset adds to the profile's own `[pod]` (mounts, volumes and variables join it; `image` and
-`network` replace it), and several apply in order (`-p logos,nix`); `-i`, `--ro` and `--rw` still
-win.
+`network` replace it), and several are merged (`-p logos,nix`): what each sets joins the others',
+and two that set the same thing differently, such as two images, are an error rather than one
+winning. The same setting in both, a read-only mount of one folder say, is fine. `-i`, `--ro` and
+`--rw` still win.
 
 A job can also come with what the agent may do, and where: a preset's `role` and `scope` are what
 `--role` and `--scope` would give, so a triage job needn't be typed out at each launch:
